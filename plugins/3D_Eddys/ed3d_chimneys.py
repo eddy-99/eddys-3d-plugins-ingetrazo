@@ -1192,9 +1192,311 @@ def pots_only(v, cx, cy, z0, along=(1.0, 0.0)):
 
 
 # ---------------------------------------------------------------------------
+# Roof ventilators: Charles Doig's pagoda ventilator on a distillery kiln, or a plain louvred
+# roof vent; and weather vanes. Built in local mm (x along, y across, z up), then placed.
+# ---------------------------------------------------------------------------
+VENT_STYLES = [("doig", "Doig pagoda (distillery kiln)"), ("pyramid", "Louvred, pyramid cap")]
+VANE_STYLES = [("arrow", "Arrow"), ("banner", "Banner")]
+
+
+def sweep_rings(hx0, hy0, hx1, hy1, H, sweep, n, reach=0.25):
+    """Level rectangles [(half x, half y, z)] from (hx0, hy0) at z = 0 to (hx1, hy1) at z = H:
+    a straight steep slope that kicks out flatter at the eaves (the pagoda look). sweep 0 = a
+    straight pyramid; reach = how far up the kick runs (a fraction of the way)."""
+    a = 0.92 * max(0.0, min(1.0, sweep))
+    tau = max(0.05, reach)
+    norm = 1.0 - a * tau * (1.0 - math.exp(-1.0 / tau))
+    out = []
+    for i in range(n + 1):
+        t = i / float(n)
+        # the slope grows from (1 - a) at the eaves to full a little way up
+        f = (t - a * tau * (1.0 - math.exp(-t / tau))) / norm
+        out.append((hx0 + (hx1 - hx0) * t, hy0 + (hy1 - hy0) * t, H * f))
+    return out
+
+
+def ring_stack(rings, z0=0.0):
+    """A closed solid through a stack of level rectangles [(hx, hy, z)] centred on the axis."""
+    def R(hx, hy, z):
+        return [(-hx, -hy, z0 + z), (hx, -hy, z0 + z), (hx, hy, z0 + z), (-hx, hy, z0 + z)]
+    faces = [(list(reversed(R(*rings[0]))), []), (R(*rings[-1]), [])]
+    for a, b in zip(rings, rings[1:]):
+        if abs(a[2] - b[2]) < 1e-9 and abs(a[0] - b[0]) < 1e-9 and abs(a[1] - b[1]) < 1e-9:
+            continue
+        ra, rb = R(*a), R(*b)
+        for i in range(4):
+            j = (i + 1) % 4
+            faces.append(([ra[i], ra[j], rb[j], rb[i]], []))
+    return fixed(faces)
+
+
+def box3(x0, x1, y0, y1, z0, z1):
+    return box_solid([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], z0, z1)
+
+
+def prism(poly, O, U, V, N, t):
+    """A flat plate: poly [(u, w)] in the plane O + u*U + w*V, t thick along N (centred)."""
+    poly = clean(poly)
+    if not poly or t <= 0:
+        return None
+    if area2(poly) < 0:
+        poly = list(reversed(poly))
+
+    def P(u, w, s):
+        return tuple(O[i] + U[i] * u + V[i] * w + N[i] * s for i in range(3))
+    a = [P(u, w, -t / 2.0) for u, w in poly]
+    b = [P(u, w, t / 2.0) for u, w in poly]
+    faces = [(list(reversed(a)), []), (b, [])]
+    n = len(poly)
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append(([a[i], a[j], b[j], b[i]], []))
+    return fixed(faces)
+
+
+def _meet(p1, p2, p3, p4):
+    """Where line p1-p2 crosses line p3-p4."""
+    d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
+    if abs(d) < 1e-12:
+        return p2
+    t = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d
+    return (p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t)
+
+
+def letter_outline(ch, w, h, s):
+    """A block capital N, E, S or W as one outline [(u, z)], w wide, h tall, strokes s thick."""
+    s = min(s, w * 0.3, h * 0.2)
+    if ch == 'N':
+        d = min(h * 0.4, s * 1.6)
+        return [(0, 0), (s, 0), (s, h - d), (w - s, 0), (w, 0), (w, h), (w - s, h), (w - s, d), (s, h), (0, h)]
+    if ch == 'E':
+        m0, m1 = h / 2 - s / 2, h / 2 + s / 2
+        return [(0, 0), (w, 0), (w, s), (s, s), (s, m0), (w * 0.8, m0), (w * 0.8, m1), (s, m1), (s, h - s),
+                (w, h - s), (w, h), (0, h)]
+    if ch == 'S':
+        m0, m1 = h / 2 - s / 2, h / 2 + s / 2
+        return [(0, 0), (w, 0), (w, m1), (s, m1), (s, h - s), (w, h - s), (w, h), (0, h), (0, m0), (w - s, m0),
+                (w - s, s), (0, s)]
+    # W: four strokes
+    a, sw, pk = w * 0.18, s * 1.15, h * 0.7
+    c0, c1 = (w / 2 - sw / 2, pk), (w / 2 + sw / 2, pk)
+    X = _meet((a + sw, 0), c1, c0, (w - a - sw, 0))
+    Y = _meet((w - sw, h), (w - a - sw, 0), c1, (w - a, 0))
+    Z = _meet((a, 0), c0, (sw, h), (a + sw, 0))
+    return [(0, h), (a, 0), (a + sw, 0), X, (w - a - sw, 0), (w - a, 0), (w, h), (w - sw, h), Y, c1, c0, Z,
+            (sw, h)]
+
+
+def ball_arc(r_from, r_ball, zc, r_to, n=8):
+    """Points round a ball (centre on the axis at zc) from where it is r_from across below the
+    middle to where it is r_to across above it (0 = the very top). [(r, z)]."""
+    a_lo = -math.acos(max(0.0, min(0.999, r_from / r_ball)))
+    a_hi = math.acos(max(0.0, min(1.0, r_to / r_ball)))
+    return [(r_ball * math.cos(a_lo + (a_hi - a_lo) * k / n), zc + r_ball * math.sin(a_lo + (a_hi - a_lo) * k / n))
+            for k in range(n + 1)]
+
+
+def ball_profile(r_neck, r_ball, h_neck, r_top, n=8):
+    """A turned finial: a neck, then a ball, ending flat r_top across (0 = round top).
+    Returns ([(r, z)], height)."""
+    r_ball = max(r_ball, r_neck * 1.2)
+    zc = h_neck + math.sqrt(r_ball ** 2 - r_neck ** 2)
+    arc = ball_arc(r_neck, r_ball, zc, r_top, n)
+    prof = [(0.0, 0.0), (r_neck, 0.0)] + arc
+    top = arc[-1][1]
+    if arc[-1][0] > 1e-6:
+        prof.append((0.0, top))
+    else:
+        prof[-1] = (0.0, top)
+    return prof, top
+
+
+def vane_parts(v, z0=0.0, base_plate=False):
+    """A weather vane on an upright rod standing at (0, 0, z0), local mm: [solids], height."""
+    rr = max(10.0, v['vane_rod']) / 2.0
+    H = max(300.0, v['vane_h'])
+    L = max(200.0, v['vane_len'])
+    t = max(8.0, v['vane_t'])
+    out = []
+    z = z0
+    if base_plate:
+        bp = max(4 * rr, 150.0)
+        out.append(box3(-bp / 2, bp / 2, -bp / 2, bp / 2, z, z + t))
+        z += t
+    # the cardinal arms, with N E S W on their ends, about 40 % of the way up
+    zc = z + H * 0.4
+    al = max(rr * 3, v['vane_arms'] / 2.0)
+    aw = max(t, rr * 1.0)
+    # the rod up to the arms, with a ball on it half way
+    br = rr * 2.2
+    zb = z + (zc - z) * 0.5
+    nb = 8
+    prof = [(0.0, z), (rr, z)] + ball_arc(rr, br, zb, rr, nb) + [(rr, zc), (0.0, zc)]
+    prof = [(r_, z_ - z) for r_, z_ in prof]
+    out.append(lathe(prof, 0.0, 0.0, z, 16))
+    arms = [(-al, -aw / 2), (-aw / 2, -aw / 2), (-aw / 2, -al), (aw / 2, -al), (aw / 2, -aw / 2), (al, -aw / 2),
+            (al, aw / 2), (aw / 2, aw / 2), (aw / 2, al), (-aw / 2, al), (-aw / 2, aw / 2), (-al, aw / 2)]
+    out.append(prism(arms, (0.0, 0.0, zc + t / 2), (1, 0, 0), (0, 1, 0), (0, 0, 1), t))
+    if v.get('vane_letters', True):
+        lh = max(60.0, v['vane_letter'])
+        lw = lh * 0.8
+        ls = max(t, lh * 0.16)
+        zl = zc + t
+        # each letter stands on its arm's end, in the arm's own upright plane
+        for ch, O, U, N in (('E', (al - lw, 0.0, zl), (1, 0, 0), (0, 1, 0)),
+                            ('W', (-al, 0.0, zl), (1, 0, 0), (0, 1, 0)),
+                            ('N', (0.0, al - lw, zl), (0, 1, 0), (1, 0, 0)),
+                            ('S', (0.0, -al, zl), (0, 1, 0), (1, 0, 0))):
+            out.append(prism(letter_outline(ch, lw, lh, ls), O, U, (0, 0, 1), N, aw))
+    # the rod on up through the pointer to a spike
+    za = z + H
+    sh = max(t * 2, v['vane_len'] * 0.08)
+    zt = za + sh + rr * 4
+    out.append(lathe([(0.0, 0.0), (rr, 0.0), (rr, zt - zc - t - rr * 2), (0.0, zt - zc - t)],
+                     0.0, 0.0, zc + t, 16))
+    # the pointer, turning on the rod: an arrow, or a banner with an arrow-head
+    cz = sh / 2
+    if v['vane_style'] == 'banner':
+        bh = sh * 3.0
+        hl, hh = L * 0.25, bh * 0.6
+        cz = bh / 2
+        poly = [(-hl, cz), (0, cz - hh / 2), (0, 0), (L, 0), (L - bh * 0.4, cz), (L, bh), (0, bh), (0, cz + hh / 2)]
+        sft = -(L - hl) / 2.0
+        poly = [(u + sft, w) for u, w in poly]
+        zp = za - bh / 2 + sh / 2
+    else:
+        a_, d_ = -L / 2, L / 2
+        tl, hl = L * 0.22, L * 0.18
+        th, hh = sh * 3.2, sh * 2.6
+        poly = [(a_ + tl * 0.45, cz), (a_, cz - th / 2), (a_ + tl, 0), (d_ - hl, 0), (d_ - hl, cz - hh / 2), (d_, cz),
+                (d_ - hl, cz + hh / 2), (d_ - hl, sh), (a_ + tl, sh), (a_, cz + th / 2)]
+        zp = za
+    out.append(prism(poly, (0.0, 0.0, zp), (1, 0, 0), (0, 0, 1), (0, 1, 0), t))
+    return [s_ for s_ in out if s_], zt - z0
+
+
+def vent_parts(v, kiln=None, kerb=True):
+    """The ventilator in local mm, its foot (the kerb's underside) at z = 0, or the kiln
+    roof's eaves at z = 0 if kiln = (width, depth). Returns ({part: [solids]}, info)."""
+    parts = {}
+    vw = max(300.0, v['vent_w'])
+    c = vw / 2.0
+    z = 0.0
+    if kiln:
+        KW, KD = kiln
+        kh = max(500.0, v['kiln_h'])
+        et = max(20.0, v['kiln_eave'])
+        top = c + max(0.0, v['kiln_top'])
+        if top * 2 >= min(KW, KD) - 1.0:
+            raise ValueError("The ventilator is too big for the kiln roof.")
+        n = max(6, int(v.get('segments', 16)))
+        rings = [(KW / 2, KD / 2, 0.0)] + [(hx, hy, et + z_) for hx, hy, z_ in
+                                          sweep_rings(KW / 2, KD / 2, top, top, kh, v['kiln_sweep'] / 100.0, n)]
+        parts['Kiln roof'] = [ring_stack(rings)]
+        z = et + kh
+    vent = []
+    kb = max(0.0, v['vent_kerb'])
+    if kerb and kb > 0:
+        vent.append(box3(-c, c, -c, c, z, z + kb))
+        z += kb
+    vh = max(200.0, v['vent_h'])
+    ld = max(20.0, min(c * 0.4, v['louvre_d']))
+    lt = max(8.0, v['louvre_t'])
+    nl = max(1, int(v['louvres']))
+    ci = c - ld
+    # the dark core behind the louvres, and a post at each corner
+    vent.append(box3(-ci, ci, -ci, ci, z, z + vh))
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            xa, xb = sorted((sx * ci, sx * c))
+            ya, yb = sorted((sy * ci, sy * c))
+            vent.append(box3(xa, xb, ya, yb, z, z + vh))
+    # the louvre boards on each side, sloping down and out, between the posts
+    p = vh / nl
+    dr = max(0.0, min(ld * 0.9, p - lt - 1.0))
+    for side in range(4):
+        ang = side * math.pi / 2
+        n_ = (math.cos(ang), math.sin(ang), 0.0)
+        u_ = (-math.sin(ang), math.cos(ang), 0.0)
+        for k in range(nl):
+            zk = z + p * k
+            sec = [(0.0, zk + dr), (ld, zk), (ld, zk + lt), (0.0, zk + dr + lt)]
+            O = (n_[0] * ci, n_[1] * ci, 0.0)
+            vent.append(prism(sec, (O[0], O[1], 0.0), n_, (0, 0, 1), u_, 2 * ci))
+    parts['Ventilator'] = [s_ for s_ in vent if s_]
+    z += vh
+    # the cap: flared pagoda eaves (Doig) or a plain pyramid, then a finial
+    co = max(0.0, v['cap_over'])
+    ct = max(20.0, v['cap_t'])
+    chh = max(100.0, v['cap_h'])
+    sweep = v['cap_sweep'] / 100.0 if v['vent_style'] == 'doig' else 0.0
+    fr = max(20.0, v['finial'] * 0.25)
+    rr = max(10.0, v['vane_rod']) / 2.0
+    tr = max(fr * 0.6, rr * 1.2)
+    n = max(6, int(v.get('segments', 16)))
+    rings = [(c + co, c + co, 0.0)] + [(hx, hy, ct + z_) for hx, hy, z_ in
+                                      sweep_rings(c + co, c + co, tr, tr, chh, sweep, n, 0.35)]
+    cap = [ring_stack(rings, z)]
+    z += ct + chh
+    fh = max(0.0, v['finial'])
+    if fh > 0:
+        prof, top = ball_profile(tr * 0.9, max(fr, fh * 0.3), fh * 0.25, rr * 1.05 if v.get('vane') else 0.0)
+        cap.append(lathe(prof, 0.0, 0.0, z, 16))
+        z += top
+    parts['Cap'] = [s_ for s_ in cap if s_]
+    vh_ = 0.0
+    if v.get('vane'):
+        vs, vh_ = vane_parts(v, z)
+        parts['Weather vane'] = vs
+    return parts, {'height': z + vh_, 'louvres': nl * 4, 'width': vw}
+
+
+def place_parts(parts, cx, cy, z0, along):
+    """Local mm parts (x along, y across, z up) to the scene: turned to `along`, at (cx, cy, z0) m."""
+    ax, ay = along
+    S = SCALE
+
+    def f(p):
+        return (cx + (p[0] * ax - p[1] * ay) * S, cy + (p[0] * ay + p[1] * ax) * S, z0 + p[2] * S)
+    return {k: [[([f(q) for q in o], [[f(q) for q in h] for h in hs]) for o, hs in so] for so in sols]
+            for k, sols in parts.items()}
+
+
+def vent_on_roof(v, roof, frame):
+    """A ventilator standing on a roof face, or astride the ridge of two: its kerb cut to the
+    roof. Returns (parts, info)."""
+    S = SCALE
+    along = frame['along']
+    if frame['ridge'] is not None:
+        a0, a1 = frame['ridge']
+        t = v['vent_along'] / 100.0
+        cx, cy = a0[0] + (a1[0] - a0[0]) * t, a0[1] + (a1[1] - a0[1]) * t
+    else:
+        pts = frame['pts']
+        cx, cy = _centroid([(p[0], p[1]) for p in pts])
+    c = v['vent_w'] / 2.0 * S
+    ax, ay = along
+    foot = [(cx + u * ax - w * ay, cy + u * ay + w * ax) for u, w in ((-c, -c), (c, -c), (c, c), (-c, c))]
+    zs = [roof.z(cx, cy)]
+    for (x0, y0), (x1, y1) in zip(foot, foot[1:] + foot[:1]):
+        for k in range(8):
+            t = k / 8.0
+            zs.append(roof.z(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+    z_low, z_high = min(zs), max(zs)
+    zk = z_high + max(50.0, v['vent_kerb']) * S
+    kerb = roof_prism(foot, z_low - 1.0, zk, roof)
+    parts, info = vent_parts(v, None, kerb=False)
+    parts = place_parts(parts, cx, cy, zk, along)
+    parts['Ventilator'] = kerb + parts['Ventilator']
+    info['height'] += (zk - z_low) / S
+    return parts, info
+
+
+# ---------------------------------------------------------------------------
 # Settings and presets
 # ---------------------------------------------------------------------------
-KINDS = [("house", "House stack on a roof"), ("industrial", "Industrial chimney"), ("pots", "Chimney pots only")]
+KINDS = [("house", "House stack on a roof"), ("industrial", "Industrial chimney"), ("pots", "Chimney pots only"),
+         ("vent", "Roof vent / Doig ventilator"), ("vane", "Weather vane only")]
 
 DEFAULTS = dict(kind='house', width=900.0, depth=450.0, height=900.0, along=50.0, up=100.0,
                 oversail=2, oversail_out=28.0, flaunch=60.0,
@@ -1202,7 +1504,13 @@ DEFAULTS = dict(kind='house', width=900.0, depth=450.0, height=900.0, along=50.0
                 brick_l=215.0, brick_h=65.0, brick_d=102.5, joint=10.0, level=True,
                 ind_shape='square', ind_bottom=2400.0, ind_top=1400.0, ind_height=18000.0,
                 plinth_h=2000.0, plinth_out=56.0, band_every=6000.0, band_courses=2, band_out=56.0,
-                cap_courses=4, cap_out=28.0, coping_h=150.0, coping_over=40.0)
+                cap_courses=4, cap_out=28.0, coping_h=150.0, coping_over=40.0,
+                vent_style='doig', kiln=True, kiln_fit=False, vent_w=2400.0, vent_h=1600.0, louvres=6,
+                louvre_d=150.0, louvre_t=40.0, vent_kerb=200.0, cap_h=1600.0, cap_over=500.0, cap_sweep=80.0,
+                cap_t=100.0, finial=500.0, vent_along=50.0,
+                kiln_w=7000.0, kiln_d=7000.0, kiln_h=6000.0, kiln_sweep=60.0, kiln_eave=150.0, kiln_top=150.0,
+                vane=True, vane_style='arrow', vane_letters=True, vane_h=1500.0, vane_len=1000.0, vane_t=30.0,
+                vane_rod=40.0, vane_arms=900.0, vane_letter=250.0)
 
 PRESETS = [
     ("Cottage stack, 2 pots", dict(kind='house', width=900.0, depth=450.0, height=900.0, oversail=2,
@@ -1222,6 +1530,26 @@ PRESETS = [
     ("Engine-house chimney, round", dict(kind='industrial', ind_shape='round', ind_bottom=1800.0,
                                          ind_top=1200.0, ind_height=15000.0, plinth_h=0.0,
                                          band_every=0.0, cap_courses=3)),
+    ("Doig kiln ventilator (distillery)", dict(kind='vent', vent_style='doig', kiln=True, vent_w=2400.0,
+                                               vent_h=1600.0, louvres=6, cap_h=1600.0, cap_over=500.0,
+                                               cap_sweep=80.0, kiln_w=7000.0, kiln_d=7000.0, kiln_h=6000.0,
+                                               kiln_sweep=60.0, vane=True, vane_style='arrow')),
+    ("Doig ventilator only (no kiln roof)", dict(kind='vent', vent_style='doig', kiln=False, vent_w=2400.0,
+                                                 vent_h=1600.0, louvres=6, cap_h=1600.0, cap_over=500.0,
+                                                 cap_sweep=80.0, vane=False)),
+    ("Goods shed ridge vent", dict(kind='vent', vent_style='pyramid', kiln=False, vent_w=1200.0, vent_h=600.0,
+                                   louvres=3, louvre_d=100.0, cap_h=400.0, cap_over=150.0, cap_t=60.0,
+                                   finial=0.0, vane=False, vent_kerb=150.0)),
+    ("Stable louvre with weather vane", dict(kind='vent', vent_style='doig', kiln=False, vent_w=1500.0,
+                                             vent_h=900.0, louvres=4, louvre_d=110.0, cap_h=1000.0,
+                                             cap_over=250.0, cap_sweep=50.0, finial=350.0, vane=True,
+                                             vane_style='banner', vane_h=1100.0, vane_len=800.0)),
+    ("1:80 print - Doig kiln ventilator", dict(kind='vent', vent_style='doig', kiln=True, vent_w=2400.0,
+                                               vent_h=1600.0, louvres=5, louvre_d=160.0, louvre_t=48.0,
+                                               cap_t=120.0, vane=True, vane_t=40.0, vane_rod=60.0,
+                                               vane_letter=320.0)),
+    ("Weather vane, arrow", dict(kind='vane', vane_style='arrow', vane_letters=True, vane_h=1500.0,
+                                 vane_len=1000.0)),
     ("1:80 print - cottage stack", dict(kind='house', width=900.0, depth=450.0, height=900.0, oversail=2,
                                         oversail_out=40.0, pots=2, pot_style='plain', pot_wall=40.0,
                                         joint=16.0)),
@@ -1319,6 +1647,43 @@ FIELDS = [
     ("Industrial", 'coping_h', "Coping height", 0.0, 1000.0, 0, " mm",
      "The stone or iron coping ring on top. 0 = none."),
     ("Industrial", 'coping_over', "Coping overhang", 0.0, 500.0, 0, " mm", "How far the coping overhangs."),
+    ("Vent", 'vent_w', "Ventilator width", 300.0, 10000.0, 0, " mm",
+     "Across the louvred box (it's square), outside the corner posts."),
+    ("Vent", 'vent_h', "Louvred height", 200.0, 10000.0, 0, " mm", "How tall the louvred part is."),
+    ("Vent", 'louvres', "Louvres each side", 1, 30, None, "", "How many sloping louvre boards up each side."),
+    ("Vent", 'louvre_d', "Louvre depth", 20.0, 1000.0, 0, " mm",
+     "How far the louvre boards stand out from the dark core behind them (also the corner posts' size)."),
+    ("Vent", 'louvre_t', "Louvre thickness", 8.0, 200.0, 0, " mm",
+     "How thick each louvre board is. For 1:80 printing 32 mm (0.4 mm) or more."),
+    ("Vent", 'vent_kerb', "Kerb under it", 0.0, 2000.0, 0, " mm",
+     "A plain base under the louvres. On a roof it is cut to the slope and stands this far above the "
+     "highest point under it."),
+    ("Vent", 'cap_h', "Cap height", 100.0, 10000.0, 0, " mm", "How tall the cap roof is, eaves to top."),
+    ("Vent", 'cap_over', "Cap overhang", 0.0, 3000.0, 0, " mm", "How far the cap's eaves stand out past the louvres."),
+    ("Vent", 'cap_sweep', "Pagoda sweep", 0.0, 100.0, 0, " %",
+     "Doig: how much the cap's eaves sweep out flat (the pagoda look). 0 = a straight pyramid."),
+    ("Vent", 'cap_t', "Cap eaves thickness", 20.0, 500.0, 0, " mm", "How thick the cap is at its eaves."),
+    ("Vent", 'finial', "Finial", 0.0, 3000.0, 0, " mm", "A turned ball finial on top of the cap. 0 = none."),
+    ("Vent", 'vent_along', "Along the ridge", 0.0, 100.0, 0, " %",
+     "On two roof faces at the ridge: where it stands along the ridge, 0 = one end, 50 = the middle."),
+    ("Kiln", 'kiln_w', "Kiln roof width", 1000.0, 50000.0, 0, " mm",
+     "Across the kiln roof at its eaves (left to right)."),
+    ("Kiln", 'kiln_d', "Kiln roof depth", 1000.0, 50000.0, 0, " mm", "Front to back at its eaves."),
+    ("Kiln", 'kiln_h', "Kiln roof height", 500.0, 50000.0, 0, " mm",
+     "From the eaves up to the top, where the ventilator stands. Doig's kiln roofs are steep."),
+    ("Kiln", 'kiln_sweep', "Kiln roof sweep", 0.0, 100.0, 0, " %",
+     "How much the kiln roof sweeps out at its eaves. 0 = a straight pyramid."),
+    ("Kiln", 'kiln_eave', "Eaves thickness", 20.0, 1000.0, 0, " mm", "The upright edge round the kiln roof's eaves."),
+    ("Kiln", 'kiln_top', "Flat round the vent", 0.0, 2000.0, 0, " mm",
+     "How far the kiln roof's flat top reaches past the ventilator's kerb."),
+    ("Vane", 'vane_h', "Rod height", 300.0, 10000.0, 0, " mm",
+     "How tall the rod is, from its foot up to the pointer."),
+    ("Vane", 'vane_len', "Pointer length", 200.0, 10000.0, 0, " mm", "Tip to tail of the arrow or banner."),
+    ("Vane", 'vane_t', "Plate thickness", 8.0, 200.0, 0, " mm",
+     "How thick the pointer, arms and letters are. For 1:80 resin printing 24 mm (0.3 mm) or more."),
+    ("Vane", 'vane_rod', "Rod thickness", 10.0, 300.0, 0, " mm", "Across the upright rod."),
+    ("Vane", 'vane_arms', "Arms across", 100.0, 10000.0, 0, " mm", "End to end of the N-S (and E-W) arms."),
+    ("Vane", 'vane_letter', "Letter height", 60.0, 2000.0, 0, " mm", "How tall the N, E, S and W letters are."),
     ("Bricks", 'brick_l', "Length", 50.0, 1000.0, 1, " mm", "The length of a brick. No brick is longer."),
     ("Bricks", 'brick_h', "Height", 20.0, 500.0, 1, " mm", "The height of a brick (one course)."),
     ("Bricks", 'brick_d', "Depth", 20.0, 500.0, 1, " mm",
@@ -1652,6 +2017,43 @@ class ChimneyPreview(QWidget):
                 wz = tw + 2 * v['cap_out'] * int(v['cap_courses']) + 2 * v['coping_over']
                 rect(-wz / 2, Hh, wz / 2, Hh + v['coping_h'], MO)
             cap = "%s chimney, %.1f m high" % (dict(IND_SHAPES).get(v['ind_shape'], ''), Hh / 1000.0)
+        elif kind in ('vent', 'vane'):
+            # the real solids, seen from the front: back faces first, the core dark
+            if kind == 'vent':
+                kiln = (v['kiln_w'], v['kiln_d']) if v.get('kiln') else None
+                try:
+                    parts, info = vent_parts(dict(v, segments=10), kiln)
+                except ValueError as e:
+                    return [], str(e)
+            else:
+                vs, hh = vane_parts(v, 0.0, True)
+                parts, info = {'Weather vane': vs}, {'height': hh}
+            cols = {'Kiln roof': (110, 118, 132), 'Ventilator': (196, 186, 166), 'Cap': (120, 128, 140),
+                    'Weather vane': (60, 64, 70)}
+            ci = v['vent_w'] / 2.0 - max(20.0, min(v['vent_w'] / 2.0 * 0.4, v['louvre_d']))
+            faces = []
+            for nm, sols in parts.items():
+                for so in sols:
+                    xs_ = [q[0] for f, _ in so for q in f]
+                    core = nm == 'Ventilator' and abs((max(xs_) - min(xs_)) / 2.0 - ci) < 1e-6
+                    for f, _ in so:
+                        nrm = _newell(f)
+                        L = v_len(nrm) or 1.0
+                        ny = nrm[1] / L
+                        if ny > -1e-6:
+                            continue
+                        sh = 0.6 + 0.4 * min(1.0, -ny + max(0.0, nrm[2] / L) * 0.5)
+                        c0 = (40, 34, 30) if core else cols.get(nm, (150, 150, 150))
+                        col = tuple(int(min(255, c_ * sh)) for c_ in c0)
+                        faces.append((sum(q[1] for q in f) / len(f), [(q[0], q[2]) for q in f], col))
+            faces.sort(key=lambda t_: -t_[0])
+            out += [('poly', pts, col) for _, pts, col in faces]
+            if kind == 'vent':
+                cap = "%s ventilator %.1f m across, %d louvres a side, %.1f m tall" % (
+                    "Doig" if v['vent_style'] == 'doig' else "Louvred", v['vent_w'] / 1000.0, int(v['louvres']),
+                    info['height'] / 1000.0)
+            else:
+                cap = "Weather vane, %.1f m tall" % (info['height'] / 1000.0)
         else:
             n = max(1, int(v['pots']))
             W = n * v['pot_dia'] * 1.25
@@ -1669,7 +2071,7 @@ class ChimneyDialog(QDialog):
         self.tool = tool
         lay = QVBoxLayout(self)
         intro = QLabel("Select a roof face (or both faces at the ridge) for a stack, or a flat face for a "
-                       "chimney or pots, then Build. Sizes in real mm.")
+                       "chimney, pots, vent or vane, then Build. Sizes in real mm.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
         top = QFormLayout()
@@ -1678,7 +2080,9 @@ class ChimneyDialog(QDialog):
             self.cb_kind.addItem(t, k)
         self.cb_kind.setToolTip("House stack: stands on the roof faces you pick, cut to the slope. Industrial: "
                                 "a tall mill or factory chimney on a flat face (or the origin). Pots only: a row "
-                                "of pots to stand on a stack you've drawn.")
+                                "of pots to stand on a stack you've drawn. Roof vent: a louvred ventilator (Doig's "
+                                "pagoda on a distillery kiln) on a flat face or astride a ridge. Weather vane: "
+                                "a vane on its own.")
         _narrow(self.cb_kind, 14)
         top.addRow("Make", self.cb_kind)
         self.cb_preset = QComboBox()
@@ -1698,7 +2102,7 @@ class ChimneyDialog(QDialog):
         lay.addWidget(self.preview)
         self.tabs = QTabWidget()
         pages = {}
-        for title in ("Stack", "Pots", "Industrial", "Bricks"):
+        for title in ("Stack", "Pots", "Industrial", "Bricks", "Vent", "Kiln", "Vane"):
             pg = QWidget()
             pages[title] = _form(pg)
             self.tabs.addTab(pg, title)
@@ -1706,6 +2110,9 @@ class ChimneyDialog(QDialog):
         self.tabs.setTabToolTip(1, "The chimney pots.")
         self.tabs.setTabToolTip(2, "The industrial chimney: shaft, plinth, bands and cap.")
         self.tabs.setTabToolTip(3, "Brick size and mortar.")
+        self.tabs.setTabToolTip(4, "The roof ventilator: louvred box, cap and finial.")
+        self.tabs.setTabToolTip(5, "The distillery kiln's steep swept roof the Doig ventilator stands on.")
+        self.tabs.setTabToolTip(6, "The weather vane.")
         lay.addWidget(self.tabs)
         self.w = {}
         for tab, key, label, lo, hi, dec, suf, tip in FIELDS:
@@ -1741,6 +2148,37 @@ class ChimneyDialog(QDialog):
         self.cb_fit.setToolTip("Makes the stack longer (and deeper, with two rows) when the pots wouldn't fit "
                                "on it, with a gap between each, in whole half-bricks so the bond stays neat.")
         pages["Pots"].addRow(self.cb_fit)
+        self.cb_vstyle = QComboBox()
+        for k, t in VENT_STYLES:
+            self.cb_vstyle.addItem(t, k)
+        self.cb_vstyle.setToolTip("Doig: Charles Doig's pagoda ventilator, its cap's eaves sweeping out flat. "
+                                  "Pyramid: a plain louvred vent with a straight pyramid cap.")
+        _narrow(self.cb_vstyle, 12)
+        lab = QLabel("Style")
+        lab.setToolTip(self.cb_vstyle.toolTip())
+        pages["Vent"].insertRow(0, lab, self.cb_vstyle)
+        self.cb_kiln = QCheckBox("With the kiln roof under it")
+        self.cb_kiln.setToolTip("On a flat face: builds the steep swept kiln roof too (Kiln tab), with the "
+                                "ventilator on top. Pick the top of the kiln's walls first.")
+        pages["Kiln"].insertRow(0, self.cb_kiln)
+        self.cb_kfit = QCheckBox("Fit the kiln roof to the picked face")
+        self.cb_kfit.setToolTip("Makes the kiln roof's eaves the size of the face you picked (the top of the "
+                                "walls), instead of the width and depth below.")
+        pages["Kiln"].insertRow(1, self.cb_kfit)
+        self.cb_vane = QCheckBox("Weather vane on top")
+        self.cb_vane.setToolTip("Stands a weather vane (Vane tab) on the ventilator's finial.")
+        pages["Vent"].addRow(self.cb_vane)
+        self.cb_vanest = QComboBox()
+        for k, t in VANE_STYLES:
+            self.cb_vanest.addItem(t, k)
+        self.cb_vanest.setToolTip("The pointer: an arrow with a feathered tail, or a banner with an arrow-head.")
+        lab = QLabel("Pointer")
+        lab.setToolTip(self.cb_vanest.toolTip())
+        pages["Vane"].insertRow(0, lab, self.cb_vanest)
+        self.cb_letters = QCheckBox("N, E, S, W arms and letters")
+        self.cb_letters.setToolTip("The cross of arms under the pointer with a letter on each end. Tiny at "
+                                   "1:80: best printed in resin.")
+        pages["Vane"].insertRow(1, self.cb_letters)
         self.cb_level = QCheckBox("Lay the courses level")
         self.cb_level.setToolTip("On a tapered chimney every course is laid level and set in a little from "
                                  "the one below, like a real one. Untick to tilt the bricks to the slope.")
@@ -1767,10 +2205,10 @@ class ChimneyDialog(QDialog):
         self.cb_kind.currentIndexChanged.connect(self.changed)
         for s_ in self.w.values():
             s_.valueChanged.connect(self.redraw)
-        for cb in (self.cb_style, self.cb_shape):
-            cb.currentIndexChanged.connect(self.redraw)
-        for ck in (self.cb_fit, self.cb_level):
-            ck.toggled.connect(self.redraw)
+        for cb in (self.cb_style, self.cb_shape, self.cb_vstyle, self.cb_vanest):
+            cb.currentIndexChanged.connect(self.changed)
+        for ck in (self.cb_fit, self.cb_level, self.cb_kiln, self.cb_kfit, self.cb_vane, self.cb_letters):
+            ck.toggled.connect(self.changed)
         try:
             self.cb_preset.activated.connect(self.preset_picked)
         except Exception:
@@ -1815,12 +2253,16 @@ class ChimneyDialog(QDialog):
         for k, s in self.w.items():
             if k in cur:
                 s.setValue(int(cur[k]) if isinstance(s, QSpinBox) else float(cur[k]))
-        for cb, key in ((self.cb_kind, 'kind'), (self.cb_style, 'pot_style'), (self.cb_shape, 'ind_shape')):
+        for cb, key in ((self.cb_kind, 'kind'), (self.cb_style, 'pot_style'), (self.cb_shape, 'ind_shape'),
+                        (self.cb_vstyle, 'vent_style'), (self.cb_vanest, 'vane_style')):
             for i in range(cb.count()):
                 if cb.itemData(i) == cur.get(key):
                     cb.setCurrentIndex(i)
         self.cb_level.setChecked(bool(cur.get('level', True)))
         self.cb_fit.setChecked(bool(cur.get('fit_pots', True)))
+        for ck, key in ((self.cb_kiln, 'kiln'), (self.cb_kfit, 'kiln_fit'), (self.cb_vane, 'vane'),
+                        (self.cb_letters, 'vane_letters')):
+            ck.setChecked(bool(cur.get(key, DEFAULTS[key])))
 
     def redraw(self, *_):
         try:
@@ -1835,10 +2277,22 @@ class ChimneyDialog(QDialog):
             self.tabs.setTabEnabled(0, kind == 'house')
             self.tabs.setTabEnabled(1, kind in ('house', 'pots'))
             self.tabs.setTabEnabled(2, kind == 'industrial')
-            self.tabs.setTabEnabled(3, kind != 'pots')
-            want = {'house': 0, 'industrial': 2, 'pots': 1}[kind]
+            self.tabs.setTabEnabled(3, kind in ('house', 'industrial'))
+            self.tabs.setTabEnabled(4, kind == 'vent')
+            self.tabs.setTabEnabled(5, kind == 'vent')
+            self.tabs.setTabEnabled(6, kind == 'vane' or (kind == 'vent' and self.cb_vane.isChecked()))
+            want = {'house': 0, 'industrial': 2, 'pots': 1, 'vent': 4, 'vane': 6}[kind]
             if not self.tabs.isTabEnabled(self.tabs.currentIndex()):
                 self.tabs.setCurrentIndex(want)
+            kiln = self.cb_kiln.isChecked()
+            self.w['cap_sweep'].setEnabled(self.cb_vstyle.currentData() == 'doig')
+            self.cb_kfit.setEnabled(kiln)
+            for k in ('kiln_h', 'kiln_sweep', 'kiln_eave', 'kiln_top'):
+                self.w[k].setEnabled(kiln)
+            for k in ('kiln_w', 'kiln_d'):
+                self.w[k].setEnabled(kiln and not self.cb_kfit.isChecked())
+            for k in ('vane_arms', 'vane_letter'):
+                self.w[k].setEnabled(self.cb_letters.isChecked())
         except Exception:
             pass
 
@@ -1846,7 +2300,10 @@ class ChimneyDialog(QDialog):
         v = {k: (int(s.value()) if isinstance(s, QSpinBox) else float(s.value())) for k, s in self.w.items()}
         v.update(kind=self.cb_kind.currentData(), pot_style=self.cb_style.currentData(),
                  ind_shape=self.cb_shape.currentData(), level=self.cb_level.isChecked(),
-                 fit_pots=self.cb_fit.isChecked())
+                 fit_pots=self.cb_fit.isChecked(), vent_style=self.cb_vstyle.currentData(),
+                 vane_style=self.cb_vanest.currentData(), kiln=self.cb_kiln.isChecked(),
+                 kiln_fit=self.cb_kfit.isChecked(), vane=self.cb_vane.isChecked(),
+                 vane_letters=self.cb_letters.isChecked())
         return v
 
 
@@ -1862,7 +2319,8 @@ class ChimneysTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+H"
     description = ("Brick chimney stacks cut to the roof, with oversailing courses, flaunching and pots; "
-                   "industrial chimneys; and chimney pots.")
+                   "industrial chimneys; chimney pots; louvred roof vents and Doig's pagoda kiln ventilators; "
+                   "and weather vanes.")
     _dialog = None
     _saved = None
 
@@ -1919,6 +2377,17 @@ class ChimneysTool(Tool):
                                                               " in two rows" if rep['rows'] == 2 else ""))
                 if rep['widened']:
                     msg += " (Made bigger to fit the pots.)"
+            elif kind == 'vent' and polys and any(abs(v_norm(_newell(p_))[2]) < 0.999 for p_ in polys[:2]):
+                # on a sloping roof face, or astride the ridge of two
+                roof, frame = roof_from_faces(polys[:2])
+                parts, rep = vent_on_roof(v, roof, frame)
+                name = "Roof vent - %.0f" % rep['width']
+                msg = ("Built a %.0f mm %s ventilator %s, its kerb cut to the roof, %d louvres%s." % (
+                    rep['width'], "Doig" if v['vent_style'] == 'doig' else "louvred",
+                    "astride the ridge" if frame['ridge'] is not None else "on the roof face", rep['louvres'],
+                    ", with a weather vane" if v['vane'] else ""))
+                if v['kiln']:
+                    msg += " (No kiln roof: that goes on a flat face, the top of the kiln's walls.)"
             else:
                 cx = cy = z0 = 0.0
                 along = (1.0, 0.0)
@@ -1938,6 +2407,29 @@ class ChimneysTool(Tool):
                     name = "Industrial chimney - %s %.0f m" % (shape.lower(), v['ind_height'] / 1000.0)
                     msg = "Built a %.1f m %s chimney: %d bricks in %d courses." % (
                         rep['height'], shape.lower(), rep['bricks'], rep['courses'])
+                elif kind == 'vent':
+                    kiln = None
+                    if v['kiln']:
+                        kiln = (v['kiln_w'], v['kiln_d'])
+                        if v['kiln_fit'] and polys:
+                            acr = (-along[1], along[0])
+                            us = [p[0] * along[0] + p[1] * along[1] for p in pts]
+                            ws = [p[0] * acr[0] + p[1] * acr[1] for p in pts]
+                            kiln = ((max(us) - min(us)) / SCALE, (max(ws) - min(ws)) / SCALE)
+                            uc, wc = (max(us) + min(us)) / 2.0, (max(ws) + min(ws)) / 2.0
+                            cx, cy = along[0] * uc + acr[0] * wc, along[1] * uc + acr[1] * wc
+                    parts, rep = vent_parts(v, kiln)
+                    parts = place_parts(parts, cx, cy, z0, along)
+                    what = "Doig" if v['vent_style'] == 'doig' else "louvred"
+                    name = ("Doig kiln ventilator" if kiln else "Roof vent") + " - %.0f" % rep['width']
+                    msg = "Built a %.0f mm %s ventilator%s, %d louvres%s, %.1f m tall." % (
+                        rep['width'], what, " on a %.0f x %.0f mm kiln roof" % kiln if kiln else "",
+                        rep['louvres'], ", with a weather vane" if v['vane'] else "", rep['height'] / 1000.0)
+                elif kind == 'vane':
+                    vs, hh = vane_parts(v, 0.0, True)
+                    parts = place_parts({'Weather vane': vs}, cx, cy, z0, along)
+                    name = "Weather vane"
+                    msg = "Built a %.1f m weather vane." % (hh / 1000.0)
                 else:
                     if int(v['pots']) < 1:
                         v['pots'] = 1

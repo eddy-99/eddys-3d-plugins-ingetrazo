@@ -82,7 +82,7 @@ WELD = 1e-4
 DEFAULTS = {'denominator': 50.0, 'pivot': 'bottom', 'mode': 'stl', 'unit': None,
             'check_bed': True, 'bed_x': 220.0, 'bed_y': 220.0, 'bed_z': 250.0,
             'separate': False, 'open_after': False, 'keep_open': False, 'part_gap': 5.0, 'split_depth': 0,
-            'lay_flat': True}
+            'lay_flat': True, 'warn_thin': True, 'nozzle': 0.4}
 
 COPY_GAP = 0.1   # gap between original and copy, as a fraction of the original's width
 
@@ -761,6 +761,273 @@ def mend_cracks(tris, tol=2e-4):
 PIECE_COLOURS = [(230, 90, 70), (60, 140, 220), (90, 180, 80), (240, 170, 40), (160, 90, 200), (40, 180, 180),
                  (220, 100, 170), (140, 110, 60), (120, 160, 40), (90, 90, 200), (200, 60, 110), (60, 120, 90)]
 LOOSE_COLOUR = (175, 175, 172)
+
+
+# ---------------------------------------------------------------------------
+# Checks before printing: faces the wrong way, walls thinner than the nozzle, overlaps
+# ---------------------------------------------------------------------------
+import math
+
+
+def _shells(tris, decimals=4):
+    """Welded corners and the triangles' shells: (keys, [[tri index]]) where a shell is
+    triangles joined edge to edge (an edge shared by exactly two)."""
+    keys = [tuple((round(c[0], decimals), round(c[1], decimals), round(c[2], decimals)) for c in t) for t in tris]
+    edges = {}
+    for i, k in enumerate(keys):
+        for j in range(3):
+            a, b = k[j], k[(j + 1) % 3]
+            if a != b:
+                edges.setdefault((a, b) if a < b else (b, a), []).append(i)
+    nbr = [[] for _ in tris]
+    for e, ts in edges.items():
+        if len(ts) == 2 and ts[0] != ts[1]:
+            nbr[ts[0]].append((ts[1], e))
+            nbr[ts[1]].append((ts[0], e))
+    seen = [False] * len(tris)
+    shells = []
+    for s in range(len(tris)):
+        if seen[s]:
+            continue
+        seen[s] = True
+        comp, stack = [], [s]
+        while stack:
+            i = stack.pop()
+            comp.append(i)
+            for j, _ in nbr[i]:
+                if not seen[j]:
+                    seen[j] = True
+                    stack.append(j)
+        shells.append(comp)
+    return keys, nbr, shells
+
+
+def _runs(k, a, b):
+    """True if the triangle (corner keys k) runs a -> b."""
+    for j in range(3):
+        if k[j] == a and k[(j + 1) % 3] == b:
+            return True
+    return False
+
+
+def fix_winding(tris):
+    """Turns faces that point the wrong way: inside each closed shell every triangle is made to
+    agree with its neighbours, then the whole shell is turned outward if it came out inside out.
+    tris in mm. Returns (tris, triangles turned, shells turned inside-out)."""
+    if not tris:
+        return tris, 0, 0
+    keys, nbr, shells = _shells(tris)
+    flip = [None] * len(tris)
+    for comp in shells:
+        flip[comp[0]] = False
+        stack = [comp[0]]
+        while stack:
+            i = stack.pop()
+            for j, (a, b) in nbr[i]:
+                if flip[j] is not None:
+                    continue
+                # the edge as triangle i runs it (after its own flip)
+                ia = _runs(keys[i], a, b) != flip[i]
+                ja = _runs(keys[j], a, b)
+                flip[j] = (ja == ia)          # both run it the same way: turn j
+                stack.append(j)
+    # whichever way most of a shell's faces point is taken as meant (the first face might be
+    # the odd one out)
+    for comp in shells:
+        if sum(1 for i in comp if flip[i]) * 2 > len(comp):
+            for i in comp:
+                flip[i] = not flip[i]
+    out = [tuple(reversed(t)) if flip[i] else t for i, t in enumerate(tris)]
+    turned_shells = 0
+    for comp in shells:
+        if len(comp) < 4 or any(len(nbr[i]) != 3 for i in comp):
+            continue                  # not closed: its inside and outside can't be told
+        vol = 0.0
+        for i in comp:
+            a, b, c = out[i]
+            vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]))
+        if vol < 0:
+            turned_shells += 1
+            for i in comp:
+                out[i] = tuple(reversed(out[i]))
+                flip[i] = not flip[i]
+    return out, sum(1 for f in flip if f), turned_shells
+
+
+def _tri_n(t):
+    a, b, c = t
+    ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+    vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+    nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+    L = (nx * nx + ny * ny + nz * nz) ** 0.5
+    return (nx / L, ny / L, nz / L, L / 2.0) if L > 1e-15 else None
+
+
+def _ray_hit(o, d, t):
+    """Distance along ray o + s*d to triangle t, or None (Moller-Trumbore)."""
+    a, b, c = t
+    e1 = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    e2 = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    p = (d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0])
+    det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2]
+    if abs(det) < 1e-14:
+        return None
+    inv = 1.0 / det
+    s = (o[0] - a[0], o[1] - a[1], o[2] - a[2])
+    u = (s[0] * p[0] + s[1] * p[1] + s[2] * p[2]) * inv
+    if u < -1e-9 or u > 1 + 1e-9:
+        return None
+    q = (s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0])
+    w = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv
+    if w < -1e-9 or u + w > 1 + 1e-9:
+        return None
+    return (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv
+
+
+def thin_walls(tris, nozzle, samples=4000):
+    """How much of a part is thinner than the nozzle: a ray goes in from each face (a sample of
+    them) and looks for the far side of the wall within one nozzle width (3 % allowed over, so a
+    wall made exactly the nozzle's width passes). tris in printed mm, facing outward. Returns
+    (the usual thickness where it's thin, or None; share of the surface that is thin)."""
+    if not tris or nozzle <= 0:
+        return None, 0.0
+    # each solid on its own: a wall is measured to its own far side, not into a neighbour
+    shell_of = [0] * len(tris)
+    for k_, comp in enumerate(_shells(tris)[2]):
+        for i in comp:
+            shell_of[i] = k_
+    cell = max(nozzle * 2.0, 1e-3)
+    grid, big = {}, []
+    info = []
+    for i, t in enumerate(tris):
+        n = _tri_n(t)
+        info.append(n)
+        if n is None:
+            continue
+        lo = [int(math.floor(min(c[k] for c in t) / cell)) for k in range(3)]
+        hi = [int(math.floor(max(c[k] for c in t) / cell)) for k in range(3)]
+        if (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 3000:
+            big.append(i)
+            continue
+        for x in range(lo[0], hi[0] + 1):
+            for y in range(lo[1], hi[1] + 1):
+                for z in range(lo[2], hi[2] + 1):
+                    grid.setdefault((x, y, z), []).append(i)
+    idx = [i for i in range(len(tris)) if info[i]]
+    step = max(1, len(idx) // samples)
+    area = thin = 0.0
+    hits = []
+    for i in idx[::step]:
+        nx, ny, nz, A = info[i]
+        t = tris[i]
+        cx = (t[0][0] + t[1][0] + t[2][0]) / 3.0
+        cy = (t[0][1] + t[1][1] + t[2][1]) / 3.0
+        cz = (t[0][2] + t[1][2] + t[2][2]) / 3.0
+        d = (-nx, -ny, -nz)
+        area += A
+        e = (cx + d[0] * nozzle, cy + d[1] * nozzle, cz + d[2] * nozzle)
+        cand = set(big)
+        for x in range(int(math.floor(min(cx, e[0]) / cell)), int(math.floor(max(cx, e[0]) / cell)) + 1):
+            for y in range(int(math.floor(min(cy, e[1]) / cell)), int(math.floor(max(cy, e[1]) / cell)) + 1):
+                for z in range(int(math.floor(min(cz, e[2]) / cell)), int(math.floor(max(cz, e[2]) / cell)) + 1):
+                    cand.update(grid.get((x, y, z), ()))
+        best = None
+        for j in cand:
+            if j == i or shell_of[j] != shell_of[i]:
+                continue
+            nj = info[j]
+            # only the far side of the wall, roughly facing the other way (not a sloping face
+            # met at a sharp edge, which isn't the wall's thickness)
+            if nj is None or nj[0] * d[0] + nj[1] * d[1] + nj[2] * d[2] <= 0.8:
+                continue
+            s = _ray_hit((cx, cy, cz), d, tris[j])
+            if s is not None and 1e-5 < s < nozzle * 0.97 and (best is None or s < best):
+                best = s
+        if best is not None:
+            thin += A
+            hits.append((best, A))
+    if not hits:
+        return None, 0.0
+    # the thickness over most of the thin area (not a sliver at a sharp edge)
+    hits.sort()
+    half, acc = thin / 2.0, 0.0
+    usual = hits[-1][0]
+    for th, A in hits:
+        acc += A
+        if acc >= half:
+            usual = th
+            break
+    return usual, (thin / area if area > 0 else 0.0)
+
+
+def overlapping_solids(tris, limit=400):
+    """How many closed solids in a part reach inside another one (they print fine - the slicer
+    merges them - but some slicers mention it). tris in mm, facing outward."""
+    keys, nbr, shells = _shells(tris)
+    shells = [s for s in shells if len(s) >= 4][:limit]
+    if len(shells) < 2:
+        return 0
+    boxes = []
+    for comp in shells:
+        pts = [c for i in comp for c in tris[i]]
+        boxes.append([min(p[k] for p in pts) for k in range(3)] + [max(p[k] for p in pts) for k in range(3)])
+    d = (0.5773, 0.5774, 0.5772)
+    hit = set()
+    work = 0
+    for a in range(len(shells)):
+        for b in range(len(shells)):
+            if a == b or a in hit:
+                continue
+            A, B = boxes[a], boxes[b]
+            if any(A[k] >= B[k + 3] - 1e-3 or B[k] >= A[k + 3] - 1e-3 for k in range(3)):
+                continue
+            # a few points just inside a: is any inside b?
+            comp = shells[a]
+            for i in comp[::max(1, len(comp) // 12)]:
+                n = _tri_n(tris[i])
+                if n is None:
+                    continue
+                t = tris[i]
+                o = tuple((t[0][k] + t[1][k] + t[2][k]) / 3.0 - n[k] * 0.02 for k in range(3))
+                if not all(B[k] < o[k] < B[k + 3] for k in range(3)):
+                    continue
+                work += len(shells[b])
+                if work > 3000000:
+                    return len(hit)
+                cross = sum(1 for j in shells[b] if (lambda s_: s_ is not None and s_ > 1e-7)(_ray_hit(o, d, tris[j])))
+                if cross % 2 == 1:
+                    hit.add(a)
+                    break
+    return len(hit)
+
+
+def check_parts(parts, nozzle=0.0):
+    """Checks parts [(name, tris)] in printed mm before printing. Returns (parts with faces
+    turned the right way, [lines of report], anything worth a warning)."""
+    lines, warn = [], False
+    out = []
+    turned = inside = 0
+    for name, tr in parts:
+        tr, f_, s_ = fix_winding(tr)
+        turned += f_
+        inside += s_
+        out.append((name, tr))
+        if nozzle > 0:
+            th, share = thin_walls(tr, nozzle)
+            if th is not None and share > 0.005:
+                warn = True
+                lines.append("%s: %d%% of it is thinner than the %.2f mm nozzle (about %.2f mm thick)." % (
+                    name, int(round(share * 100)) or 1, nozzle, th))
+        ov = overlapping_solids(tr)
+        if ov:
+            lines.append("%s: %d solid%s overlap another (fine - the slicer joins them)." % (
+                name, ov, "" if ov == 1 else "s"))
+    if turned:
+        lines.insert(0, "Turned %d face%s that pointed the wrong way%s." % (
+            turned, "" if turned == 1 else "s",
+            " (%d solid%s inside out)" % (inside, "" if inside == 1 else "s") if inside else ""))
+    return out, lines, warn
 
 
 def piece_colour(i):
@@ -1981,6 +2248,10 @@ INFO_TEXT = (
     "that type of file.<br>"
     "<b>Keep this window open</b>: select the next part in the model and press the button again - "
     "the sizes follow what's selected.<br><br>"
+    "<b>Checks</b>: every export mends hairline cracks and turns faces that point the wrong way (a solid "
+    "inside out) so the slicer sees closed solids. With 'Warn of walls thinner than the nozzle' it also says "
+    "which parts have walls, rods or letters thinner than your nozzle once scaled - make them thicker, or print "
+    "them in resin. Press Check to see all this before exporting.<br><br>"
     "<b>Model's units</b>: IngeTrazo keeps every model in metres, so this is nearly always Metres. "
     "Only change it for a model that came in 1000 times too big.<br>"
     "<b>Small sizes</b>: under 1 mm is fine detail - good for resin, too small for a 0.4 mm FDM "
@@ -2180,6 +2451,21 @@ class ScaleDialog(QDialog):
         self.cb_flat.setToolTip("Turns each part so its biggest flat face lies on the bed - a sheet on its back, "
                                 "a valance or panel flat - and long side along X, the way you'd print it. "
                                 "Untick to keep it standing the way it is in the model.")
+        self.cb_thin = QCheckBox("Warn of walls thinner than the nozzle")
+        self.cb_thin.setChecked(bool(cur.get('warn_thin', True)))
+        self.cb_thin.setToolTip("On export (and Check), looks for walls, rods and letters thinner than your "
+                                "nozzle once scaled - the slicer may leave them out - and says which parts and "
+                                "how thin. Untick for a resin printer, or to skip it.")
+        self.sp_nozzle = QDoubleSpinBox()
+        self.sp_nozzle.setRange(0.05, 2.0)
+        self.sp_nozzle.setDecimals(2)
+        self.sp_nozzle.setSingleStep(0.05)
+        self.sp_nozzle.setSuffix(" mm")
+        self.sp_nozzle.setValue(float(cur.get('nozzle', 0.4)))
+        self.sp_nozzle.setToolTip("Your printer's nozzle width (0.4 mm usually). Walls thinner than this get a "
+                                  "warning. For resin, try about 0.2 mm.")
+        self.cb_thin.toggled.connect(self.sp_nozzle.setEnabled)
+        self.sp_nozzle.setEnabled(self.cb_thin.isChecked())
         self.cb_keep = QCheckBox("Keep this window open (for scaling lots of parts)")
         self.cb_keep.setChecked(bool(cur.get('keep_open')))
         self.cb_keep.setToolTip("The window stays open after each export or scale: select the next part in "
@@ -2250,6 +2536,11 @@ class ScaleDialog(QDialog):
         self.lab_slicer.setToolTip(self.ed_slicer.toolTip())
         form.addRow(self.lab_slicer, self.slicer_row)
         form.addRow(self.cb_flat)
+        nrow = QHBoxLayout()
+        nrow.addWidget(self.cb_thin)
+        nrow.addWidget(self.sp_nozzle)
+        nrow.addStretch(1)
+        form.addRow(nrow)
         form.addRow(self.cb_keep)
         form.addRow(self.lbl_info)
         form.addRow(self.lbl_report)
@@ -2263,6 +2554,11 @@ class ScaleDialog(QDialog):
         b_defaults.clicked.connect(self.save_defaults)
         b_info = QPushButton("Info")
         b_info.setToolTip("What each setting does, the warnings explained, and what happened last time.")
+        b_check = QPushButton("Check")
+        b_check.setToolTip("Checks what's selected for printing problems without saving: faces pointing the "
+                           "wrong way, cracks and gaps, walls thinner than the nozzle, solids overlapping. "
+                           "Export fixes what it can (faces, cracks) by itself.")
+        b_check.clicked.connect(self.check_now)
         self.b_go = QPushButton("Export...")
         self.b_go.setDefault(True)
         self.b_go.setToolTip("Exports (or scales) what's selected now.")
@@ -2270,6 +2566,7 @@ class ScaleDialog(QDialog):
         brow.addWidget(b_info)
         brow.addWidget(b_defaults)
         brow.addStretch(1)
+        brow.addWidget(b_check)
         brow.addWidget(self.b_go)
         brow.addWidget(b_close)
         lay.addLayout(brow)
@@ -2360,6 +2657,28 @@ class ScaleDialog(QDialog):
         box.setWindowTitle(PLUGIN_NAME + " - Info")
         box.setText(txt)
         box.exec()
+
+    def check_now(self, *_):
+        ents = self.selection()
+        if not ents:
+            self.report("Select the object (a group, or its faces) first.", bad=True)
+            return
+        try:
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import Qt
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        except Exception:
+            pass
+        try:
+            text, bad = self.tool.check_selection(ents, self.get_values())
+        except Exception as e:
+            text, bad = "Couldn't check it: %s" % e, True
+        finally:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+        self.report(text, bad)
 
     def go(self, *_):
         ents = self.selection()
@@ -2541,6 +2860,7 @@ class ScaleDialog(QDialog):
             'split_depth': int(self.cb_depth.currentData() or 0), 'plan': self.plan,
             'open_after': self.cb_open.isChecked(), 'slicer': self.ed_slicer.text().strip(),
             'keep_open': self.cb_keep.isChecked(), 'lay_flat': self.cb_flat.isChecked(),
+            'warn_thin': self.cb_thin.isChecked(), 'nozzle': self.sp_nozzle.value(),
         }
 
 
@@ -2686,12 +3006,6 @@ class PrintScalerTool(Tool):
             parts = [(n, [tuple((c[0] * k, c[1] * k, c[2] * k) for c in t) for t in tr]) for n, tr in raw]
             if not parts:
                 return "Nothing to export: select the object (a group, or its faces) first.", True
-            if p.get('lay_flat', True):
-                parts = [(n, lay_flat(tr)) for n, tr in parts]
-            row = p['bed_x'] if p.get('check_bed') else max(
-                150.0, 1.4 * sum((max(c[0] for t in tr for c in t) - min(c[0] for t in tr for c in t)) *
-                                 (max(c[1] for t in tr for c in t) - min(c[1] for t in tr for c in t))
-                                 for _, tr in parts) ** 0.5)
             mended, left = 0, 0
             fixed_parts = []
             for n_, tr in parts:
@@ -2699,7 +3013,13 @@ class PrintScalerTool(Tool):
                 mended += f_ - l_
                 left += l_
                 fixed_parts.append((n_, tr))
-            parts = fixed_parts
+            parts, checks, thin_warn = check_parts(fixed_parts, p['nozzle'] if p.get('warn_thin') else 0.0)
+            if p.get('lay_flat', True):
+                parts = [(n, lay_flat(tr)) for n, tr in parts]
+            row = p['bed_x'] if p.get('check_bed') else max(
+                150.0, 1.4 * sum((max(c[0] for t in tr for c in t) - min(c[0] for t in tr for c in t)) *
+                                 (max(c[1] for t in tr for c in t) - min(c[1] for t in tr for c in t))
+                                 for _, tr in parts) ** 0.5)
             parts, (sx, sy, sz) = lay_out(parts, row, max(0.5, p.get('part_gap', 5.0)))
             tris = [t for _, tr in parts for t in tr]
         else:
@@ -2715,10 +3035,12 @@ class PrintScalerTool(Tool):
                     tris.append(tuple((x.x() * k, x.y() * k, x.z() * k) for x in q))
             if not tris:
                 return "Those faces couldn't be turned into triangles.", True
-            if p.get('lay_flat', True):
-                tris = lay_flat(tris)
             tris, f_, left = mend_cracks(tris)
             mended = f_ - left
+            cp_, checks, thin_warn = check_parts([("The model", tris)], p['nozzle'] if p.get('warn_thin') else 0.0)
+            tris = cp_[0][1]
+            if p.get('lay_flat', True):
+                tris = lay_flat(tris)
             # on the print bed: centred, standing on z = 0
             xs = [c[0] for t in tris for c in t]
             ys = [c[1] for t in tris for c in t]
@@ -2784,12 +3106,51 @@ class PrintScalerTool(Tool):
         msg = "Saved %s at 1:%g, %.1f x %.1f x %.1f mm:\n%s" % (what, p['denominator'], sx, sy, sz, path)
         if mended:
             msg += "\nMended %d hairline crack%s (open edges) on the way." % (mended, "" if mended == 1 else "s")
+        for ln in checks:
+            msg += "\n" + ln
         if left:
             msg += ("\n%d open edge%s left - the model itself has a gap there; the slicer's Fix (or Netfabb) "
                     "will close it." % (left, "" if left == 1 else "s"))
         if p.get('open_after'):
             msg += "\n" + open_in_slicer(files, p.get('slicer', ''))
-        return msg, False
+        return msg, bool(thin_warn)
+
+    def check_selection(self, entities, p):
+        """The checks the export does, without saving: (report, anything to warn about)."""
+        unit_mm = dict((u[2], u[1]) for u in UNITS).get(p.get('unit') or 'm', 1000.0)
+        k = unit_mm / p['denominator']
+        if p.get('separate'):
+            plan = p.get('plan')
+            if plan and plan.get('pieces'):
+                raw = plan_parts(piece_leaves(entities), plan)
+            else:
+                raw = split_parts(entities, int(p.get('split_depth', 0) or 0))
+        else:
+            raw = [("The model", [t for _, tr in split_parts(entities, 0) for t in tr])]
+        parts = [(n, [tuple((c[0] * k, c[1] * k, c[2] * k) for c in t) for t in tr]) for n, tr in raw if tr]
+        if not parts:
+            return "Nothing to check: select the object (a group, or its faces) first.", True
+        mended = left = 0
+        fixed = []
+        for n_, tr in parts:
+            tr, f_, l_ = mend_cracks(tr)
+            mended += f_ - l_
+            left += l_
+            fixed.append((n_, tr))
+        nz = p['nozzle'] if p.get('warn_thin') else 0.0
+        _, lines, warn = check_parts(fixed, nz)
+        out = ["Checked %d part%s at 1:%g:" % (len(parts), "" if len(parts) == 1 else "s", p['denominator'])]
+        if mended:
+            out.append("%d hairline crack%s - mended on export." % (mended, "" if mended == 1 else "s"))
+        out += [ln.replace("Turned", "Will turn") for ln in lines]
+        if left:
+            out.append("%d open edge%s - a real gap in the model; the slicer's Fix will close it." % (
+                left, "" if left == 1 else "s"))
+            warn = True
+        if len(out) == 1:
+            out.append("No problems found%s." % (
+                " - every wall is at least %.2f mm" % nz if nz > 0 else ""))
+        return "\n".join(out), warn
 
     # ------------------------------------------------------------------ copy
     def _make_copy(self, scene, Mesh, Group, loops, lo, hi, scaled, den):

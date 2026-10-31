@@ -330,7 +330,7 @@ def valance_outline(length, v):
     return outline, holes, n
 
 
-def valance_outline_raked(length, v, sl):
+def valance_outline_raked(length, v, sl, zfun=None):
     """A valance whose top follows a slope (v = sl * u along it), for the open end of a lean-to.
     Each board hangs straight and keeps its true shape and round hole: it is just set up or down
     to the slope as a whole, so there's a small step between one board and the next."""
@@ -340,7 +340,7 @@ def valance_outline_raked(length, v, sl):
     b = length / n
     bottom, holes = [], []
     for k in range(n):
-        lift = sl * (k + 0.5) * b
+        lift = sl * (k + 0.5) * b if zfun is None else zfun((k + 0.5) * b)
         pts, hole = board_bottom(v['valance'], b, h)
         for u, w in pts:
             q = (k * b + u, w + lift)
@@ -348,125 +348,274 @@ def valance_outline_raked(length, v, sl):
                 bottom.append(q)
         if hole and v.get('val_holes', True):
             holes.append(circle(k * b + hole[0], hole[1] + lift, hole[2], hole_sides(v)))
-    outline = bottom + [(length, sl * length), (0.0, 0.0)]
+    if zfun is None:
+        top = [(length, sl * length), (0.0, 0.0)]
+    else:
+        top = [(u, zfun(u)) for u in reversed(profile_ys(0.0, length, zfun, 2 * n))]
+    outline = bottom + top
     return outline, holes, n
 
 
 # ---------------------------------------------------------------------------
 # Columns, posts and brackets
 # ---------------------------------------------------------------------------
-def column_shape(z0, z1, d):
-    """A cast-iron column's outline from z0 (platform) to z1 (under the beam): its turned
-    profile [(radius, z above the turning's foot)], the plinth and abacus heights, and rad(z) -
-    how far the column's surface is from its centre at height z (the plinth and the square abacus
-    measured across their flats)."""
+COL_STYLES = [("castiron", "Cast iron - plain"), ("fluted", "Cast iron - fluted"), ("octagon", "Cast iron - octagonal"),
+              ("doric", "Classical (Doric)"), ("timber", "Timber post - square"),
+              ("chamfer", "Timber post - chamfered"), ("brick", "Brick pier")]
+BRACKET_STYLES = [("auto", "To suit the column"), ("spandrel", "Spandrel with a roundel"),
+                  ("pierced", "Spandrel, three roundels"), ("solid", "Solid spandrel"),
+                  ("arc", "Open arc (curved brace)"), ("knee", "Straight knee brace")]
+TIMBER_STYLES = ('timber', 'chamfer')
+
+
+def col_half(v):
+    """Half the width of the column's shaft (where the brackets start)."""
+    st = v.get('col_style', 'castiron')
+    if st in TIMBER_STYLES:
+        return v['post_w'] / 2.0
+    if st == 'brick':
+        return v.get('pier_w', 340.0) / 2.0
+    return v['col_d'] / 2.0
+
+
+def col_cap_half(v):
+    """Half the width of the column's cap (what the beam sits on)."""
+    st = v.get('col_style', 'castiron')
+    if st in TIMBER_STYLES:
+        return v['post_w'] / 2.0
+    if st == 'brick':
+        return 0.575 * v.get('pier_w', 340.0)
+    if st == 'doric':
+        return 0.75 * v['col_d']
+    return 0.85 * v['col_d']
+
+
+def _rad_from(side, lo, hi, below, above, z):
+    """How far from the centre a turned outline [(r, z)] is at height z."""
+    if z <= lo:
+        return below
+    if z >= hi:
+        return above
+    for (ra, za), (rb, zb) in zip(side, side[1:]):
+        if za - 1e-9 <= z <= zb + 1e-9:
+            return ra if zb - za < 1e-9 else ra + (rb - ra) * (z - za) / (zb - za)
+    return side[-1][0]
+
+
+def column_shape(z0, z1, d, style='castiron'):
+    """A turned column's outline from z0 (platform) to z1 (under the beam): its turned profile
+    [(radius, z above the turning's foot)], the plinth and abacus, and rad(z) - how far the
+    column's surface is from its centre at height z (the square plinth and abacus measured
+    across their flats). breaks: heights where the outline bends; steps: where it jumps."""
     r = d / 2.0
     H = z1 - z0
-    pl = 0.07 * H
-    ab = 0.035 * H
+    if style == 'doric':
+        pl, ab, pl_half, ab_half = 0.04 * H, 0.07 * H, 1.4 * r, 1.5 * r
+    else:
+        pl, ab, pl_half, ab_half = 0.07 * H, 0.035 * H, 1.25 * r, 1.7 * r
     top_turn = z1 - ab
     span = top_turn - (z0 + pl)
-    prof = [(0.0, 0.0), (1.12 * r, 0.0), (1.12 * r, 0.02 * H), (r, 0.05 * H), (0.88 * r, H * 0.8),
-            (1.05 * r, H * 0.81), (1.05 * r, H * 0.83), (0.85 * r, H * 0.84), (1.0 * r, H * 0.88),
-            (1.55 * r, span - 0.002), (0.0, span - 0.002)]
+    if style == 'doric':
+        f = lambda k: k * H                                       # noqa: E731
+        prof = [(0.0, 0.0), (1.25 * r, 0.0), (1.3 * r, f(0.012)), (1.25 * r, f(0.025)), (1.05 * r, f(0.035)),
+                (r, f(0.04)), (1.02 * r, f(0.3)), (0.95 * r, f(0.6)), (0.82 * r, f(0.8)), (0.9 * r, f(0.805)),
+                (0.9 * r, f(0.82)), (0.82 * r, f(0.825)), (1.1 * r, f(0.85)), (1.4 * r, span - 0.002),
+                (0.0, span - 0.002)]
+    else:
+        prof = [(0.0, 0.0), (1.12 * r, 0.0), (1.12 * r, 0.02 * H), (r, 0.05 * H), (0.88 * r, H * 0.8),
+                (1.05 * r, H * 0.81), (1.05 * r, H * 0.83), (0.85 * r, H * 0.84), (1.0 * r, H * 0.88),
+                (1.55 * r, span - 0.002), (0.0, span - 0.002)]
     # keep the turned part strictly between the plinth and the abacus (sunk a hair into each)
     prof = [(rr, min(zz, span)) for rr, zz in prof]
     base = z0 + pl - 0.5
     side = [(rr, base + zz) for rr, zz in prof[1:-1]]          # the outside, bottom to top
+    flat = 0.924 if style == 'octagon' else 1.0                # an octagon, measured across its flats
 
     def rad(z):
         if z >= top_turn - 0.5:
-            return 1.7 * r
+            return ab_half
         if z <= z0 + pl:
-            return 1.25 * r
-        for (ra, za), (rb, zb) in zip(side, side[1:]):
-            if za - 1e-9 <= z <= zb + 1e-9:
-                return ra if zb - za < 1e-9 else ra + (rb - ra) * (z - za) / (zb - za)
-        return r
-    return dict(r=r, H=H, pl=pl, ab=ab, top_turn=top_turn, prof=prof, base=base, side=side, rad=rad)
+            return pl_half
+        rr = _rad_from(side, side[0][1], side[-1][1], side[0][0], side[-1][0], z)
+        if style == 'fluted' and base + 0.05 * H <= z <= base + 0.8 * H:
+            rr = max(rr, 0.94 * r)
+        return rr * flat
+    return dict(r=r, H=H, pl=pl, ab=ab, top_turn=top_turn, prof=prof, base=base, side=side, rad=rad,
+                pl_half=pl_half, ab_half=ab_half, breaks=[z for _r, z in side], steps=[top_turn - 0.5, z0 + pl])
 
 
-def cast_column(x, y, z0, z1, d, nseg=24):
-    """A cast-iron column from z0 (platform) to z1 (under the beam): plinth, moulded base, a
-    slightly tapering shaft, necking, a flared capital and its square abacus."""
-    c = column_shape(z0, z1, d)
+def cast_column(x, y, z0, z1, d, nseg=24, style='castiron'):
+    """A turned column from z0 (platform) to z1 (under the beam): plinth, moulded base, shaft,
+    necking, capital and its square abacus. Plain, fluted or octagonal cast iron, or Doric."""
+    c = column_shape(z0, z1, d, style)
     r = c['r']
+    H = c['H']
     out = []
-    b = box(x - 1.25 * r, x + 1.25 * r, y - 1.25 * r, y + 1.25 * r, z0, z0 + c['pl'])
+    b = box(x - c['pl_half'], x + c['pl_half'], y - c['pl_half'], y + c['pl_half'], z0, z0 + c['pl'])
     if b:
         out.append(b)
-    out.append(lathe(c['prof'], x, y, c['base'], max(8, int(nseg))))
-    a = box(x - 1.7 * r, x + 1.7 * r, y - 1.7 * r, y + 1.7 * r, c['top_turn'] - 0.5, z1)
+    prof = c['prof']
+    if style == 'fluted':
+        # the turned parts round a slim core; the fluted shaft is a separate prism over it
+        new = []
+        for rr, zz in prof:
+            new.append((rr, zz))
+            if abs(zz - 0.05 * H) < 1e-9 and rr > 0:
+                new.append((0.7 * r, zz + 2.0))             # step in to the core at the shaft's foot
+                new.append((0.7 * r, 0.8 * H - 2.0))        # and out again under the necking
+        prof = new
+    if style == 'octagon':
+        out.append(lathe(prof, x, y, c['base'], 8, math.pi / 8.0))
+    else:
+        out.append(lathe(prof, x, y, c['base'], max(8, int(nseg))))
+    if style == 'fluted':
+        nfl = 12
+        m = 4
+        rs = 0.94 * r
+        pts = []
+        for k in range(nfl * m):
+            a = 2 * math.pi * k / (nfl * m)
+            fpos = (k % m) / float(m)
+            rr = rs * (1.0 - 0.09 * math.sin(math.pi * fpos))   # a shallow scoop in each flute
+            pts.append((x + rr * math.cos(a), y + rr * math.sin(a)))
+        zb, ztp = c['base'] + 0.05 * H, c['base'] + 0.8 * H
+        out.append(plate(pts, [], (0.0, 0.0, 0.0), (1, 0, 0), (0, 1, 0), (0, 0, 1), zb, ztp))
+    a = box(x - c['ab_half'], x + c['ab_half'], y - c['ab_half'], y + c['ab_half'], c['top_turn'] - 0.5, z1)
     if a:
         out.append(a)
-    return out
+    return out, c
 
 
-def spandrel(cx, cy, col, zt, S, dirx, diry, t, nseg=24, sl=0.0):
-    """A cast-iron spandrel bracket growing out of a column (col: its column_shape) into the
-    corner under the beam (underside zt): its inner edge follows the column's outline - shaft,
-    necking, capital and abacus - a hair inside it, its top runs along the beam, and a concave
-    curve sweeps from the beam down to the shaft, with a pierced roundel. S is how far it reaches
-    out from the shaft, t how thick it is; it reaches out along (dirx, diry)."""
+def square_column(x, y, z0, z1, v, style):
+    """A square timber post (plain or with chamfered corners and stops), or a brick pier with its
+    plinth and oversailing cap. Returns (solids, shape)."""
+    H = z1 - z0
+    out = []
+    if style == 'brick':
+        pw = max(100.0, v.get('pier_w', 340.0))
+        h = pw / 2.0
+        bands = [(z0, z0 + 0.08 * H, 1.12 * h), (z0 + 0.08 * H - 0.5, z1 - 0.07 * H + 0.5, h),
+                 (z1 - 0.07 * H, z1 - 0.03 * H + 0.5, 1.08 * h), (z1 - 0.03 * H, z1, 1.15 * h)]
+        for za, zb, hh in bands:
+            bx = box(x - hh, x + hh, y - hh, y + hh, za, zb)
+            if bx:
+                out.append(bx)
+
+        def rad(z):
+            for za, zb, hh in reversed(bands):
+                if za - 1e-9 <= z <= zb + 1e-9:
+                    return hh
+            return h
+        return out, dict(r=h, rad=rad, breaks=[], steps=[z1 - 0.07 * H, z1 - 0.03 * H, z0 + 0.08 * H])
+    w = v['post_w']
+    h = w / 2.0
+    if style == 'chamfer':
+        # square at the foot and head, the corners chamfered off between
+        c = 0.2 * w
+        za, zb = z0 + 0.12 * H, z1 - 0.1 * H
+        for lo, hi in ((z0, za + 0.5), (zb - 0.5, z1)):
+            bx = box(x - h, x + h, y - h, y + h, lo, hi)
+            if bx:
+                out.append(bx)
+        oct_ = [(x - h + c, y - h), (x + h - c, y - h), (x + h, y - h + c), (x + h, y + h - c), (x + h - c, y + h),
+                (x - h + c, y + h), (x - h, y + h - c), (x - h, y - h + c)]
+        out.append(box_solid(oct_, za, zb))
+    else:
+        bx = box(x - h, x + h, y - h, y + h, z0, z1)
+        if bx:
+            out.append(bx)
+    return out, dict(r=h, rad=lambda z: h, breaks=[], steps=[])
+
+
+def spandrel(cx, cy, col, zt, S, dirx, diry, t, nseg=24, sl=0.0, kind='spandrel'):
+    """A bracket growing out of a column (col: its shape) into the corner under the beam
+    (underside zt): its inner edge follows the column's outline - shaft, necking, capital and cap -
+    its top runs along the beam, and a concave curve sweeps from the beam down to the shaft.
+    kind: 'spandrel' (a pierced roundel), 'pierced' (three roundels), 'solid', or 'arc' (just a
+    curved band, open in the middle - a curved brace). S is how far it reaches out from the
+    shaft, t how thick it is; it reaches out along (dirx, diry)."""
     n = max(6, int(round(nseg / 2.0)))
     r = col['r']
-    ov = 1.0                                       # sunk 1 mm into the column, so they meet
     w = 0.05 * S                                   # the tips are left this wide (no knife edges)
     R = S - w
     # (u out from the column's centre, v down from the beam) - the curve, beam end to shaft end
     arc = [(r + S - R * math.sin(math.pi / 2 * k / n), -S + R * math.cos(math.pi / 2 * k / n)) for k in range(n + 1)]
-    # the inner edge, up the column from the curve's foot to the beam
-    zs = sorted({zt - S, zt} | {z for _rr, z in col['side'] if zt - S < z < zt} |
-                {col['top_turn'] - 0.5})
-    inner = []
-    for z in zs:
-        if z < zt - S - 1e-9 or z > zt + 1e-9:
-            continue
-        if abs(z - (col['top_turn'] - 0.5)) < 1e-9 and zt - S < z < zt:
-            # the step out to the square abacus
-            inner.append((col['rad'](z - 1e-3) - ov, z - zt))
-            inner.append((1.7 * r - ov, z - zt))
-            continue
-        inner.append((col['rad'](z) - ov, z - zt))
-    inner = [(u, v) for u, v in inner]
-    outline = [(inner[-1][0], 0.0), (r + S, 0.0)] + arc + list(inner[:-1])
-    outline = clean(outline) or []
-    # every point of the curve must stay outside the column
-    if not outline or any(u <= col['rad'](zt + v) for u, v in arc[1:-1]):
-        return None
-    # the pierced roundel: in the roomiest spot of the bracket (found by trying a grid of spots),
-    # a little under half as big as the room there, so a solid ring is left all round it
-    def seg_d(p, a_, b_):
-        dx, dy = b_[0] - a_[0], b_[1] - a_[1]
-        L2 = dx * dx + dy * dy
-        t_ = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((p[0] - a_[0]) * dx + (p[1] - a_[1]) * dy) / L2))
-        return math.hypot(p[0] - a_[0] - dx * t_, p[1] - a_[1] - dy * t_)
+    lo_z, hi_z = zt - S, zt
+    zs = sorted({lo_z, hi_z} | {z for z in col['breaks'] if lo_z < z < hi_z} |
+                {lo_z + (hi_z - lo_z) * k / 10.0 for k in range(1, 10)} |
+                {z for z in col['steps'] if lo_z < z < hi_z})
+    steps = set(z for z in col['steps'] if lo_z < z < hi_z)
+    rad = col['rad']
+    if kind == 'arc':
+        band = max(0.12 * S, min(0.2 * S, t * 2.5))
+        outer = [(r + S - (R + band) * math.sin(math.pi / 2 * k / n), -S + (R + band) * math.cos(math.pi / 2 * k / n))
+                 for k in range(n + 1)]
+        poly = arc + list(reversed(outer))
+        poly = clip_half(poly, 0, -1, 0.0)                          # nothing above the beam
+        umin = max(rad(z) for z in zs if z <= lo_z + band + w + 1e-6)
+        poly = clip_half(poly, 1, 0, -umin) if len(poly) >= 3 else poly
+        outline = clean(poly) if poly and len(poly) >= 3 else None
+        if not outline:
+            return None
+        holes, hc = [], (r, 0.0)
+    else:
+        inner = []
+        for z in zs:
+            if z in steps:
+                inner.append((rad(z - 1e-3), z - zt))
+                inner.append((rad(z + 1e-3), z - zt))
+            else:
+                inner.append((rad(z), z - zt))
+        outline = [(inner[-1][0], 0.0), (r + S, 0.0)] + arc + list(inner[:-1])
+        outline = clean(outline) or []
+        # every point of the curve must stay outside the column
+        if not outline or any(u <= rad(zt + v) for u, v in arc[1:-1]):
+            return None
 
-    def inside(p):
-        c = False
-        for k in range(len(outline)):
-            (x1, y1), (x2, y2) = outline[k], outline[(k + 1) % len(outline)]
-            if (y1 > p[1]) != (y2 > p[1]) and p[0] < x1 + (p[1] - y1) * (x2 - x1) / (y2 - y1):
-                c = not c
-        return c
-    best = (0.0, None)
-    us = [q[0] for q in outline]
-    for gi in range(1, 24):
-        for gj in range(1, 24):
-            p = (min(us) + (max(us) - min(us)) * gi / 24.0, -S * gj / 24.0)
-            if not inside(p):
+        # roundels: in the roomiest spots of the bracket (found by trying a grid of spots), a
+        # little under half as big as the room there, so a solid ring is left round each
+        def seg_d(p, a_, b_):
+            dx, dy = b_[0] - a_[0], b_[1] - a_[1]
+            L2 = dx * dx + dy * dy
+            t_ = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((p[0] - a_[0]) * dx + (p[1] - a_[1]) * dy) / L2))
+            return math.hypot(p[0] - a_[0] - dx * t_, p[1] - a_[1] - dy * t_)
+
+        def inside(p):
+            c = False
+            for k in range(len(outline)):
+                (x1, y1), (x2, y2) = outline[k], outline[(k + 1) % len(outline)]
+                if (y1 > p[1]) != (y2 > p[1]) and p[0] < x1 + (p[1] - y1) * (x2 - x1) / (y2 - y1):
+                    c = not c
+            return c
+        spots = []
+        us = [q[0] for q in outline]
+        for gi in range(1, 28):
+            for gj in range(1, 28):
+                p = (min(us) + (max(us) - min(us)) * gi / 28.0, -S * gj / 28.0)
+                if inside(p):
+                    spots.append((min(seg_d(p, outline[k], outline[(k + 1) % len(outline)])
+                                       for k in range(len(outline))), p))
+        spots.sort(key=lambda e: -e[0])
+        holes, hc, chosen = [], (r, 0.0), []
+        want = {'spandrel': 1, 'pierced': 3}.get(kind, 0)
+        for dmin, p in spots:
+            if len(chosen) >= want:
+                break
+            hr = dmin * 0.45
+            if hr < 0.03 * S:
+                break
+            if any(math.hypot(p[0] - q[0], p[1] - q[1]) < hr + qr + 0.04 * S for q, qr in chosen):
                 continue
-            dmin = min(seg_d(p, outline[k], outline[(k + 1) % len(outline)]) for k in range(len(outline)))
-            if dmin > best[0]:
-                best = (dmin, p)
-    holes = []
-    hc = (r, 0.0)
-    if best[1] is not None and best[0] * 0.45 >= 0.035 * S:
-        hc, hr = best[1], best[0] * 0.45
-        holes = [circle(hc[0], hc[1], hr, max(8, int(round(nseg / 2.0))))]
-    # a sloping beam: every point goes up (or down) with the beam above it (the hole as a whole)
+            chosen.append((p, hr))
+        for p, hr in chosen:
+            holes.append(circle(p[0], p[1], hr, max(8, int(round(nseg / 2.0)))))
+        if chosen:
+            hc = chosen[0][0]
+        centres = [p for p, _hr in chosen]
+    # a sloping beam: every point goes up (or down) with the beam above it (the holes as a whole)
     outline = [(u, v + sl * (u - r)) for u, v in outline]
-    holes = [[(u, v + sl * (hc[0] - r)) for u, v in h] for h in holes]
+    if kind != 'arc':
+        holes = [[(u, v + sl * (c_[0] - r)) for u, v in h] for h, c_ in zip(holes, centres)]
     O = (cx, cy, zt)
     U = (dirx, diry, 0.0)
     V = (0.0, 0.0, 1.0)
@@ -474,17 +623,9 @@ def spandrel(cx, cy, col, zt, S, dirx, diry, t, nseg=24, sl=0.0):
     return plate(outline, holes, O, U, V, W, -t / 2, t / 2)
 
 
-def timber_post(x, y, z0, z1, w):
-    out = []
-    b = box(x - w / 2, x + w / 2, y - w / 2, y + w / 2, z0, z1)
-    if b:
-        out.append(b)
-    return out
-
-
 def knee_brace(cx, cy, cw, zt, S, dirx, diry, bw, t, sl=0.0):
-    """A timber knee brace from the post (half-width cw) up to the beam (underside zt, sloping
-    sl per mm along the brace's reach)."""
+    """A straight knee brace from the post (its face cw out from the centre) up to the beam
+    (underside zt, sloping sl per mm along the brace's reach)."""
     a = S
     # a parallelogram strut: foot on the post, head under the beam
     pts = [(0.0, -a), (0.0, -a + bw * 1.414), (a - bw * 1.414, 0.0), (a, 0.0)]
@@ -497,38 +638,61 @@ def knee_brace(cx, cy, cw, zt, S, dirx, diry, bw, t, sl=0.0):
 
 
 def column_set(v, x, y, z0, zt, along_dirs, out):
-    """A column (or post) at (x, y) from the platform z0 up to the beam underside zt, with its
-    brackets reaching out along each (dx, dy, slope) in along_dirs - the slope being how much the
-    beam over that bracket rises per mm. Everything comes right up to the beam (a true joint)."""
-    ztop = zt
-    if v['col_style'] == 'timber':
-        w = v['post_w']
-        out['Columns'].append(timber_post(x, y, z0, ztop, w))
-        if v.get('brackets', True):
-            for dx, dy, sl in along_dirs:
-                out['Brackets'].append(knee_brace(x, y, w / 2, ztop, v['bracket'], dx, dy, w * 0.6,
-                                                  max(w * 0.6, v.get('bracket_t', 40.0)), sl))
+    """A column (or post, or pier) at (x, y) from the platform z0 up to the beam underside zt,
+    with its brackets reaching out along each (dx, dy, slope) in along_dirs - the slope being how
+    much the beam over that bracket rises per mm. Everything comes right up to the beam."""
+    style = v.get('col_style', 'castiron')
+    nseg = v.get('segments', 24)
+    if style in TIMBER_STYLES or style == 'brick':
+        sols, col = square_column(x, y, z0, zt, v, style)
     else:
-        d = v['col_d']
-        out['Columns'].append(cast_column(x, y, z0, ztop, d, v.get('segments', 24)))
-        if v.get('brackets', True):
-            col = column_shape(z0, ztop, d)
-            for dx, dy, sl in along_dirs:
-                b = spandrel(x, y, col, ztop, v['bracket'], dx, dy, max(5.0, v.get('bracket_t', 40.0)),
-                             v.get('segments', 24), sl)
-                if b:
-                    out['Brackets'].append(b)
+        sols, col = cast_column(x, y, z0, zt, v['col_d'], nseg, style)
+    out['Columns'].append(sols)
+    if not v.get('brackets', True):
+        return
+    kind = v.get('bracket_style', 'auto')
+    if kind == 'auto':
+        kind = 'knee' if style in TIMBER_STYLES else 'spandrel'
+    t = max(5.0, v.get('bracket_t', 40.0))
+    for dx, dy, sl in along_dirs:
+        if kind == 'knee':
+            bw = max(30.0, 0.6 * (v['post_w'] if style in TIMBER_STYLES else 2 * col['r']))
+            b = knee_brace(x, y, col['r'], zt, v['bracket'], dx, dy, bw, max(t, bw if style in TIMBER_STYLES else t), sl)
+        else:
+            b = spandrel(x, y, col, zt, v['bracket'], dx, dy, t, nseg, sl, kind)
+        if b:
+            out['Brackets'].append(b)
+
+
+CURVE_GRID = [0.0]                 # set while a curved (bell-cast) lean-to is built
+
+
+def profile_ys(y0, y1, zfun, n=12):
+    """y positions along y0..y1 to follow zfun(y) by: just the ends where it's straight, more
+    where it curves (a bell-cast roof), and the ridge at y = 0 if there is one between."""
+    mid = zfun((y0 + y1) / 2.0)
+    lin = (zfun(y0) + zfun(y1)) / 2.0
+    if abs(mid - lin) > 0.05:
+        if CURVE_GRID[0]:
+            # the same points everywhere along the curve, so a beam's top and the roof's underside
+            # are made of the same straight bits and meet exactly
+            st = CURVE_GRID[0]
+            k0, k1 = int(math.floor(y0 / st)) + 1, int(math.ceil(y1 / st)) - 1
+            ys = [y0] + [k * st for k in range(k0, k1 + 1) if y0 + 1e-6 < k * st < y1 - 1e-6] + [y1]
+        else:
+            ys = [y0 + (y1 - y0) * k / float(n) for k in range(n + 1)]
+    else:
+        ys = [y0, y1]
+    if y0 < 0.0 < y1 and 0.0 not in ys:
+        ys = sorted(ys + [0.0])
+    return ys
 
 
 def beam_x(x0, x1, y0, y1, zbot, ztop):
     """A beam running along x from x0 to x1, between y0 and y1: flat underneath at zbot, its top
     cut to fit what's on it - ztop(x, y), the roof's underside - so they meet with no gap. A roof
     with a ridge (or a butterfly valley) at y = 0 over the beam gives its top the same ridge."""
-    ys = [y0, y1]
-    if y0 < 0.0 < y1:
-        mid = ztop(0.0, 0.0)
-        if abs(mid - (ztop(0.0, y0) + (ztop(0.0, y1) - ztop(0.0, y0)) * (-y0) / (y1 - y0))) > 1e-6:
-            ys = [y0, 0.0, y1]
+    ys = profile_ys(y0, y1, lambda y: ztop(0.0, y), 6)
     sec = [(y0, zbot), (y1, zbot)] + [(y, ztop(0.0, y)) for y in reversed(ys)]
     sec = clean(sec)
     if not sec:
@@ -536,11 +700,47 @@ def beam_x(x0, x1, y0, y1, zbot, ztop):
     return plate(sec, [], (x0, 0.0, 0.0), (0, 1, 0), (0, 0, 1), (1, 0, 0), 0.0, x1 - x0)
 
 
+def x_runs(x0, x1, cuts):
+    """The pieces of a run from x0 to x1 between the cross members at cuts [(a, b)]: so a beam
+    along the canopy stops at each one and butts up to it, rather than running through it."""
+    out, x = [], x0
+    for a, b in sorted((max(x0, a), min(x1, b)) for a, b in cuts if b > x0 and a < x1):
+        if a - x > 1.0:
+            out.append((x, a))
+        x = max(x, b)
+    if x1 - x > 1.0:
+        out.append((x, x1))
+    return out
+
+
+def beams_x(runs, y0, y1, zbot, ztop):
+    return [beam_x(a, b, y0, y1, zbot, ztop) for a, b in runs]
+
+
+def ridge_cap(c, w, roof_top, length, along='x', h=None):
+    """A capping piece sitting on a ridge at c (y = c running along x, or x = c running along y),
+    its underside shaped to the two roof slopes so it sits on them with no gap, w each side."""
+    zr = roof_top(c)
+    top = zr + (h if h is not None else 0.6 * w)
+    sec = [(c - w, roof_top(c - w)), (c, zr), (c + w, roof_top(c + w)), (c + w, top), (c - w, top)]
+    sec = clean(sec)
+    if not sec:
+        return None
+    if along == 'x':
+        return plate(sec, [], (0.0, 0.0, 0.0), (0, 1, 0), (0, 0, 1), (1, 0, 0), 0.0, length)
+    return plate(sec, [], (0.0, 0.0, 0.0), (1, 0, 0), (0, 0, 1), (0, 1, 0), 0.0, length)
+
+
 def cross_beam(x, bw, y0, y1, zf, depth):
     """A beam across the canopy (along y) at x, bw wide, depth deep, its top following the roof's
     underside, so they meet with no gap."""
-    return sloped_slab(x - bw / 2, x + bw / 2, min(y0, y1), max(y0, y1), lambda x_, y_: zf(x_, y_) - depth,
-                       depth)
+    y0, y1 = min(y0, y1), max(y0, y1)
+    ys = profile_ys(y0, y1, lambda y: zf(x, y))
+    sec = [(y, zf(x, y) - depth) for y in ys] + [(y, zf(x, y)) for y in reversed(ys)]
+    sec = clean(sec)
+    if not sec:
+        return None
+    return plate(sec, [], (x - bw / 2, 0.0, 0.0), (0, 1, 0), (0, 0, 1), (1, 0, 0), 0.0, bw)
 
 
 def flashing_section(zr, v):
@@ -614,10 +814,58 @@ def roof_mono(x0, x1, y0, y1, zf, v, out, bars_along='y'):
             n = int(round((a1 - a0) / sp))
             for k in range(1, max(1, n)):
                 c = a0 + (a1 - a0) * k / n
-                r_ = lead_roll(c, (y0, y1) if bars_along == 'y' else (x0, x1), bars_along, zf, t, rr,
+                s0, s1 = (y0, y1) if bars_along == 'y' else (x0, x1)
+                # the rolls stop short of a flashing's apron or a ridge capping
+                s0 += v.get('_roll_from', 0.0) + v.get('_trim0', 0.0)
+                s1 -= v.get('_trim1', 0.0)
+                if s1 - s0 < 4 * rr:
+                    continue
+                r_ = lead_roll(c, (s0, s1), bars_along, zf, t, rr,
                                v.get('segments', 24))
                 if r_:
                     out['Roof'].append(r_)
+
+
+def roof_swept(x0, x1, D, zf, v, out):
+    """A lean-to roof that sweeps (bell-cast) from the wall (y = 0) to the front (y = D): the
+    roof (or each glazing bar and pane) is one piece whose section follows the curve."""
+    t = max(5.0, v['roof_t'])
+    ys = profile_ys(0.0, D, lambda y: zf(0.0, y), max(12, int(v.get('segments', 24))))
+
+    def piece(a, b, z0, th):
+        sec = [(y, zf(0.0, y) + z0) for y in ys] + [(y, zf(0.0, y) + z0 + th) for y in reversed(ys)]
+        return plate(clean(sec), [], (a, 0.0, 0.0), (0, 1, 0), (0, 0, 1), (1, 0, 0), 0.0, b - a)
+    if v['roof'] == 'glazed':
+        bw = max(10.0, v['bar_w'])
+        sp = max(bw * 3, v['bar_sp'])
+        gt = max(2.0, min(t * 0.3, 12.0))
+        n = max(1, int(round((x1 - x0) / sp)))
+        xs_ = [x0 + (x1 - x0) * k / n for k in range(n + 1)]
+        for k, xb in enumerate(xs_):
+            out['Roof'].append(piece(max(x0, xb - bw / 2), min(x1, xb + bw / 2), 0.0, t))
+            if k < n and xs_[k + 1] - bw / 2 > xb + bw / 2:
+                out['Glass'].append(piece(xb + bw / 2, xs_[k + 1] - bw / 2, t * 0.5, gt))
+        return
+    out['Roof'].append(piece(x0, x1, 0.0, t))
+    if v['roof'] == 'lead':
+        rr = max(5.0, v.get('roll_d', 50.0)) / 2.0
+        sp = max(4 * rr, v.get('roll_sp', 600.0))
+        n = int(round((x1 - x0) / sp))
+        y_from = v.get('_roll_from', 0.0)
+        path_ys = [y for y in ys if y >= y_from - 1e-9]
+        if y_from > 0 and (not path_ys or path_ys[0] > y_from):
+            path_ys = [y_from] + path_ys
+        if len(path_ys) < 2:
+            return
+        for k in range(1, max(1, n)):
+            c = x0 + (x1 - x0) * k / n
+            path = [(c, y, zf(0.0, y) + t) for y in path_ys]
+
+            def outward(i, path_ys=path_ys):
+                a, b = path_ys[max(0, i - 1)], path_ys[min(len(path_ys) - 1, i + 1)]
+                dz = (zf(0.0, b) - zf(0.0, a)) / ((b - a) or 1.0)
+                return v_norm((0.0, -dz, 1.0))
+            out['Roof'].append(swept_roll(path, outward, rr, v.get('segments', 24)))
 
 
 def lead_roll(c, span, along, zf, t, rr, nseg=24):
@@ -625,8 +873,8 @@ def lead_roll(c, span, along, zf, t, rr, nseg=24):
     span: a round-topped roll rr across its half-width, standing on the lead (sunk 0.5 mm into
     it, so they join), following the roof's slope."""
     n = max(4, int(round(nseg / 4.0)))
-    sec = [(-rr, -0.5)] + [(-rr * math.cos(math.pi * k / n), 0.6 * rr + rr * math.sin(math.pi * k / n))
-                           for k in range(n + 1)] + [(rr, -0.5)]
+    sec = [(-rr, 0.0)] + [(-rr * math.cos(math.pi * k / n), 0.6 * rr + rr * math.sin(math.pi * k / n))
+                           for k in range(n + 1)] + [(rr, 0.0)]
     sec = [(u, w) for i_, (u, w) in enumerate(sec) if i_ == 0 or (u, w) != sec[i_ - 1]]
 
     def P(u, w, s_):
@@ -682,8 +930,8 @@ def swept_roll(path, outward, rr, nseg=24):
     the roof, standing out along outward(i) (the roof's outward direction there). Sunk 0.5 mm
     into the roof so they join. Made of triangles (the path curves)."""
     n = max(4, int(round(nseg / 4.0)))
-    prof = [(-rr, -0.5)] + [(-rr * math.cos(math.pi * k / n), 0.6 * rr + rr * math.sin(math.pi * k / n))
-                            for k in range(n + 1)] + [(rr, -0.5)]
+    prof = [(-rr, 0.0)] + [(-rr * math.cos(math.pi * k / n), 0.6 * rr + rr * math.sin(math.pi * k / n))
+                            for k in range(n + 1)] + [(rr, 0.0)]
     prof = [q for i, q in enumerate(prof) if i == 0 or q != prof[i - 1]]
     secs = []
     m = len(path)
@@ -728,7 +976,7 @@ def build_bell(v, cx, cy, out):
     if ch > 0:
         lip = min(Wt, Dt) * 0.08
         out['Roof'].append(box(cx - Wt / 2 - lip, cx + Wt / 2 + lip, cy - Dt / 2 - lip, cy + Dt / 2 + lip,
-                               z_e + H - 0.5, z_e + H + ch))
+                               z_e + H, z_e + H + ch))
     rolls = 0
     if v['roof'] == 'lead':
         rr = max(5.0, v.get('roll_d', 50.0)) / 2.0
@@ -802,10 +1050,31 @@ def build_bell(v, cx, cy, out):
     if on_cols:
         zt = z_e - t - fh                              # the fascia's underside
         c_in = ft_ / 2.0
-        for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
-            x_ = cx + sx * (fo_w / 2 - c_in)
-            y_ = cy + sy * (fo_d / 2 - c_in)
-            column_set(v, x_, y_, 0.0, zt, [(-sx, 0, 0.0), (0, -sy, 0.0)], out)
+        hx, hy = fo_w / 2 - c_in, fo_d / 2 - c_in
+        per = max(2, int(v.get('bell_ncol', 2)))       # columns along each side, corners included
+        spots = set()
+        for k in range(per):
+            f = -1.0 + 2.0 * k / (per - 1)
+            for p_ in ((f * hx, -hy), (f * hx, hy), (-hx, f * hy), (hx, f * hy)):
+                spots.add((round(p_[0], 6), round(p_[1], 6)))
+        reach_ = max(0.0, v['bracket']) + col_half(v)
+        for px, py in sorted(spots):
+            dirs = []
+            corner = abs(abs(px) - hx) < 1e-6 and abs(abs(py) - hy) < 1e-6
+            on_x = abs(abs(py) - hy) < 1e-6           # on a front or back side: brackets along x
+            on_y = abs(abs(px) - hx) < 1e-6
+            if corner:
+                dirs = [(-1 if px > 0 else 1, 0, 0.0), (0, -1 if py > 0 else 1, 0.0)]
+            elif on_x:
+                dirs = [(1, 0, 0.0), (-1, 0, 0.0)]
+            elif on_y:
+                dirs = [(0, 1, 0.0), (0, -1, 0.0)]
+            step_x = (2 * hx / (per - 1)) if per > 1 else 2 * hx
+            step_y = (2 * hy / (per - 1)) if per > 1 else 2 * hy
+            # no bracket reaching past the next column
+            dirs = [d for d in dirs if (abs(d[0]) and step_x >= 2 * reach_) or (abs(d[1]) and step_y >= 2 * reach_)
+                    or corner]
+            column_set(v, cx + px, cy + py, 0.0, zt, dirs, out)
             ncol += 1
     return dict(columns=ncol, boards=boards, depth=D, rolls=rolls, width=W)
 
@@ -817,6 +1086,10 @@ KINDS = [("lean", "Lean-to (off a wall)"), ("island", "Island / umbrella"), ("ri
 def build_canopy(L, v):
     """Every part of a canopy L long (local mm). Returns ({group: [item]}, info), an item being a list of solids."""
     out = {'Columns': [], 'Brackets': [], 'Beams': [], 'Roof': [], 'Glass': [], 'Valance': [], 'Flashing': []}
+    slopes = []                     # where each roof slope starts in Roof/Glass (a piece per slope)
+
+    def slope():
+        slopes.append((len(out['Roof']), len(out['Glass'])))
     kind = v['kind']
     t = max(5.0, v['roof_t'])
     bd = max(50.0, v['beam_d'])
@@ -829,28 +1102,46 @@ def build_canopy(L, v):
     xs = [end_in + (L - 2 * end_in) * k / n_b for k in range(n_b + 1)]
     boards = 0
     # a bracket isn't put where it would stick out past the end of the canopy
-    reach = max(0.0, v['bracket']) + (v['post_w'] if v['col_style'] == 'timber' else v['col_d']) / 2.0
+    reach = max(0.0, v['bracket']) + col_half(v)
     if kind in ('lean', 'ridge'):
         D = max(500.0, v['depth'])
         Hf, Hb = v['h_front'], max(v['h_front'], v['h_back'])
         if kind == 'ridge':
             Hb = Hf
 
+        sweep = max(0.0, min(1.0, v.get('lean_sweep', 0.0) / 100.0)) if kind == 'lean' else 0.0
+        kq = 1.0 + 2.5 * sweep
+        CURVE_GRID[0] = D / max(12, int(v.get('segments', 24))) if sweep > 0 else 0.0
+
         def zf(x, y):                                  # the roof's underside
-            return Hb + (Hf - Hb) * y / D
+            if sweep <= 0.0:
+                return Hb + (Hf - Hb) * y / D
+            # bell-cast: steep off the wall, sweeping out flat at the front
+            u = max(0.0, min(1.0, y / D))
+            return Hb + (Hf - Hb) * (1.0 - (1.0 - u) ** kq)
         yc = D - max(0.0, v['col_set'])
         zt = zf(0, yc) - bd                            # the beam's underside over the columns
-        # the beam along the columns, a fascia along the front, a plate on the wall (their tops
-        # just under the roof all the way across)
-        out['Beams'].append(beam_x(0.0, L, yc - bwid / 2, yc + bwid / 2, zt, zf))
-        out['Beams'].append(beam_x(0.0, L, D - bwid, D, zf(0, D) - bd * 0.6, zf))
-        out['Beams'].append(beam_x(0.0, L, 0.0, bwid * 0.8, zf(0, 0) - bd * 0.6, zf))
         level = abs(Hf - Hb) < 1e-6                    # a flat roof (ridge and furrow)
+        # where the members across the canopy are (the rafters or cross beams at the columns, and
+        # the valley beams of a ridge and furrow roof): the beams along it butt up to them
+        cuts = [(x - bwid / 2, x + bwid / 2) for x in xs]
+        if kind == 'ridge':
+            rw_ = L / max(1, int(round(L / max(500.0, v['rf_w']))))
+            valleys = [rw_ * k for k in range(int(round(L / rw_)) + 1)]
+            cuts += [(x - bwid / 2, x + bwid / 2) for x in valleys]
+        runs = x_runs(0.0, L, cuts)
+        # the beam along the columns, a fascia along the front, a plate on the wall - in lengths
+        # between the cross members, their tops cut to the roof
+        out['Beams'] += beams_x(runs, yc - bwid / 2, yc + bwid / 2, zt, zf)
+        out['Beams'] += beams_x(runs, D - bwid, D, zf(0, D) - bd * 0.6, zf)
+        out['Beams'] += beams_x(runs, 0.0, bwid * 0.8, zf(0, 0) - bd * 0.6, zf)
         for x in xs:
             dirs = [(1, 0, 0.0), (-1, 0, 0.0)]
             if level:
-                # a cross beam at each column, from the wall to the front
-                out['Beams'].append(cross_beam(x, bwid, 0.0, D, zf, bd))
+                # a cross beam at each column, from the wall to the front (unless a valley beam
+                # is already there)
+                if kind != 'ridge' or min(abs(x - x_) for x_ in valleys) >= bwid:
+                    out['Beams'].append(cross_beam(x, bwid, 0.0, D, zf, bd))
                 if D - yc >= reach:
                     dirs.append((0, 1, 0.0))
                 if yc >= reach + 0.5:
@@ -875,7 +1166,12 @@ def build_canopy(L, v):
             dirs = [d for d in dirs if not (d[0] == -1 and x - reach < -1.0) and not (d[0] == 1 and x + reach > L + 1.0)]
             column_set(v, x, yc, 0.0, zt, dirs, out)
         if kind == 'lean':
-            roof_mono(0.0, L, 0.0, D, zf, v, out, 'y')
+            # with a flashing, the lead rolls stop where its apron starts
+            v = dict(v, _roll_from=(max(1.0, v.get('flash_cover', 150.0)) if v.get('flash') else 0.0))
+            if sweep > 0.0:
+                roof_swept(0.0, L, D, zf, v, out)
+            else:
+                roof_mono(0.0, L, 0.0, D, zf, v, out, 'y')
             z_front_top = zf(0, D) + t
             if v.get('flash'):
                 out['Flashing'].append(wall_flashing(L, zf, t, v))
@@ -894,18 +1190,21 @@ def build_canopy(L, v):
                 def zr(x, y, xm=xm, xb=xb):
                     return Hf + rise * (xb - x) / (xb - xm)
                 # each slope's glazing bars run down it (across x), spaced along y
-                roof_mono(xa, xm, 0.0, D, zl, v, out, 'x')
-                roof_mono(xm, xb, 0.0, D, zr, v, out, 'x')
-                # ridge roll and furrow gutter (they sit over the slab edges)
-                out['Beams'].append(box(xm - bwid * 0.4, xm + bwid * 0.4, 0.0, D, Hf + rise - t * 0.3,
-                                        Hf + rise + t * 1.2))
-                # the gable end over the front: a boarded triangle
+                cw_ = bwid * 0.4                        # the ridge capping's half-width
+                slope()
+                roof_mono(xa, xm, 0.0, D, zl, dict(v, _trim1=cw_), out, 'x')
+                slope()
+                roof_mono(xm, xb, 0.0, D, zr, dict(v, _trim0=cw_), out, 'x')
+                # the ridge capping, sitting on the two slopes
+                out['Beams'].append(ridge_cap(xm, bwid * 0.4, lambda x_, zl=zl, zr=zr, xm=xm:
+                                              (zl(x_, 0) if x_ <= xm else zr(x_, 0)) + t, D, 'y', t * 1.2))
+                # the gable end over the front: a boarded triangle, standing on the valance's top
+                # line in front of the slope ends
                 tri = [(xa, 0.0), (xb, 0.0), (xm, rise)]
-                out['Beams'].append(plate(tri, [], (0.0, D, Hf), (1, 0, 0), (0, 0, 1), (0, -1, 0), 0.0, vt))
-            for k in range(n_r + 1):
-                x = rw * k
-                out['Beams'].append(box(max(0.0, x - bwid / 2), min(L, x + bwid / 2), 0.0, D,
-                                        Hf - bd * 0.4, Hf + t * 0.6))
+                out['Beams'].append(plate(tri, [], (0.0, D, Hf), (1, 0, 0), (0, 0, 1), (0, 1, 0), 0.0, vt))
+            # the valley beams under the furrows (their tops meeting the slopes at the valley line)
+            for x in valleys:
+                out['Beams'].append(box(max(0.0, x - bwid / 2), min(L, x + bwid / 2), 0.0, D, Hf - bd * 0.4, Hf))
             z_front_top = Hf
         # valancing along the front, hanging from the fascia. With end valances it runs on past
         # each end to cover their ends.
@@ -919,10 +1218,11 @@ def build_canopy(L, v):
         if ends:
             sl = (Hf - Hb) / D
             for xe, sgn in ((0.0, -1.0), (L, 1.0)):
-                o2, h2, nb2 = valance_outline_raked(D, v, sl)
+                o2, h2, nb2 = valance_outline_raked(D, v, sl, (lambda u: zf(0.0, u) - Hb) if sweep > 0 else None)
                 out['Valance'].append(plate(o2, h2, (xe, 0.0, Hb + t), (0, 1, 0), (0, 0, 1),
                                             (sgn, 0, 0), 0.0, vt))
                 boards += nb2
+        CURVE_GRID[0] = 0.0
         info = dict(columns=len(xs), boards=boards, depth=D)
     elif kind == 'bell':
         info = build_bell(v, L / 2.0, 0.0, out)
@@ -939,11 +1239,18 @@ def build_canopy(L, v):
             return Hc - d * math.tan(pitch) if not butterfly else Hc - (half - d) * math.tan(pitch)
         z_mid = zf(0, 0)
         zt = z_mid - bd if not butterfly else Hc - half * math.tan(pitch) - bd
-        out['Beams'].append(beam_x(0.0, L, -bwid / 2, bwid / 2, zt, zf))
+        if not butterfly:
+            # the cross beams fall away from the ridge: the column's cap is set down so its edges
+            # just meet them, rather than poking up into them
+            cap_half = col_cap_half(v)
+            zt -= cap_half * math.tan(pitch)
+        # the beams along it in lengths between the cross beams at the columns
+        runs = x_runs(0.0, L, [(x - bwid / 2, x + bwid / 2) for x in xs])
+        out['Beams'] += beams_x(runs, -bwid / 2, bwid / 2, zt, zf)
         for sgn in (-1.0, 1.0):
             yy = sgn * half
             y0_, y1_ = min(yy, yy - sgn * bwid), max(yy, yy - sgn * bwid)
-            out['Beams'].append(beam_x(0.0, L, y0_, y1_, zf(0, yy) - bd * 0.6, zf))
+            out['Beams'] += beams_x(runs, y0_, y1_, zf(0, yy) - bd * 0.6, zf)
         sl = (-1.0 if not butterfly else 1.0) * math.tan(pitch)     # the roof's rise per mm outwards
         for x in xs:
             # a cross beam each way from the column out to the eaves, under the roof
@@ -955,12 +1262,17 @@ def build_canopy(L, v):
             dirs = [d for d in dirs if not (d[0] == -1 and x - reach < -1.0) and not (d[0] == 1 and x + reach > L + 1.0)]
             column_set(v, x, 0.0, 0.0, zt, dirs, out)
         if butterfly:
+            slope()
             roof_mono(0.0, L, -half, 0.0, zf, v, out, 'y')
+            slope()
             roof_mono(0.0, L, 0.0, half, zf, v, out, 'y')
         else:
-            roof_mono(0.0, L, -half, 0.0, zf, v, out, 'y')
-            roof_mono(0.0, L, 0.0, half, zf, v, out, 'y')
-            out['Beams'].append(box(0.0, L, -bwid * 0.4, bwid * 0.4, z_mid - 0.5, z_mid + t * 1.3))
+            cw_ = bwid * 0.4                            # the ridge capping's half-width
+            slope()
+            roof_mono(0.0, L, -half, 0.0, zf, dict(v, _trim1=cw_), out, 'y')
+            slope()
+            roof_mono(0.0, L, 0.0, half, zf, dict(v, _trim0=cw_), out, 'y')
+            out['Beams'].append(ridge_cap(0.0, bwid * 0.4, lambda y_: zf(0, y_) + t, L, 'x', t * 1.2))
         for sgn in (-1.0, 1.0):
             outline, holes, nb = valance_outline(L, v)
             yy = sgn * half
@@ -969,11 +1281,17 @@ def build_canopy(L, v):
             boards += nb
         info = dict(columns=len(xs), boards=boards, depth=Wd)
     # items: each column (with its base and cap), bracket, beam and valance strip is one item,
-    # to be its own group; the roof (with any glazing bars) and the glass are one item each
+    # to be its own group; the roof (with any glazing bars) and the glass are one item each, or
+    # one per slope on a two-slope roof, so each slope can be printed flat on its own
     items = {}
     for k, lst in out.items():
         if k == 'Columns':
             its = [[s_ for s_ in it if s_] for it in lst]
+        elif k in ('Roof', 'Glass') and len(slopes) > 1:
+            j = 0 if k == 'Roof' else 1
+            ix = [c[j] for c in slopes] + [len(lst)]
+            ix[0] = 0
+            its = [[s_ for s_ in lst[a:b] if s_] for a, b in zip(ix, ix[1:])]
         elif k in ('Roof', 'Glass', 'Flashing'):
             its = [[s_ for s_ in lst if s_]]
         else:
@@ -985,20 +1303,20 @@ def build_canopy(L, v):
 # ---------------------------------------------------------------------------
 # Settings and presets
 # ---------------------------------------------------------------------------
-COL_STYLES = [("castiron", "Cast iron + spandrels"), ("timber", "Timber posts + knee braces")]
 ROOFS = [("plain", "Plain (slate / boards)"), ("glazed", "Glazed (bars and glass)"), ("lead", "Lead (with rolls)")]
 ISLAND_ROOFS = [("ridge", "Ridged (falls both ways)"), ("butterfly", "Butterfly (falls to the middle)")]
 
 DEFAULTS = dict(kind='lean', length=0.0, depth=3000.0, width=6000.0, h_back=4300.0, h_front=3400.0,
                 h_centre=4500.0, island_pitch=8.0, island_roof='ridge', fit_width=False, edge_back=600.0,
                 bay=3000.0, end_in=300.0, bracket_t=40.0, segments=24.0, col_set=450.0, z_off=0.0, wall_gap=1.0, flip=False, fit_wall=True,
-                col_style='castiron', col_d=150.0, post_w=150.0, brackets=True, bracket=600.0,
+                col_style='castiron', col_d=150.0, post_w=150.0, pier_w=340.0, bracket_style='auto', brackets=True,
+                bracket=600.0,
                 beam_d=250.0, beam_w=120.0,
                 roof='plain', roof_t=60.0, bar_w=50.0, bar_sp=600.0, rf_w=3000.0, rf_pitch=26.0,
                 valance='dagger', board_w=150.0, val_h=450.0, val_t=25.0, val_holes=True, val_ends=True,
                 flash=True, roll_sp=600.0, roll_d=50.0,
-                bell_w=3000.0, bell_d=3000.0, bell_over=300.0, bell_h=1500.0, bell_tw=500.0, bell_td=500.0,
-                bell_sweep=60.0, bell_cap=120.0, bell_fascia=300.0, bell_fit=True, bell_cols=False, bell_val=False, flash_t=32.0, flash_up=150.0, flash_cover=150.0)
+                lean_sweep=0.0, bell_w=3000.0, bell_d=3000.0, bell_over=300.0, bell_h=1500.0, bell_tw=500.0, bell_td=500.0,
+                bell_sweep=60.0, bell_cap=120.0, bell_fascia=300.0, bell_fit=True, bell_cols=False, bell_val=False, bell_ncol=2.0, flash_t=32.0, flash_up=150.0, flash_cover=150.0)
 
 PRESETS = [
     ("GWR lean-to, dagger boards", dict(kind='lean', depth=3000.0, h_back=4300.0, h_front=3400.0, bay=3000.0,
@@ -1093,6 +1411,9 @@ FIELDS = [
      "Island: the underside of the roof over the middle (the ridge, or the edges of a butterfly roof)."),
     ("Canopy", 'island_pitch', "Roof pitch (island)", 0.0, 30.0, 1, " deg",
      "Island: how steeply the roof falls each way. Canopies are low: 5 to 10 degrees."),
+    ("Canopy", 'lean_sweep', "Bell-cast sweep (lean-to)", 0.0, 100.0, 0, " %",
+     "Lean-to: 0 = a straight roof. More sweeps it like a bell - steep off the wall, curving out flat at "
+     "the front. Lead, plain or glazed all follow the curve."),
     ("Canopy", 'bay', "D  Column spacing", 500.0, 20000.0, 0, " mm",
      "About how far apart the columns are (they're spaced evenly along the length). 3 m is typical."),
     ("Canopy", 'end_in', "E  First column in from end", 0.0, 10000.0, 0, " mm",
@@ -1107,6 +1428,8 @@ FIELDS = [
     ("Columns", 'col_d', "G  Column diameter", 50.0, 1000.0, 0, " mm",
      "Cast iron: across the shaft. 150 mm is typical (1.9 mm at 1:80)."),
     ("Columns", 'post_w', "G  Post size", 50.0, 1000.0, 0, " mm", "Timber: the square post's size."),
+    ("Columns", 'pier_w', "G  Pier size", 100.0, 2000.0, 0, " mm",
+     "Brick pier: its size across (340 mm is a brick and a half)."),
     ("Columns", 'bracket', "H  Bracket size", 100.0, 3000.0, 0, " mm",
      "How far the spandrels or knee braces reach along the beam (and down the column)."),
     ("Columns", 'bracket_t', "Bracket thickness", 5.0, 500.0, 0, " mm",
@@ -1151,6 +1474,8 @@ FIELDS = [
     ("Bell roof", 'bell_cap', "Cap on top", 0.0, 2000.0, 0, " mm", "The cap on the flat top. 0 = none."),
     ("Bell roof", 'bell_fascia', "Fascia depth", 0.0, 2000.0, 0, " mm",
      "The fascia (with a moulded step) round under the eaves. 0 = none."),
+    ("Bell roof", 'bell_ncol', "Columns along each side", 2.0, 12.0, 0, "",
+     "On columns: how many along each side, the corners included (2 = just the corners)."),
     ("Valance", 'board_w', "L  Board width", 20.0, 2000.0, 0, " mm",
      "One valance board. They're fitted a whole number to the length, so it may change a little."),
     ("Valance", 'val_h', "M  Valance depth", 50.0, 3000.0, 0, " mm",
@@ -1239,8 +1564,16 @@ def sizes_drawing(v):
         yc = D - v['col_set']
         zr = Hf + (Hb - Hf) * (D - yc) / D
         lines += [(0, -200, 0, Hb + 900, 'wall'), (-600, 0, D + 900, 0, 'ground'),
-                  (0, Hb, D, Hf, 'roof'), (yc, 0, yc, zr - bd, 'col'), (yc - 60, zr - bd, yc + 60, zr - bd, 'col'),
+                  (yc, 0, yc, zr - bd, 'col'), (yc - 60, zr - bd, yc + 60, zr - bd, 'col'),
                   (D, Hf, D, Hf - vh, 'val')]
+        sw_ = max(0.0, min(1.0, v.get('lean_sweep', 0.0) / 100.0)) if kind == 'lean' else 0.0
+
+        def zr_(y):
+            u_ = y / D
+            return Hb + (Hf - Hb) * ((1.0 - (1.0 - u_) ** (1.0 + 2.5 * sw_)) if sw_ > 0 else u_)
+        for k_ in range(24):
+            lines.append((D * k_ / 24, zr_(D * k_ / 24), D * (k_ + 1) / 24, zr_(D * (k_ + 1) / 24), 'roof'))
+        zr = zr_(yc)
         dim(0, -350, D, -350, "A", (0, -160))
         if kind == 'lean':
             dim(-300, 0, -300, Hb, "B", (-160, 0))
@@ -1691,11 +2024,17 @@ class CanopyDialog(QDialog):
                                    "the top. Untick to build it at the heights you set.")
         pages["Canopy"].addRow(self.cb_fitwall)
         self.cb_col, _ = combo(pages["Columns"], 0, "Columns", COL_STYLES,
-                               "Cast iron: turned columns with a flared capital and pierced spandrel brackets. "
-                               "Timber: square posts with knee braces.")
-        self.cb_brk = QCheckBox("Brackets (spandrels / knee braces)")
+                               "Cast iron: turned columns - plain, fluted (12 flutes) or octagonal - with a flared "
+                               "capital. Classical: a Doric column with entasis and a square abacus. Timber: square "
+                               "posts, plain or with chamfered corners. Brick: piers with a plinth and an "
+                               "oversailing cap. All of them for the canopies and the bell-cast roof.")
+        self.cb_bstyle, _ = combo(pages["Columns"], 1, "Brackets", BRACKET_STYLES,
+                                  "To suit the column: spandrels on iron, Doric and brick, knee braces on timber. Or "
+                                  "choose: a spandrel with a roundel, with three roundels, a solid one, an open arc "
+                                  "(a curved brace, open in the middle), or a straight knee brace.")
+        self.cb_brk = QCheckBox("Brackets under the beams")
         self.cb_brk.setToolTip("The brackets between the tops of the columns and the beams.")
-        pages["Columns"].insertRow(2, self.cb_brk)
+        pages["Columns"].insertRow(3, self.cb_brk)
         self.cb_roof, _ = combo(pages["Roof"], 0, "Roof", ROOFS,
                                 "Plain: a solid roof (slate, boards or felt). Glazed: glazing bars running down "
                                 "the slope with glass between (a separate 'Glass' group, for clear resin). Lead: lead sheet "
@@ -1714,7 +2053,7 @@ class CanopyDialog(QDialog):
         pages["Bell roof"].insertRow(0, self.cb_bfit)
         self.cb_bcols = QCheckBox("On four columns (a kiosk or porch)")
         self.cb_bcols.setToolTip("Bell roof: stands on a column at each corner (the Columns tab's style, with "
-                                 "brackets), its eaves at the Canopy tab's centre height. Off: it sits straight on "
+                                 "brackets), its height set by \"B  Column height\" on the Canopy tab. Off: it sits straight on "
                                  "the face.")
         pages["Bell roof"].insertRow(1, self.cb_bcols)
         self.cb_bval = QCheckBox("Valance round the eaves")
@@ -1795,6 +2134,7 @@ class CanopyDialog(QDialog):
             if k in cur:
                 s.setValue(float(cur[k]))
         for cb, key in ((self.cb_kind, 'kind'), (self.cb_iroof, 'island_roof'), (self.cb_col, 'col_style'),
+                        (self.cb_bstyle, 'bracket_style'),
                         (self.cb_roof, 'roof'), (self.cb_val, 'valance')):
             for i in range(cb.count()):
                 if cb.itemData(i) == cur.get(key):
@@ -1822,23 +2162,40 @@ class CanopyDialog(QDialog):
         on = {'depth': not isl, 'width': isl and not v['fit_width'], 'edge_back': isl and v['fit_width'],
               'h_back': kind == 'lean', 'h_front': not isl, 'h_centre': isl, 'island_pitch': isl,
               'col_set': not isl, 'z_off': not isl, 'wall_gap': not isl,
-              'col_d': v['col_style'] != 'timber', 'post_w': v['col_style'] == 'timber', 'bracket': v['brackets'],
+              'col_d': v['col_style'] not in TIMBER_STYLES + ('brick',), 'post_w': v['col_style'] in TIMBER_STYLES,
+              'pier_w': v['col_style'] == 'brick', 'bracket': v['brackets'],
               'bracket_t': v['brackets'],
               'bar_w': glazed, 'bar_sp': glazed,
               'roll_sp': v['roof'] == 'lead', 'roll_d': v['roof'] == 'lead', 'rf_w': kind == 'ridge', 'rf_pitch': kind == 'ridge',
               'flash_t': kind == 'lean' and v['flash'], 'flash_up': kind == 'lean' and v['flash'],
               'flash_cover': kind == 'lean' and v['flash']}
+        on['lean_sweep'] = kind == 'lean'
         if bell:
             # the bell roof uses its own tab, the columns (if on columns) and the lead or plain roof
             on = {k: False for k in on}
-            for k in ('col_d', 'post_w', 'bracket', 'bracket_t'):
-                on[k] = v['bell_cols'] and {'col_d': v['col_style'] != 'timber', 'post_w': v['col_style'] == 'timber',
+            for k in ('col_d', 'post_w', 'pier_w', 'bracket', 'bracket_t'):
+                on[k] = v['bell_cols'] and {'col_d': v['col_style'] not in TIMBER_STYLES + ('brick',),
+                                            'post_w': v['col_style'] in TIMBER_STYLES, 'pier_w': v['col_style'] == 'brick',
                                             'bracket': v['brackets'], 'bracket_t': v['brackets']}[k]
             on.update(h_centre=v['bell_cols'], roll_sp=v['roof'] == 'lead', roll_d=v['roof'] == 'lead')
         for k_ in ('bell_w', 'bell_d'):
             on[k_] = bell and not v['bell_fit']
         for k_ in ('bell_over', 'bell_h', 'bell_tw', 'bell_td', 'bell_sweep', 'bell_cap', 'bell_fascia'):
             on[k_] = bell
+        on['bell_ncol'] = bell and v['bell_cols']
+        # the same box sets the columns' height on a bell roof: say so
+        try:
+            if bell:
+                self.labs['h_centre'].setText("B  Column height (bell)")
+                tip = ("Bell roof on columns: how tall the columns are, platform to the underside of the "
+                       "fascia. Tick 'On columns' on the Bell roof tab to use it.")
+            else:
+                self.labs['h_centre'].setText("B  Height at centre (island)")
+                tip = "Island: the underside of the roof over the middle (the ridge, or the edges of a butterfly roof)."
+            self.labs['h_centre'].setToolTip(tip)
+            self.w['h_centre'].setToolTip(tip)
+        except Exception:
+            pass
         for k, ok in on.items():
             self.w[k].setEnabled(ok)
             self.labs[k].setEnabled(ok)
@@ -1857,6 +2214,7 @@ class CanopyDialog(QDialog):
         v = {k: float(s.value()) for k, s in self.w.items()}
         v.update(kind=self.cb_kind.currentData() or 'lean', island_roof=self.cb_iroof.currentData() or 'ridge',
                  col_style=self.cb_col.currentData() or 'castiron', roof=self.cb_roof.currentData() or 'plain',
+                 bracket_style=self.cb_bstyle.currentData() or 'auto',
                  valance=self.cb_val.currentData() or 'dagger', fit_width=self.cb_fit.isChecked(),
                  brackets=self.cb_brk.isChecked(), val_holes=self.cb_holes.isChecked(),
                  val_ends=self.cb_ends.isChecked(), flip=self.cb_flip.isChecked(), flash=self.cb_flash.isChecked(),
@@ -2045,7 +2403,7 @@ class StationCanopiesTool(Tool):
                                                 L / 1000.0)
         if kind == 'bell':
             name = "Bell-cast roof - %.1f x %.1f m" % (v['bell_w'] / 1000.0, v['bell_d'] / 1000.0)
-        self._timber = v['col_style'] == 'timber'
+        self._timber = {'timber': "Post", 'chamfer': "Post", 'brick': "Pier"}.get(v['col_style'], "")
         nv = len(parts.get('Valance', []))
         if kind == 'island':
             self._val_names = ["Valance - side 1", "Valance - side 2"]
@@ -2059,7 +2417,8 @@ class StationCanopiesTool(Tool):
         msg = ("Built a %.1f m %s canopy, %.1f m %s: %d %s, %d valance boards, %d faces." % (
             L / 1000.0, dict(KINDS)[kind].split(" (")[0].lower(), info['depth'] / 1000.0,
             "wide" if kind == 'island' else "deep", info['columns'],
-            "posts" if v['col_style'] == 'timber' else "columns", info['boards'], nf)) + note
+            {'timber': "posts", 'chamfer': "posts", 'brick': "piers"}.get(v['col_style'], "columns"),
+            info['boards'], nf)) + note
         if kind == 'bell':
             msg = ("Built a %.1f x %.1f m bell-cast roof, %.1f m rise%s%s, %d faces." % (
                 v['bell_w'] / 1000.0, v['bell_d'] / 1000.0, v['bell_h'] / 1000.0,
@@ -2078,7 +2437,7 @@ class StationCanopiesTool(Tool):
         off to print on its own."""
         stats = {'faces': 0, 'errors': 0, 'err': None}
         tol = 1e-4 * 0.001
-        single = {'Columns': "Post" if self._timber else "Column", 'Brackets': "Bracket", 'Beams': "Beam",
+        single = {'Columns': self._timber or "Column", 'Brackets': "Bracket", 'Beams': "Beam",
                   'Roof': "Roof", 'Glass': "Glass", 'Valance': "Valance", 'Flashing': "Flashing"}
 
         def mesh_of(solids):
@@ -2143,6 +2502,8 @@ class StationCanopiesTool(Tool):
                     nm = single.get(cat, cat) if len(items) == 1 else "%s %d" % (single.get(cat, cat), i + 1)
                     if cat == 'Valance' and self._val_names and len(self._val_names) == len(items):
                         nm = self._val_names[i]
+                    elif cat in ('Roof', 'Glass') and len(items) > 1:
+                        nm = "%s - %s %d" % (single.get(cat, cat), "side" if len(items) == 2 else "slope", i + 1)
                     kids.append(leaf(Group, mesh_of(it), nm))
                 if len(kids) == 1 and cat in ('Roof', 'Glass', 'Flashing'):
                     cats.append(kids[0])

@@ -46,6 +46,7 @@ PLUGINS = [
     ("3D Chimneys", "Ctrl+Alt+H", "Chimneys", "chimney"),
     ("3D Corrugated Iron", "Ctrl+Alt+I", "Tin sheet", "corrugated"),
     ("3D Station Canopies", "Ctrl+Alt+C", "Canopy", "canopy"),
+    ("3D Centre Finder", "Ctrl+Alt+M", "Centre", "centre"),
 ]
 
 
@@ -271,6 +272,18 @@ def make_icon(kind):
         p.setPen(QPen(QColor(60, 40, 20), 1.6))
         p.drawPoint(QPointF(7, 10))
         p.drawPoint(QPointF(19, 22))
+    elif kind == "centre":
+        p.setPen(dark)
+        p.setBrush(QColor(225, 232, 240))
+        p.drawRect(QRectF(4, 6, 24, 20))                       # a face
+        p.setPen(QPen(QColor(70, 120, 200), 1.0, Qt.DashLine))
+        p.drawLine(QPointF(4, 16), QPointF(28, 16))           # centre lines
+        p.drawLine(QPointF(16, 6), QPointF(16, 26))
+        p.setPen(QPen(QColor(200, 50, 40), 1.6))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(16, 16), 4.5, 4.5)              # the centre mark
+        p.drawLine(QPointF(16, 9.5), QPointF(16, 22.5))
+        p.drawLine(QPointF(9.5, 16), QPointF(22.5, 16))
     elif kind == "note":
         p.setPen(dark)
         p.setBrush(QColor(255, 244, 160))
@@ -687,7 +700,7 @@ EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
               "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
-              "station_canopies", "plugins_toolbar")
+              "station_canopies", "centre_finder", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 
