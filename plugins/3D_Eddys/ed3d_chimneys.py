@@ -848,8 +848,9 @@ POT_STYLES = [("plain", "Plain"), ("tapered", "Tapered"), ("cannon", "Cannon (ro
               ("crown", "Crown (castellated)"), ("square", "Square"), ("octagon", "Octagonal")]
 
 
-def pot_solids(style, cx, cy, z0, height, dia, wall):
-    """One chimney pot standing at (cx, cy, z0): [solids]."""
+def pot_profile(style, height, dia, wall):
+    """A pot's turned profile [(r, z)] (outside up, over the rim, down the bore), and how many
+    sides it is turned with: (profile, sides, turn)."""
     R = dia / 2.0
     H = height
     w = max(wall, 0.002)
@@ -874,6 +875,19 @@ def pot_solids(style, cx, cy, z0, height, dia, wall):
         prof = [(0, 0), (R, 0), (R, H * 0.1), (rw, H * 0.35), (rw, H * 0.8), (rw * 1.12, H * 0.84),
                 (rw * 1.18, H * 0.9), (rw * 1.12, H * 0.96), (rw * 1.04, H), (rw - w, H),
                 (rw - w, H - bore), (0, H - bore)]
+    return prof, seg, rot
+
+
+def pot_solids(style, cx, cy, z0, height, dia, wall):
+    """One chimney pot standing at (cx, cy, z0): [solids]."""
+    prof, seg, rot = pot_profile(style, height, dia, wall)
+    H = height
+    w = max(wall, 0.002)
+    R = dia / 2.0
+    if style == 'square':
+        R = R * math.sqrt(2)
+    elif style == 'octagon':
+        R = R / math.cos(math.pi / 8)
     out = [lathe(prof, cx, cy, z0, seg, rot)]
     if style == 'crown':
         # castellations round the rim: little blocks standing on it (sunk in a hair)
@@ -989,10 +1003,37 @@ def roof_from_faces(polys):
                   'ridge': (a0, a1)}
 
 
+def stack_size(v):
+    """The stack's size (mm) once widened to take the pots, and the pots' rows: (W, D, rows,
+    per_row, widened)."""
+    W, Dp = v['width'], v['depth']
+    npots = int(v['pots'])
+    rows = max(1, min(2, int(v.get('pot_rows', 1)))) if npots > 1 else 1
+    per_row = int(math.ceil(npots / float(rows))) if npots else 0
+    pot_d = v['pot_dia']
+    foot, gap, edge = pot_d * 1.12, max(50.0, pot_d * 0.25), max(60.0, pot_d * 0.25)
+    widened = False
+    if npots and v.get('fit_pots', True):
+        half_unit = (v['brick_l'] + v['joint']) / 2.0
+        need_w = per_row * foot + (per_row - 1) * gap + 2 * edge
+        need_d = rows * foot + (rows - 1) * gap + 2 * edge
+        if need_w > W + 1e-6:
+            W, widened = math.ceil(need_w / half_unit - 1e-9) * half_unit, True
+        if need_d > Dp + 1e-6:
+            Dp, widened = math.ceil(need_d / half_unit - 1e-9) * half_unit, True
+    return W, Dp, rows, per_row, widened
+
+
 def house_stack(v, roof, frame):
     """All the parts of a house chimney stack: {group name: [solids]}, and a report."""
     S = SCALE
-    W, Dp = v['width'] * S, v['depth'] * S
+    # the stack's size, made big enough for the pots, and the pots' rows
+    Wmm, Dmm, rows, per_row, widened = stack_size(v)
+    W, Dp = Wmm * S, Dmm * S
+    npots = int(v['pots'])
+    pot_d = v['pot_dia'] * S
+    foot = pot_d * 1.12
+    gap = max(0.05, pot_d * 0.25)
     bd = v['brick_d'] * S
     H, J = v['brick_h'] * S, v['joint'] * S
     course = H + J
@@ -1045,29 +1086,35 @@ def house_stack(v, roof, frame):
     # flaunching: a sloping mortar cap, from just in from the edge up round the pots
     out_half = bd + proj * n_over
     fl_h = v['flaunch'] * S
-    npots = int(v['pots'])
-    pot_d = v['pot_dia'] * S
     rect_out = RectTarget(cx, cy, ang, hx + out_half - 0.01, hy + out_half - 0.01, 0, 1)
+    spread = W / max(1, per_row)
+    row_off = (foot + gap) / 2.0 if rows == 2 else 0.0
     if fl_h > 0:
-        spread = W / max(1, npots)
-        ix = max(pot_d * 0.75, min(hx + out_half - 0.02, (npots * spread) / 2 - spread / 2 + pot_d * 0.75)) \
+        ix = max(pot_d * 0.75, min(hx + out_half - 0.02, (per_row - 1) * spread / 2 + pot_d * 0.75)) \
             if npots else (hx + out_half) * 0.5
-        iy = max(0.02, min(hy + out_half - 0.02, pot_d * 0.75)) if npots else (hy + out_half) * 0.5
+        iy = max(0.02, min(hy + out_half - 0.02, row_off + pot_d * 0.75)) if npots else (hy + out_half) * 0.5
         rect_in = RectTarget(cx, cy, ang, ix, iy, 0, 1)
         fl = frustum(rect_out.outline(), z_top - 0.0005, rect_in.outline(), z_top + fl_h)
         parts['Flaunching'] = [fl] if fl else []
-    # the pots, in a row along the stack, sunk a little into the flaunching
+    # the pots, in a row (or two) along the stack, sunk a little into the flaunching
     pots = []
+    across = (-along[1], along[0])
     if npots:
-        spread = W / npots
-        for k in range(npots):
-            u = -W / 2 + spread * (k + 0.5)
-            px, py = cx + along[0] * u, cy + along[1] * u
-            pots += pot_solids(v['pot_style'], px, py, z_top + max(0.0, fl_h * 0.6),
-                               v['pot_h'] * S, pot_d, v['pot_wall'] * S)
+        k_ = 0
+        for r in range(rows):
+            n_r = min(per_row, npots - r * per_row)
+            off = (r - (rows - 1) / 2.0) * 2 * row_off
+            sp = W / max(1, n_r) if n_r < per_row else spread
+            for k in range(n_r):
+                u = -sp * n_r / 2.0 + sp * (k + 0.5)
+                px = cx + along[0] * u + across[0] * off
+                py = cy + along[1] * u + across[1] * off
+                pots += pot_solids(v['pot_style'], px, py, z_top + max(0.0, fl_h * 0.6),
+                                   v['pot_h'] * S, pot_d, v['pot_wall'] * S)
+                k_ += 1
         parts['Pots'] = pots
     rep = {'bricks': len(bricks), 'courses': n_courses, 'above': (z_top - z_high) / S,
-           'oversail': n_over}
+           'oversail': n_over, 'width': W / S, 'depth': Dp / S, 'widened': widened, 'rows': rows}
     return parts, rep
 
 
@@ -1151,7 +1198,7 @@ KINDS = [("house", "House stack on a roof"), ("industrial", "Industrial chimney"
 
 DEFAULTS = dict(kind='house', width=900.0, depth=450.0, height=900.0, along=50.0, up=100.0,
                 oversail=2, oversail_out=28.0, flaunch=60.0,
-                pots=2, pot_style='plain', pot_h=600.0, pot_dia=240.0, pot_wall=32.0,
+                pots=2, pot_rows=1, fit_pots=True, pot_style='plain', pot_h=600.0, pot_dia=240.0, pot_wall=32.0,
                 brick_l=215.0, brick_h=65.0, brick_d=102.5, joint=10.0, level=True,
                 ind_shape='square', ind_bottom=2400.0, ind_top=1400.0, ind_height=18000.0,
                 plinth_h=2000.0, plinth_out=56.0, band_every=6000.0, band_courses=2, band_out=56.0,
@@ -1248,6 +1295,8 @@ FIELDS = [
     ("Stack", 'flaunch', "Flaunching height", 0.0, 400.0, 0, " mm",
      "The sloping mortar cap on top, round the pots. 0 = none."),
     ("Pots", 'pots', "Pots", 0, 12, None, "", "How many chimney pots, in a row along the stack. 0 = none."),
+    ("Pots", 'pot_rows', "Pot rows", 1, 2, None, "",
+     "One row of pots along the stack, or two rows side by side (a deeper stack, for lots of pots)."),
     ("Pots", 'pot_h', "Pot height", 100.0, 3000.0, 0, " mm", "How tall each pot is."),
     ("Pots", 'pot_dia', "Pot width", 80.0, 1000.0, 0, " mm", "Across the foot of each pot."),
     ("Pots", 'pot_wall', "Pot wall", 5.0, 200.0, 0, " mm",
@@ -1277,6 +1326,11 @@ FIELDS = [
     ("Bricks", 'joint', "Mortar joint", 1.0, 100.0, 1, " mm",
      "The gap between bricks. For 1:80 printing use about 16-32 mm (0.2-0.4 mm)."),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Preview: a front view of what will be built, drawn as the settings change
+# ---------------------------------------------------------------------------
 
 
 # --- Eddy's 3D plugins: hover help and remembered window places (begin) ---
@@ -1454,6 +1508,158 @@ EDDY_TIPS = {}
 EDDY_TIPS_END = None
 
 
+class ChimneyPreview(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.v = dict(DEFAULTS)
+        try:
+            self.setMinimumHeight(170)
+        except Exception:
+            pass
+
+    def set_values(self, v):
+        self.v = dict(v)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QPolygonF
+        from PySide6.QtCore import QPointF, QRectF
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing)
+            w, h = self.width(), self.height()
+            p.fillRect(0, 0, w, h, QColor(236, 238, 242))
+            shapes, cap = self.drawing()
+            xs = [x for kind, pts, c in shapes for x, _ in pts]
+            ys = [y for kind, pts, c in shapes for _, y in pts]
+            if not xs:
+                return
+            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+            sc = min((w - 16) / max(1.0, x1 - x0), (h - 30) / max(1.0, y1 - y0))
+            ox = w / 2 - (x0 + x1) / 2 * sc
+            oy = h - 20 + y0 * sc
+
+            def P(x, y):
+                return QPointF(ox + x * sc, oy - y * sc)
+            for kind, pts, col in shapes:
+                if kind == 'line':
+                    p.setPen(QPen(QColor(*col), 1.0))
+                    p.drawLine(P(*pts[0]), P(*pts[1]))
+                else:
+                    p.setPen(QPen(QColor(60, 40, 30), 0.8))
+                    p.setBrush(QColor(*col))
+                    p.drawPolygon(QPolygonF([P(x, y) for x, y in pts]))
+            p.setPen(QColor(80, 80, 80))
+            p.drawText(QRectF(4, h - 18, w - 8, 16), 0x0084, cap)
+        finally:
+            p.end()
+
+    def drawing(self):
+        """[(kind, points, colour)] in mm, front view, and a caption."""
+        v = self.v
+        kind = v.get('kind', 'house')
+        BR, MO, FL, PO, RF = (178, 92, 66), (205, 200, 192), (196, 192, 184), (196, 112, 66), (110, 118, 132)
+        Hc = v['brick_h'] + v['joint']
+        out = []
+
+        def rect(x0, y0, x1, y1, col):
+            out.append(('poly', [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], col))
+
+        def courses(x0, x1, y0, y1, step_off=0.0):
+            # mortar lines and staggered joints, so it reads as brickwork
+            n = int((y1 - y0) / Hc)
+            unit = v['brick_l'] + v['joint']
+            for k in range(1, n + 1):
+                y = y0 + k * Hc
+                if y < y1 - 1:
+                    out.append(('line', [(x0, y), (x1, y)], (120, 60, 40)))
+            for k in range(n + 1):
+                yb, yt = y0 + k * Hc, min(y1, y0 + (k + 1) * Hc)
+                x = x0 + (unit / 2 if k % 2 else 0) + unit
+                while x < x1 - 20:
+                    out.append(('line', [(x, yb), (x, yt)], (120, 60, 40)))
+                    x += unit
+
+        def pots(row_n, W, base, dia, ph, style):
+            if not row_n:
+                return
+            prof, seg, rot = pot_profile(style, ph, dia, v['pot_wall'])
+            first_top = next(i for i, (r, z) in enumerate(prof) if abs(z - ph) < 1e-6)
+            sil = prof[1:first_top + 1]
+            sp = W / row_n
+            for k in range(row_n):
+                cx = -W / 2 + sp * (k + 0.5)
+                pts = [(cx + r, base + z) for r, z in sil] + [(cx - r, base + z) for r, z in reversed(sil)]
+                out.append(('poly', pts, PO))
+                if style == 'crown':
+                    rt = sil[-1][0]
+                    for j in (-2, 0, 2):
+                        bx = cx + rt * 0.33 * j
+                        rect(bx - rt * 0.12, base + ph, bx + rt * 0.12, base + ph * 1.1, PO)
+        if kind == 'house':
+            W, D, rows, per_row, widened = stack_size(v)
+            vis = v['height'] + 250.0                    # what shows above the roof, and a bit
+            n_over = int(v['oversail'])
+            body = vis - n_over * Hc
+            pr = v['oversail_out']
+            # the roof running across the foot of the stack
+            out.append(('poly', [(-W * 1.1, -250), (W * 1.1, -250), (W * 1.1, -40), (-W * 1.1, 160)], RF))
+            rect(-W / 2, -200, W / 2, body, BR)
+            courses(-W / 2, W / 2, -200, body)
+            y = body
+            for i in range(n_over):
+                e = pr * (i + 1)
+                rect(-W / 2 - e, y, W / 2 + e, y + Hc, BR)
+                courses(-W / 2 - e, W / 2 + e, y, y + Hc)
+                y += Hc
+            fl = v['flaunch']
+            top = y
+            if fl > 0:
+                e = pr * n_over - 10
+                out.append(('poly', [(-W / 2 - e, top), (W / 2 + e, top), (W / 2 - 40, top + fl),
+                                     (-W / 2 + 40, top + fl)], FL))
+            pots(per_row, W, top + fl * 0.6, v['pot_dia'], v['pot_h'], v['pot_style'])
+            cap = "Stack %.0f x %.0f mm, %d pot%s%s%s" % (W, D, int(v['pots']), "" if int(v['pots']) == 1 else "s",
+                                                       " in 2 rows" if rows == 2 else "",
+                                                       " (widened to fit)" if widened else "")
+        elif kind == 'industrial':
+            Hh = v['ind_height']
+            bw, tw = v['ind_bottom'], v['ind_top']
+            ph = v['plinth_h']
+            pts_ = [(-bw / 2, 0), (bw / 2, 0), (tw / 2, Hh), (-tw / 2, Hh)]
+            out.append(('poly', pts_, BR))
+            if ph > 0:
+                e = v['plinth_out']
+                wb = bw + 2 * e
+                wt = bw - (bw - tw) * ph / Hh + 2 * e
+                out.append(('poly', [(-wb / 2, 0), (wb / 2, 0), (wt / 2, ph), (-wt / 2, ph)], BR))
+            be = v['band_every']
+            if be > 0:
+                z = ph + be
+                while z < Hh - v['cap_courses'] * Hc - 3 * Hc:
+                    wz = bw - (bw - tw) * z / Hh + 2 * v['band_out']
+                    rect(-wz / 2, z, wz / 2, z + v['band_courses'] * Hc, BR)
+                    z += be
+            z = Hh - v['cap_courses'] * Hc
+            for i in range(int(v['cap_courses'])):
+                wz = tw + 2 * v['cap_out'] * (i + 1)
+                rect(-wz / 2, z, wz / 2, z + Hc, BR)
+                z += Hc
+            if v['coping_h'] > 0:
+                wz = tw + 2 * v['cap_out'] * int(v['cap_courses']) + 2 * v['coping_over']
+                rect(-wz / 2, Hh, wz / 2, Hh + v['coping_h'], MO)
+            cap = "%s chimney, %.1f m high" % (dict(IND_SHAPES).get(v['ind_shape'], ''), Hh / 1000.0)
+        else:
+            n = max(1, int(v['pots']))
+            W = n * v['pot_dia'] * 1.25
+            pots(n, W, 0, v['pot_dia'], v['pot_h'], v['pot_style'])
+            cap = "%d %s pot%s" % (n, dict(POT_STYLES).get(v['pot_style'], '').lower(), "" if n == 1 else "s")
+        return out, cap
+
+
 class ChimneyDialog(QDialog):
     def __init__(self, viewport, tool, cur):
         super().__init__(viewport)
@@ -1487,6 +1693,9 @@ class ChimneyDialog(QDialog):
         top.addRow("Preset", prow)
         lay.addLayout(top)
 
+        self.preview = ChimneyPreview()
+        self.preview.setToolTip("A front view of what will be built. It changes as you change the settings.")
+        lay.addWidget(self.preview)
         self.tabs = QTabWidget()
         pages = {}
         for title in ("Stack", "Pots", "Industrial", "Bricks"):
@@ -1528,6 +1737,10 @@ class ChimneyDialog(QDialog):
         lab = QLabel("Shape")
         lab.setToolTip(self.cb_shape.toolTip())
         pages["Industrial"].insertRow(0, lab, self.cb_shape)
+        self.cb_fit = QCheckBox("Widen the stack to fit the pots")
+        self.cb_fit.setToolTip("Makes the stack longer (and deeper, with two rows) when the pots wouldn't fit "
+                               "on it, with a gap between each, in whole half-bricks so the bond stays neat.")
+        pages["Pots"].addRow(self.cb_fit)
         self.cb_level = QCheckBox("Lay the courses level")
         self.cb_level.setToolTip("On a tapered chimney every course is laid level and set in a little from "
                                  "the one below, like a real one. Untick to tilt the bricks to the slope.")
@@ -1552,6 +1765,12 @@ class ChimneyDialog(QDialog):
         self.set_values(cur)
         self.fill_presets()
         self.cb_kind.currentIndexChanged.connect(self.changed)
+        for s_ in self.w.values():
+            s_.valueChanged.connect(self.redraw)
+        for cb in (self.cb_style, self.cb_shape):
+            cb.currentIndexChanged.connect(self.redraw)
+        for ck in (self.cb_fit, self.cb_level):
+            ck.toggled.connect(self.redraw)
         try:
             self.cb_preset.activated.connect(self.preset_picked)
         except Exception:
@@ -1576,6 +1795,7 @@ class ChimneyDialog(QDialog):
         vals.update(self._presets.get(name, {}))
         self.set_values(vals)
         self.changed()
+        self.redraw()
 
     def save_as(self, *_):
         try:
@@ -1600,8 +1820,16 @@ class ChimneyDialog(QDialog):
                 if cb.itemData(i) == cur.get(key):
                     cb.setCurrentIndex(i)
         self.cb_level.setChecked(bool(cur.get('level', True)))
+        self.cb_fit.setChecked(bool(cur.get('fit_pots', True)))
+
+    def redraw(self, *_):
+        try:
+            self.preview.set_values(self.values())
+        except Exception:
+            pass
 
     def changed(self, *_):
+        self.redraw()
         kind = self.cb_kind.currentData()
         try:
             self.tabs.setTabEnabled(0, kind == 'house')
@@ -1617,7 +1845,8 @@ class ChimneyDialog(QDialog):
     def values(self):
         v = {k: (int(s.value()) if isinstance(s, QSpinBox) else float(s.value())) for k, s in self.w.items()}
         v.update(kind=self.cb_kind.currentData(), pot_style=self.cb_style.currentData(),
-                 ind_shape=self.cb_shape.currentData(), level=self.cb_level.isChecked())
+                 ind_shape=self.cb_shape.currentData(), level=self.cb_level.isChecked(),
+                 fit_pots=self.cb_fit.isChecked())
         return v
 
 
@@ -1682,11 +1911,14 @@ class ChimneysTool(Tool):
                     return
                 roof, frame = roof_from_faces(polys[:2])
                 parts, rep = house_stack(v, roof, frame)
-                name = "Chimney stack - %d x %d" % (v['width'], v['depth'])
-                msg = ("Built a %d x %d mm stack: %d bricks in %d courses (cut to the roof), %d oversailing, "
-                       "%.0f mm above the roof, %d pots." % (v['width'], v['depth'], rep['bricks'],
-                                                             rep['courses'], rep['oversail'], rep['above'],
-                                                             int(v['pots'])))
+                name = "Chimney stack - %.0f x %.0f" % (rep['width'], rep['depth'])
+                msg = ("Built a %.0f x %.0f mm stack: %d bricks in %d courses (cut to the roof), %d oversailing, "
+                       "%.0f mm above the roof, %d pots%s." % (rep['width'], rep['depth'], rep['bricks'],
+                                                              rep['courses'], rep['oversail'], rep['above'],
+                                                              int(v['pots']),
+                                                              " in two rows" if rep['rows'] == 2 else ""))
+                if rep['widened']:
+                    msg += " (Made bigger to fit the pots.)"
             else:
                 cx = cy = z0 = 0.0
                 along = (1.0, 0.0)

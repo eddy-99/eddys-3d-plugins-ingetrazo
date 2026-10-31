@@ -21,7 +21,7 @@ from core.history import SnapshotImport
 from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox, QCheckBox,
-    QComboBox, QMessageBox, QLabel, QPushButton, QLineEdit
+    QComboBox, QMessageBox, QLabel, QPushButton, QLineEdit, QWidget
 )
 
 PLUGIN_NAME = "3D Print Scaler"
@@ -81,7 +81,7 @@ WELD = 1e-4
 
 DEFAULTS = {'denominator': 50.0, 'pivot': 'bottom', 'mode': 'stl', 'unit': None,
             'check_bed': True, 'bed_x': 220.0, 'bed_y': 220.0, 'bed_z': 250.0,
-            'separate': False, 'open_after': False, 'keep_open': False, 'part_gap': 5.0,
+            'separate': False, 'open_after': False, 'keep_open': False, 'part_gap': 5.0, 'split_depth': 0,
             'lay_flat': True}
 
 COPY_GAP = 0.1   # gap between original and copy, as a fraction of the original's width
@@ -442,17 +442,55 @@ def _tris_of(faces, m=None):
     return tris
 
 
-def split_parts(entities):
-    """The selection as separate parts: [(name, [triangles in world metres])]. Every group that
-    has faces of its own is a part (a canopy gives a part per column, bracket, valance ...);
-    faces picked on their own make one part."""
+def _piece_groups(e, depth):
+    """The groups under a selected group e that each make one piece: [(group, [(group, matrix)])],
+    the second list being every group (with its world placement) whose faces go into that piece.
+    depth 0: every group with faces of its own is a piece. depth n: each group n levels in is a
+    piece with everything inside it (so a group you made, holding several, prints as one); a
+    group with faces nearer the top than that is a piece of its own."""
+    place = {}
+    for g, m in _placements(e):
+        place.setdefault(id(g), m)
+    out = []
+
+    def faces_of(g):
+        return _items(getattr(getattr(g, 'mesh', None), 'faces', None))
+
+    def subtree(g, acc, lvl=0):
+        acc.append((g, place.get(id(g), getattr(g, 'xform', None))))
+        if lvl < 12:
+            for c in _kids(g):
+                subtree(c, acc, lvl + 1)
+        return acc
+
+    def walk(g, lvl):
+        kids = _kids(g)
+        if depth and lvl >= depth:
+            out.append((g, subtree(g, [])))
+            return
+        if faces_of(g):
+            out.append((g, [(g, place.get(id(g), getattr(g, 'xform', None)))]))
+        if lvl < 12:
+            for c in kids:
+                walk(c, lvl + 1)
+    walk(e, 0)
+    return out
+
+
+def split_parts(entities, depth=0):
+    """The selection as separate parts: [(name, [triangles in world metres])]. With depth 0
+    every group that has faces of its own is a part (a canopy gives a part per column, bracket,
+    valance ...); with depth n, each group n levels in is one part with all that's inside it.
+    Faces picked on their own make one part."""
     parts, loose, names = [], [], {}
     for e in entities:
         if _is_face(e):
             loose.append(e)
             continue
-        for g, m in _placements(e):
-            tris = _tris_of(_items(getattr(getattr(g, 'mesh', None), 'faces', None)), m)
+        for g, members in _piece_groups(e, depth):
+            tris = []
+            for h, m in members:
+                tris += _tris_of(_items(getattr(getattr(h, 'mesh', None), 'faces', None)), m)
             if not tris:
                 continue
             nm = str(getattr(g, 'name', '') or "Part")
@@ -465,15 +503,15 @@ def split_parts(entities):
     return parts
 
 
-def count_parts(entities):
+def count_parts(entities, depth=0):
     """How many parts 'Each group as a separate part' would make (cheap: no triangles)."""
     n, loose = 0, False
     for e in entities:
         if _is_face(e):
             loose = True
             continue
-        for g, _m in _placements(e):
-            if _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+        for g, members in _piece_groups(e, depth):
+            if any(_items(getattr(getattr(h, 'mesh', None), 'faces', None)) for h, _m in members):
                 n += 1
     return n + (1 if loose else 0)
 
@@ -717,166 +755,205 @@ def mend_cracks(tris, tol=2e-4):
     return [tuple(pts[v] for v in f) for f in tri], len(first), left
 
 
-def lay_out(parts, row_width, gap):
-    """Lays the parts (already in mm) side by side on the bed in rows, each standing on z = 0,
-    the whole lot centred on the origin. Returns the parts moved, and the total size."""
-    placed = []
-    x = y = row_h = 0.0
-    for name, tris in parts:
-        xs = [c[0] for t in tris for c in t]
-        ys = [c[1] for t in tris for c in t]
-        zs = [c[2] for t in tris for c in t]
-        w, d = max(xs) - min(xs), max(ys) - min(ys)
-        if x > 0 and x + w > row_width:
-            x, y, row_h = 0.0, y + row_h + gap, 0.0
-        dx, dy, dz = x - min(xs), y - min(ys), -min(zs)
-        placed.append((name, [tuple((c[0] + dx, c[1] + dy, c[2] + dz) for c in t) for t in tris]))
-        x += w + gap
-        row_h = max(row_h, d)
-    allx = [c[0] for _, tr in placed for t in tr for c in t]
-    ally = [c[1] for _, tr in placed for t in tr for c in t]
-    allz = [c[2] for _, tr in placed for t in tr for c in t]
-    cx, cy = (min(allx) + max(allx)) / 2, (min(ally) + max(ally)) / 2
-    placed = [(n, [tuple((c[0] - cx, c[1] - cy, c[2]) for c in t) for t in tr]) for n, tr in placed]
-    return placed, (max(allx) - min(allx), max(ally) - min(ally), max(allz) - min(allz))
+# ---------------------------------------------------------------------------
+# Planning the print pieces: which parts print together, colour coded
+# ---------------------------------------------------------------------------
+PIECE_COLOURS = [(230, 90, 70), (60, 140, 220), (90, 180, 80), (240, 170, 40), (160, 90, 200), (40, 180, 180),
+                 (220, 100, 170), (140, 110, 60), (120, 160, 40), (90, 90, 200), (200, 60, 110), (60, 120, 90)]
+LOOSE_COLOUR = (175, 175, 172)
 
 
-def open_in_slicer(files, slicer=""):
-    """Opens the saved file(s): in the slicer you named (all at once, so they load together),
-    or else in whatever program Windows opens that type of file with. Returns a note."""
-    import subprocess
-    import sys
-    files = [f for f in files if f]
-    if not files:
-        return ""
-    try:
-        if slicer and os.path.exists(slicer):
-            subprocess.Popen([slicer] + files)
-            return "Opened in %s." % os.path.basename(slicer)
-        target = os.path.dirname(files[0]) if len(files) > 1 else files[0]
-        if hasattr(os, 'startfile'):
-            os.startfile(target)
-        elif sys.platform == 'darwin':
-            subprocess.Popen(['open', target])
-        else:
-            subprocess.Popen(['xdg-open', target])
-        if len(files) > 1:
-            return ("Opened the folder (%d files). Set your slicer's program in the window to have them "
-                    "all opened in it at once." % len(files))
-        return "Opened it with your default program for that type of file."
-    except Exception as e:
-        return "Couldn't open it (%s)." % e
+def piece_colour(i):
+    return PIECE_COLOURS[i % len(PIECE_COLOURS)]
 
 
-INFO_TEXT = (
-    "<b>3D Print Scaler</b><br><br>"
-    "<b>Export scaled</b> writes the selection straight to a file in millimetres, every detail kept, "
-    "however small - the best way for printing. Open it in your slicer as it is: it's already the "
-    "right size.<br>"
-    "<b>Scale a copy / Scale in place</b> scale inside IngeTrazo. IngeTrazo treats points closer than "
-    "0.1 mm as one point, so at small scales tiny details (rivets, thin edges) can be lost - you're told "
-    "how many faces were lost. Use Export for printing.<br><br>"
-    "<b>Each group as a separate part</b>: every group with faces of its own becomes a separate part "
-    "(a canopy: each column, bracket, beam, valance ...), laid out side by side on the bed, 'Gap "
-    "between parts' apart. In a 3MF they're separate objects in one file, so the slicer shows them as "
-    "separate items. Other file types save one file per part, in a new folder.<br>"
-    "<b>Open in the slicer</b>: with the slicer's program set (e.g. PrusaSlicer's prusa-slicer.exe) "
-    "all the files open in it at once; otherwise the file opens in whatever program Windows uses for "
-    "that type of file.<br>"
-    "<b>Keep this window open</b>: select the next part in the model and press the button again - "
-    "the sizes follow what's selected.<br><br>"
-    "<b>Model's units</b>: IngeTrazo keeps every model in metres, so this is nearly always Metres. "
-    "Only change it for a model that came in 1000 times too big.<br>"
-    "<b>Small sizes</b>: under 1 mm is fine detail - good for resin, too small for a 0.4 mm FDM "
-    "nozzle. Under 0.05 mm is smaller than a resin printer's pixel: check the units.")
-
-
-# file types offered when saving: (label shown in the save box, extension, writer)
-EXPORTS = [("STL - binary (*.stl)", ".stl", write_stl),
-           ("3MF - PrusaSlicer, Bambu, Cura (*.3mf)", ".3mf", write_3mf),
-           ("OBJ - Rhino, ZBrush, Blender (*.obj)", ".obj", write_obj),
-           ("PLY (*.ply)", ".ply", write_ply),
-           ("STL - text / ASCII (*.stl)", ".stl", write_stl_ascii)]
-
-
-def bounds(verts):
-    pts = [p for p in (vertex_to_vector3d(v) for v in verts) if p is not None]
-    if not pts:
-        raise RuntimeError("Could not read the position of any selected vertex.")
-    lo = QVector3D(min(p.x() for p in pts), min(p.y() for p in pts), min(p.z() for p in pts))
-    hi = QVector3D(max(p.x() for p in pts), max(p.y() for p in pts), max(p.z() for p in pts))
-    return lo, hi
-
-
-def pivot_point(kind, lo, hi):
-    if kind == "origin":
-        return QVector3D(0, 0, 0)
-    if kind == "corner":
-        return QVector3D(lo.x(), lo.y(), lo.z())
-    if kind == "centre":
-        return QVector3D((lo.x() + hi.x()) / 2, (lo.y() + hi.y()) / 2, (lo.z() + hi.z()) / 2)
-    return QVector3D((lo.x() + hi.x()) / 2, (lo.y() + hi.y()) / 2, lo.z())   # bottom centre
-
-
-def set_vertex(v, p):
-    """Moves a vertex to p using whichever mechanism the vertex object supports.
-    Returns True only if the vertex is verifiably at p afterwards."""
-    x, y, z = p.x(), p.y(), p.z()
-    attempts = []
-    if isinstance(v, QVector3D):
-        attempts.append(lambda: (v.setX(x), v.setY(y), v.setZ(z)))
-    for name in ('pos', 'position', 'co'):
-        if hasattr(v, name):
-            attempts.append(lambda n=name: setattr(v, n, QVector3D(x, y, z)))
-            attempts.append(lambda n=name: getattr(v, n).setX(x) or getattr(v, n).setY(y) or getattr(v, n).setZ(z))
-    if all(hasattr(v, a) and not callable(getattr(v, a)) for a in 'xyz'):
-        attempts.append(lambda: (setattr(v, 'x', x), setattr(v, 'y', y), setattr(v, 'z', z)))
-    if callable(getattr(v, 'set', None)):
-        attempts.append(lambda: v.set(x, y, z))
-    tol = 1e-6 * (1.0 + abs(x) + abs(y) + abs(z))
-    for attempt in attempts:
-        try:
-            attempt()
-        except Exception:
+def piece_leaves(entities, with_tris=True):
+    """Every smallest part of the selection: [(key, name, kind, [triangles in world metres])].
+    key is the part's path of group names (so a plan still fits after the window is reopened),
+    kind the name of the group it's in."""
+    out, seen = [], {}
+    loose = []
+    for e in entities:
+        if _is_face(e):
+            loose.append(e)
             continue
-        q = vertex_to_vector3d(v)
-        if q is not None and abs(q.x() - x) < tol and abs(q.y() - y) < tol and abs(q.z() - z) < tol:
-            return True
-    return False
+        place = {}
+        for g, m in _placements(e):
+            place.setdefault(id(g), m)
+
+        def walk(g, path, lvl):
+            nm = str(getattr(g, 'name', '') or "Group")
+            here = path + [nm]
+            faces = _items(getattr(getattr(g, 'mesh', None), 'faces', None))
+            if faces:
+                tris = _tris_of(faces, place.get(id(g), getattr(g, 'xform', None))) if with_tris else [None]
+                if tris:
+                    key = "/".join(here)
+                    seen[key] = seen.get(key, 0) + 1
+                    if seen[key] > 1:
+                        key += "#%d" % seen[key]
+                    # the group it's in - or, straight under what you selected, its own name
+                    kind = path[-1] if len(path) >= 2 else nm
+                    out.append((key, nm, kind, tris))
+            if lvl < 12:
+                for c in _kids(g):
+                    walk(c, here, lvl + 1)
+        walk(e, [], 0)
+    if loose:
+        tris = _tris_of(loose) if with_tris else [None]
+        if tris:
+            out.append(("Selected faces", "Selected faces", "", tris))
+    return out
 
 
-def refresh_meshes(meshes):
-    for m in meshes:
-        for name in ('recompute_normals', 'update_normals', 'rebuild', 'invalidate'):
-            fn = getattr(m, name, None)
-            if callable(fn):
-                try:
-                    fn()
-                except Exception:
-                    pass
+def plan_parts(leaves, plan):
+    """Parts from leaves and a plan {'pieces': [names], 'keys': {key: piece name}}: each planned
+    piece is all its parts together; parts in no piece print on their own."""
+    pieces = list(plan.get('pieces', [])) if plan else []
+    keys = plan.get('keys', {}) if plan else {}
+    merged = dict((p, []) for p in pieces)
+    alone = []
+    for key, name, kind, tris in leaves:
+        p = keys.get(key)
+        if p in merged:
+            merged[p] += tris
+        else:
+            alone.append((name, tris))
+    out = [(p, merged[p]) for p in pieces if merged[p]]
+    names = {}
+    for n, tr in out + alone:
+        names[n] = names.get(n, 0) + 1
+    seen = {}
+    res = []
+    for n, tr in out + alone:
+        seen[n] = seen.get(n, 0) + 1
+        res.append((n if names[n] == 1 else "%s (%d)" % (n, seen[n]), tr))
+    return res
 
 
-def guess_unit(size):
-    """IngeTrazo stores models in metres. Only something over 500 'metres' long is taken to be a
-    model that came in from millimetres without being converted."""
-    return "m" if max(size) < 500.0 else "mm"
+def _qt(group, name):
+    """A Qt enum value, old or new spelling (Qt.Checked or Qt.CheckState.Checked)."""
+    from PySide6.QtCore import Qt
+    v = getattr(Qt, name, None)
+    return v if v is not None else getattr(getattr(Qt, group), name)
 
 
-# ---------------------------------------------------------------------------
-# Dialog
-# ---------------------------------------------------------------------------
+def _prep_part(tris, limit=9000):
+    """A part's triangles ready to draw: [(tri, normal, edge flags)] - an edge is drawn as a line
+    where the surface folds (or ends), so the part's shape reads clearly, not its triangles."""
+    import math
+    step = max(1, len(tris) // limit)
+    tris = tris[::step]
+    out, edges = [], {}
+
+    def k(p):
+        return (round(p[0], 7), round(p[1], 7), round(p[2], 7))
+    for t in tris:
+        a, b, c = t
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        w = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        n = (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+        L = math.sqrt(n[0] ** 2 + n[1] ** 2 + n[2] ** 2)
+        if L < 1e-18:
+            continue
+        n = (n[0] / L, n[1] / L, n[2] / L)
+        idx = len(out)
+        out.append([t, n, [False, False, False]])
+        for e in range(3):
+            key = tuple(sorted((k(t[e]), k(t[(e + 1) % 3]))))
+            edges.setdefault(key, []).append((idx, e))
+    for lst in edges.values():
+        if len(lst) != 2:
+            for idx, e in lst:
+                out[idx][2][e] = True
+            continue
+        (i1, e1), (i2, e2) = lst
+        n1, n2 = out[i1][1], out[i2][1]
+        if n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] < 0.94:      # a fold of more than ~20 degrees
+            out[i1][2][e1] = True
+            out[i2][2][e2] = True
+    return out
 
 
-def _mm(x):
-    """A size in mm, with enough figures to read: 1234, 12.3, 0.20, 0.0057."""
-    a = abs(x)
-    if a >= 100:
-        return "%.0f" % x
-    if a >= 1:
-        return "%.1f" % x
-    if a >= 0.01:
-        return "%.2f" % x
-    return "%.2g" % x
+def _split_big(prepped, size):
+    """Big triangles cut into smaller ones (each edge no longer than size), so they sort
+    properly against their neighbours in the picture. The fold lines stay on the outer edges."""
+    out = []
+    stack = list(prepped)
+    while stack:
+        t, n, fl = stack.pop()
+        a, b, c = t
+        L = [sum((t[(e + 1) % 3][k] - t[e][k]) ** 2 for k in range(3)) for e in range(3)]
+        if max(L) <= size * size or len(out) + len(stack) > 60000:
+            out.append((t, n, fl))
+            continue
+        ab = tuple((a[k] + b[k]) / 2 for k in range(3))
+        bc = tuple((b[k] + c[k]) / 2 for k in range(3))
+        ca = tuple((c[k] + a[k]) / 2 for k in range(3))
+        stack += [((a, ab, ca), n, [fl[0], False, fl[2]]), ((ab, b, bc), n, [fl[0], fl[1], False]),
+                  ((ca, bc, c), n, [False, fl[1], fl[2]]), ((ab, bc, ca), n, [False, False, False])]
+    return out
+
+
+def _view_axes(az, el=32.0):
+    import math
+    a, e = math.radians(az), math.radians(el)
+    D = (math.cos(a) * math.cos(e), math.sin(a) * math.cos(e), -math.sin(e))   # looking along D
+    R = (D[1], -D[0], 0.0)
+    L = math.sqrt(R[0] ** 2 + R[1] ** 2) or 1.0
+    R = (R[0] / L, R[1] / L, 0.0)
+    U = (R[1] * D[2] - R[2] * D[1], R[2] * D[0] - R[0] * D[2], R[0] * D[1] - R[1] * D[0])
+    return D, R, U
+
+
+LIGHT = (-0.3, -0.45, 0.84)
+
+
+def _project(prepped, D, R, U, leaf=0):
+    """[(depth, leaf, pts2d, shade, [(p, q) feature edges in 2d])], front faces only."""
+    out = []
+    LIGHT = (-0.3, -0.45, 0.84) if D[2] <= 0 else (-0.3, -0.45, -0.84)     # lit from the side you look
+    for t, n, fl in prepped:
+        if n[0] * D[0] + n[1] * D[1] + n[2] * D[2] >= 0:
+            continue
+        sh = 0.5 + 0.5 * max(0.0, n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2])
+        pts = [(p[0] * R[0] + p[1] * R[1] + p[2] * R[2], -(p[0] * U[0] + p[1] * U[1] + p[2] * U[2])) for p in t]
+        d = sum(p[0] * D[0] + p[1] * D[1] + p[2] * D[2] for p in t) / 3.0
+        ed = [(pts[e], pts[(e + 1) % 3]) for e in range(3) if fl[e]]
+        out.append((d, leaf, pts, sh, ed))
+    return out
+
+
+def part_thumbnail(prepped, colour, size, az):
+    """A small picture of one part on its own, in its piece's colour."""
+    from PySide6.QtGui import QPixmap, QPainter, QColor, QPolygonF, QPen
+    from PySide6.QtCore import QPointF
+    pm = QPixmap(size, size)
+    pm.fill(QColor(255, 255, 255))
+    D, R, U = _view_axes(az)
+    items = sorted(_project(prepped, D, R, U), key=lambda e: -e[0])
+    if not items:
+        return pm
+    xs = [x for e in items for x, _ in e[2]]
+    ys = [y for e in items for _, y in e[2]]
+    m = 4
+    sc = min((size - 2 * m) / ((max(xs) - min(xs)) or 1), (size - 2 * m) / ((max(ys) - min(ys)) or 1))
+    ox = m + (size - 2 * m - (max(xs) - min(xs)) * sc) / 2 - min(xs) * sc
+    oy = m + (size - 2 * m - (max(ys) - min(ys)) * sc) / 2 - min(ys) * sc
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    edge = QPen(QColor(40, 40, 40), 0.8)
+    for _d, _i, pts, sh, ed in items:
+        col = QColor(int(colour[0] * sh), int(colour[1] * sh), int(colour[2] * sh))
+        p.setBrush(col)
+        p.setPen(QPen(col, 0.6))
+        p.drawPolygon(QPolygonF([QPointF(ox + x * sc, oy + y * sc) for x, y in pts]))
+        if ed:
+            p.setPen(edge)
+            for a, b in ed:
+                p.drawLine(QPointF(ox + a[0] * sc, oy + a[1] * sc), QPointF(ox + b[0] * sc, oy + b[1] * sc))
+    p.end()
+    return pm
 
 
 # --- Eddy's 3D plugins: hover help and remembered window places (begin) ---
@@ -1063,6 +1140,941 @@ EDDY_TIPS = {'Scale': 'The scale to print at, e.g. 1 : 80.',
 EDDY_TIPS_END = None
 
 
+class PieceCanvas(QWidget):
+    """A picture of the parts, each in its piece's colour, outlined where the surfaces fold.
+    Click a part to pick it (Ctrl / Shift for more); the mouse wheel zooms in on the pointer;
+    drag with the right (or middle) button to move the picture; double-click to fit it again."""
+
+    def __init__(self, dlg):
+        super().__init__(dlg)
+        self.dlg = dlg
+        self.setMinimumSize(560, 480)
+        self.az = 52.0
+        self.el = 32.0                  # negative: looking up from underneath
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self._drag = None
+        self._spin = None
+        self.prep = [_prep_part(lf[3]) for lf in dlg.leaves]
+        # for the big picture, big triangles are cut smaller so they sort properly
+        pts = [q for pp in self.prep for t, _n, _f in pp for q in t]
+        span = max(max(q[k] for q in pts) - min(q[k] for q in pts) for k in range(3)) if pts else 1.0
+        size = span / 15.0
+        for _try in range(5):                  # no more pieces than the picture can draw quickly
+            self.big = [_split_big(pp, size) for pp in self.prep]
+            if sum(len(b) for b in self.big) <= 30000:
+                break
+            size *= 1.6
+        # the model's middle and size: the picture keeps the same scale and centre however it's turned
+        import math
+        if pts:
+            c3 = tuple((max(q[k] for q in pts) + min(q[k] for q in pts)) / 2.0 for k in range(3))
+            self.centre = c3
+            self.radius = max(1e-9, max(math.sqrt(sum((q[k] - c3[k]) ** 2 for k in range(3))) for q in pts[::max(1, len(pts) // 5000)]))
+        else:
+            self.centre, self.radius = (0.0, 0.0, 0.0), 1.0
+        self.items = []
+        self.boxes = None
+        self.moving = False             # while the mouse is turning or moving it: a quick picture
+        self._need_view = False
+        self._settle_n = 0
+        self.view()
+
+    def _start_moving(self):
+        """Quick pictures while the mouse moves; the full one a moment after it stops."""
+        self.moving = True
+        self._settle_n += 1
+        n = self._settle_n
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(220, lambda: self._settle(n))
+        except Exception:
+            pass
+
+    def _settle(self, n):
+        if n != self._settle_n or self._spin is not None:
+            return
+        self.moving = False
+        self._need_view = True
+        self.update()
+
+    def view(self, fast=False):
+        """Works out the picture. fast: a thinned-out one, quick enough to follow the mouse while
+        you turn the model (the full one is drawn when you let go)."""
+        import math
+        D, R, U = _view_axes(self.az, self.el)
+        self.axes = (D, R, U)
+        items = []
+        # the same pieces while moving as when still, so the picture looks the same as it turns
+        # (only the smoothing is left off while it moves, which is what makes it quick)
+        for i, pp in enumerate(self.big):
+            items += _project(pp, D, R, U, i)
+        items.sort(key=lambda e: -e[0])
+        self.items = items
+        if items:
+            xs = [x for e in items for x, _ in e[2]]
+            ys = [y for e in items for _, y in e[2]]
+            self.boxes = (min(xs), max(xs), min(ys), max(ys))
+
+    def _map(self):
+        # scaled to the model's size and centred on its middle - the same however it's turned,
+        # so it turns smoothly in place instead of jumping about
+        _D, R, U = self.axes
+        c = self.centre
+        cx = c[0] * R[0] + c[1] * R[1] + c[2] * R[2]
+        cy = -(c[0] * U[0] + c[1] * U[1] + c[2] * U[2])
+        w, h = self.width() - 20, self.height() - 20
+        sc = min(w, h) / (2.0 * self.radius) * 1.05 * self.zoom
+        ox = 10 + w / 2 - cx * sc + self.pan[0]
+        oy = 10 + h / 2 - cy * sc + self.pan[1]
+        return sc, ox, oy
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPolygonF, QPen, QLinearGradient, QBrush
+        from PySide6.QtCore import QPointF, Qt
+        if self._need_view:
+            self._need_view = False
+            self.view(fast=self.moving)
+        p = QPainter(self)
+        if not self.moving:
+            p.setRenderHint(QPainter.Antialiasing)
+        g = QLinearGradient(0, 0, 0, self.height())
+        g.setColorAt(0.0, QColor(252, 252, 250))
+        g.setColorAt(1.0, QColor(222, 226, 230))
+        p.fillRect(self.rect(), QBrush(g))
+        if not self.items:
+            p.drawText(self.rect(), Qt.AlignCenter, "Nothing to show")
+            p.end()
+            return
+        sc, ox, oy = self._map()
+        picked = set(self.dlg.picked_rows())
+        edge = QPen(QColor(35, 35, 35), 0.9)
+        edge_pick = QPen(QColor(0, 0, 0), 1.6)
+        for _d, i, pts, sh, ed in self.items:
+            if not self.dlg.shown(i):
+                continue
+            base = self.dlg.colour_of(i)
+            if i in picked:
+                base = (255, 225, 40)              # the parts you've picked show up bright yellow
+            col = QColor(int(base[0] * sh), int(base[1] * sh), int(base[2] * sh))
+            p.setBrush(col)
+            p.setPen(QPen(col, 0.7))
+            p.drawPolygon(QPolygonF([QPointF(ox + x * sc, oy + y * sc) for x, y in pts]))
+            if ed:
+                p.setPen(edge_pick if i in picked else edge)
+                for a, b in ed:
+                    p.drawLine(QPointF(ox + a[0] * sc, oy + a[1] * sc), QPointF(ox + b[0] * sc, oy + b[1] * sc))
+        p.setPen(QColor(90, 90, 90))
+        p.drawText(8, self.height() - 8, "Left-drag: turn   Wheel: zoom   Right-drag: move   Right-click: menu   "
+                                         "Double-click: fit   Click: pick   Ctrl+click: pick more   "
+                                         "Shift+click: un-pick")
+        p.end()
+
+    def _pos(self, ev):
+        try:
+            q = ev.position()
+            return q.x(), q.y()
+        except Exception:
+            return ev.x(), ev.y()
+
+    def wheelEvent(self, ev):
+        if not self.boxes:
+            return
+        try:
+            dy = ev.angleDelta().y()
+        except Exception:
+            dy = 0
+        if not dy:
+            return
+        mx, my = self._pos(ev)
+        sc, ox, oy = self._map()
+        wx, wy = (mx - ox) / sc, (my - oy) / sc          # the point under the pointer stays put
+        f = 1.15 ** (dy / 120.0)
+        self.zoom = max(0.3, min(60.0, self.zoom * f))
+        sc2, ox2, oy2 = self._map()
+        self.pan = (self.pan[0] + mx - (ox2 + wx * sc2), self.pan[1] + my - (oy2 + wy * sc2))
+        self._start_moving()
+        self.update()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.update()
+
+    def mouseMoveEvent(self, ev):
+        mx, my = self._pos(ev)
+        if self._spin is not None:
+            x0_, y0_, az0, el0, add, moved = self._spin
+            if not moved and abs(mx - x0_) + abs(my - y0_) <= 4:
+                return
+            self._spin = (x0_, y0_, az0, el0, add, True)
+            # left-drag turns the model: across turns it round, up and down tilts it
+            self.az = (az0 - (mx - x0_) * 0.45) % 360.0
+            self.el = max(-85.0, min(85.0, el0 + (my - y0_) * 0.35))
+            self.moving = True
+            self._need_view = True           # worked out when it's drawn: only once however many moves
+            self.update()
+            return
+        if self._drag is None:
+            return
+        self.pan = (self._drag[2] + mx - self._drag[0], self._drag[3] + my - self._drag[1])
+        self._start_moving()
+        self.update()
+
+    def mouseReleaseEvent(self, ev):
+        sp, self._spin = self._spin, None
+        if sp is not None:
+            if sp[5]:
+                self.moving = False
+                self._need_view = True         # the full picture again
+                self.update()
+                try:
+                    self.dlg.b_below.setText("Look from above" if self.el < 0 else "Look from below")
+                except Exception:
+                    pass
+            else:
+                i = self.part_at(sp[0], sp[1])  # a click, not a turn: pick what's under it
+                if i is not None:
+                    self.dlg.pick_part(i, sp[4])
+            return
+        d, self._drag = self._drag, None
+        if d is None or len(d) < 5 or not d[4]:
+            return
+        mx, my = self._pos(ev)
+        if abs(mx - d[0]) + abs(my - d[1]) <= 4:
+            # a right-click (not a drag): pick the part under the pointer if it isn't picked, then the menu
+            i = self.part_at(mx, my)
+            if i is not None and i not in set(self.dlg.picked_rows()):
+                self.dlg.pick_row(i, False)
+            try:
+                gp = ev.globalPosition().toPoint()
+            except Exception:
+                gp = ev.globalPos()
+            self.dlg.context_menu(gp)
+
+    def part_at(self, mx, my):
+        """The nearest shown part under the pointer, or None."""
+        if not self.items:
+            return None
+        sc, ox, oy = self._map()
+        x, y = (mx - ox) / sc, (my - oy) / sc
+
+        def inside(pts):
+            (ax, ay), (bx, by), (cx, cy) = pts
+            d1 = (x - bx) * (ay - by) - (ax - bx) * (y - by)
+            d2 = (x - cx) * (by - cy) - (bx - cx) * (y - cy)
+            d3 = (x - ax) * (cy - ay) - (cx - ax) * (y - ay)
+            return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+        for _d, i, pts, _sh, _ed in reversed(self.items):
+            if self.dlg.shown(i) and inside(pts):
+                return i
+        return None
+
+    def mousePressEvent(self, ev):
+        if not self.items:
+            return
+        from PySide6.QtCore import Qt
+        mx, my = self._pos(ev)
+        try:
+            btn = ev.button()
+            if btn in (Qt.RightButton, Qt.MiddleButton):
+                # the last flag: a right button that doesn't move opens the menu on release
+                self._drag = (mx, my, self.pan[0], self.pan[1], btn == Qt.RightButton)
+                return
+        except Exception:
+            pass
+        # Ctrl+click picks more, Shift+click un-picks, a plain click picks just that one
+        mode = 'only'
+        try:
+            mods = ev.modifiers()
+            if mods & Qt.ShiftModifier:
+                mode = 'remove'
+            elif mods & Qt.ControlModifier:
+                mode = 'add'
+        except Exception:
+            pass
+        self._spin = (mx, my, self.az, self.el, mode, False)
+
+
+class PiecesDialog(QDialog):
+    """Shows every part of the selection; you pick parts and put them into print pieces, each
+    piece its own colour. Parts in no piece print on their own."""
+
+    def __init__(self, parent, leaves, plan):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QTableWidget, QAbstractItemView, QSplitter
+        self.setWindowTitle(PLUGIN_NAME + " - Plan the print pieces")
+        self.leaves = leaves
+        self.pieces = list((plan or {}).get('pieces', []))
+        keys = (plan or {}).get('keys', {})
+        known = set(k for k, _n, _kd, _t in leaves)
+        self.keys = {k: p for k, p in keys.items() if k in known and p in self.pieces}
+        lay = QVBoxLayout(self)
+        tip = QLabel("Pick parts in the list or click them in the picture (Ctrl+click to pick more, Shift+click to un-pick), then "
+                     "put them in a piece. Each piece prints as one and has its own colour; grey parts print "
+                     "on their own.")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        row = QHBoxLayout()
+        lay.addLayout(row, 1)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Part", "In group", "Print piece"])
+        try:
+            self.table.setSelectionBehavior(getattr(QAbstractItemView, 'SelectRows', None) or
+                                            QAbstractItemView.SelectionBehavior.SelectRows)
+            self.table.setSelectionMode(getattr(QAbstractItemView, 'ExtendedSelection', None) or
+                                        QAbstractItemView.SelectionMode.ExtendedSelection)
+            self.table.setEditTriggers(getattr(QAbstractItemView, 'NoEditTriggers', None) or
+                                       QAbstractItemView.EditTrigger.NoEditTriggers)
+            self.table.verticalHeader().setVisible(False)
+            self.table.horizontalHeader().setStretchLastSection(True)
+        except Exception:
+            pass
+        self.table.setToolTip("Every part of what you selected. Pick some (Ctrl+click for more, Shift+click to un-pick), then use the "
+                              "buttons below.")
+        try:
+            from PySide6.QtCore import QSize
+            self.table.setIconSize(QSize(64, 64))
+            self.table.verticalHeader().setDefaultSectionSize(70)
+            self.table.setColumnWidth(0, 230)
+            self.table.setColumnWidth(1, 140)
+        except Exception:
+            pass
+        from PySide6.QtWidgets import QListWidget
+        self.hidden_parts, self.hidden_pieces = set(), set()
+        left = QVBoxLayout()
+        left.addWidget(self.table, 1)
+        lp = QLabel("Print pieces - untick to hide them in the picture:")
+        left.addWidget(lp)
+        self.piece_list = QListWidget()
+        self.piece_list.setMaximumHeight(170)
+        self.piece_list.setToolTip("Every piece, in its colour, and the parts printing on their own. Untick one "
+                                   "to hide it in the picture, so you can see what's behind. (Hidden parts are "
+                                   "still printed.)")
+        left.addWidget(self.piece_list)
+        row.addLayout(left, 2)
+        self.canvas = PieceCanvas(self)
+        self.canvas.setToolTip("The parts, coloured by the piece they're in (grey: on their own). Click a part to "
+                               "pick it - Ctrl+click to pick more, Shift+click to un-pick. Picked parts show yellow.")
+        row.addWidget(self.canvas, 3)
+
+        brow = QHBoxLayout()
+        b_new = QPushButton("New piece from picked")
+        b_new.setToolTip("Makes a new piece (a new colour) holding the parts you've picked.")
+        self.cb_piece = QComboBox()
+        self.cb_piece.setToolTip("The piece to add the picked parts to.")
+        b_add = QPushButton("Add picked to")
+        b_add.setToolTip("Puts the picked parts into the piece chosen beside it.")
+        b_out = QPushButton("Print on their own")
+        b_out.setToolTip("Takes the picked parts out of their piece, so each prints on its own.")
+        for w in (b_new, b_add, self.cb_piece, b_out):
+            brow.addWidget(w)
+        brow.addStretch(1)
+        lay.addLayout(brow)
+        brow2 = QHBoxLayout()
+        b_kind = QPushButton("A piece for each group")
+        b_kind.setToolTip("Quick start: one piece per group the parts are in - all the columns together, all "
+                          "the brackets together and so on.")
+        b_clear = QPushButton("Clear all")
+        b_clear.setToolTip("Every part on its own again.")
+        b_turn = QPushButton("Turn picture")
+        b_turn.setToolTip("Turns the picture a quarter of the way round, to see the other side.")
+        b_turn.clicked.connect(self.turn)
+        self.b_below = QPushButton("Look from below")
+        self.b_below.setToolTip("Looks up at the model from underneath (press again to look from above).")
+        self.b_below.clicked.connect(self.flip_view)
+        b_hide = QPushButton("Hide picked")
+        b_hide.setToolTip("Hides the picked parts in the picture (they still print). Tick them again in the list "
+                          "to bring them back.")
+        b_hide.clicked.connect(self.hide_picked)
+        b_showall = QPushButton("Show all")
+        b_showall.setToolTip("Shows every part and piece again.")
+        b_showall.clicked.connect(self.show_all)
+        b_ren = QPushButton("Rename piece...")
+        b_ren.setToolTip("Gives the piece chosen above a name of your own (it's the name the slicer shows).")
+        self.lbl = QLabel()
+        b_ok = QPushButton("Use these pieces")
+        b_ok.setDefault(True)
+        b_ok.setToolTip("Keeps this plan: the next export prints these pieces.")
+        b_cancel = QPushButton("Cancel")
+        for w in (b_kind, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall):
+            brow2.addWidget(w)
+        brow2.addWidget(self.lbl, 1)
+        brow2.addWidget(b_ok)
+        brow2.addWidget(b_cancel)
+        lay.addLayout(brow2)
+        b_new.clicked.connect(self.new_piece)
+        b_add.clicked.connect(self.add_to)
+        b_out.clicked.connect(self.take_out)
+        b_kind.clicked.connect(self.by_kind)
+        b_clear.clicked.connect(self.clear_all)
+        b_ren.clicked.connect(self.rename)
+        b_ok.clicked.connect(self.accept)
+        b_cancel.clicked.connect(self.reject)
+        self.table.itemSelectionChanged.connect(self.canvas.update)
+        try:
+            self.table.viewport().installEventFilter(self)
+        except Exception:
+            pass
+        self.table.itemChanged.connect(self.part_ticked)
+        self.piece_list.itemChanged.connect(self.piece_ticked)
+        try:
+            pol = _qt('ContextMenuPolicy', 'CustomContextMenu')
+            self.table.setContextMenuPolicy(pol)
+            self.table.customContextMenuRequested.connect(
+                lambda pos: self.context_menu(self.table.viewport().mapToGlobal(pos)))
+            self.piece_list.setContextMenuPolicy(pol)
+            self.piece_list.customContextMenuRequested.connect(
+                lambda pos: self.piece_menu(self.piece_list.itemAt(pos), self.piece_list.viewport().mapToGlobal(pos)))
+        except Exception:
+            pass
+        try:
+            from PySide6.QtWidgets import QApplication
+            scr = QApplication.primaryScreen().availableGeometry()
+            self.resize(int(scr.width() * 0.85), int(scr.height() * 0.85))
+            self.setSizeGripEnabled(True)
+        except Exception:
+            pass
+        self.refresh()
+
+    # ---- the plan
+    def colour_of(self, i):
+        p = self.keys.get(self.leaves[i][0])
+        return piece_colour(self.pieces.index(p)) if p in self.pieces else LOOSE_COLOUR
+
+    def picked_rows(self):
+        try:
+            return sorted({ix.row() for ix in self.table.selectionModel().selectedRows()})
+        except Exception:
+            return []
+
+    def pick_part(self, i, mode='only'):
+        """mode 'only': pick just this part; 'add': pick it as well (Ctrl); 'remove': un-pick it (Shift)."""
+        if mode == 'remove':
+            try:
+                from PySide6.QtCore import QItemSelectionModel
+                sm = self.table.selectionModel()
+                flag = getattr(QItemSelectionModel, 'Deselect', None) or QItemSelectionModel.SelectionFlag.Deselect
+                rows = getattr(QItemSelectionModel, 'Rows', None) or QItemSelectionModel.SelectionFlag.Rows
+                sm.select(self.table.model().index(i, 0), flag | rows)
+            except Exception:
+                pass
+            self.canvas.update()
+            return
+        self.pick_row(i, mode == 'add')
+
+    def eventFilter(self, obj, ev):
+        # the parts list works the same way as the picture: Ctrl+click picks more, Shift+click
+        # un-picks (instead of Qt's usual 'Shift picks a run of rows')
+        try:
+            from PySide6.QtCore import QEvent, Qt
+            if obj is self.table.viewport() and ev.type() == QEvent.MouseButtonPress and \
+                    ev.button() == Qt.LeftButton:
+                mods = ev.modifiers()
+                if mods & (Qt.ShiftModifier | Qt.ControlModifier):
+                    try:
+                        pos = ev.position().toPoint()
+                    except Exception:
+                        pos = ev.pos()
+                    r = self.table.rowAt(pos.y())
+                    if r >= 0:
+                        self.pick_part(r, 'remove' if mods & Qt.ShiftModifier else 'add')
+                    return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
+
+    def pick_row(self, i, add=False):
+        try:
+            from PySide6.QtCore import QItemSelectionModel
+            sm = self.table.selectionModel()
+            flag = getattr(QItemSelectionModel, 'Select', None) or QItemSelectionModel.SelectionFlag.Select
+            rows = getattr(QItemSelectionModel, 'Rows', None) or QItemSelectionModel.SelectionFlag.Rows
+            if not add:
+                self.table.clearSelection()
+            sm.select(self.table.model().index(i, 0), flag | rows)
+            self.table.scrollToItem(self.table.item(i, 0))
+        except Exception:
+            self.table.selectRow(i)
+        self.canvas.update()
+
+    def _unused_name(self):
+        k = len(self.pieces) + 1
+        while "Piece %d" % k in self.pieces:
+            k += 1
+        return "Piece %d" % k
+
+    def new_piece(self, *_):
+        rows = self.picked_rows()
+        if not rows:
+            self.lbl.setText("Pick some parts first.")
+            return
+        name = self._unused_name()
+        self.pieces.append(name)
+        for r in rows:
+            self.keys[self.leaves[r][0]] = name
+        self.refresh(name)
+
+    def add_to(self, *_):
+        rows = self.picked_rows()
+        name = self.cb_piece.currentData()
+        if not rows or not name:
+            self.lbl.setText("Pick some parts, and a piece to add them to.")
+            return
+        for r in rows:
+            self.keys[self.leaves[r][0]] = name
+        self.refresh(name)
+
+    def take_out(self, *_):
+        for r in self.picked_rows():
+            self.keys.pop(self.leaves[r][0], None)
+        self.refresh()
+
+    def by_kind(self, *_):
+        self.pieces, self.keys = [], {}
+        for key, _n, kind, _t in self.leaves:
+            nm = kind or "Parts"
+            if nm not in self.pieces:
+                self.pieces.append(nm)
+            self.keys[key] = nm
+        self.refresh()
+
+    def clear_all(self, *_):
+        self.pieces, self.keys = [], {}
+        self.refresh()
+
+    def rename(self, *_):
+        from PySide6.QtWidgets import QInputDialog
+        old = self.cb_piece.currentData()
+        if not old:
+            return
+        new, ok = QInputDialog.getText(self, PLUGIN_NAME, "A name for %s:" % old, text=old)
+        new = str(new).strip() if ok else ""
+        if not new or new == old or new in self.pieces:
+            return
+        self.pieces[self.pieces.index(old)] = new
+        for k, p in list(self.keys.items()):
+            if p == old:
+                self.keys[k] = new
+        self.refresh(new)
+
+    def refresh(self, current=None):
+        from PySide6.QtWidgets import QTableWidgetItem
+        from PySide6.QtGui import QColor, QBrush
+        # pieces nothing's in any more go
+        used = set(self.keys.values())
+        self.pieces = [p for p in self.pieces if p in used]
+        picked = self.picked_rows()
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self.leaves))
+        for i, (key, name, kind, _t) in enumerate(self.leaves):
+            p = self.keys.get(key)
+            col = self.colour_of(i)
+            light = QColor(int(col[0] * 0.35 + 255 * 0.65), int(col[1] * 0.35 + 255 * 0.65),
+                           int(col[2] * 0.35 + 255 * 0.65))
+            for c, txt in enumerate((name, kind, p or "(on its own)")):
+                it = QTableWidgetItem(("■ " + txt) if c == 2 and p else txt)
+                if c == 0:
+                    try:
+                        it.setFlags(it.flags() | _qt('ItemFlag', 'ItemIsUserCheckable'))
+                        it.setCheckState(_qt('CheckState', 'Unchecked') if key in self.hidden_parts
+                                         else _qt('CheckState', 'Checked'))
+                        it.setToolTip("Untick to hide this part in the picture (it still prints).")
+                    except Exception:
+                        pass
+                    try:
+                        from PySide6.QtGui import QIcon
+                        it.setIcon(QIcon(part_thumbnail(self.canvas.prep[i], col, 64, self.canvas.az)))
+                    except Exception:
+                        pass
+                it.setBackground(QBrush(light))
+                if c == 2 and p:
+                    it.setForeground(QBrush(QColor(*col).darker(130)))
+                self.table.setItem(i, c, it)
+        self.table.blockSignals(False)
+        for r in picked:
+            self.pick_row(r, True)
+        self.cb_piece.clear()
+        for k, p in enumerate(self.pieces):
+            self.cb_piece.addItem("■ " + p, p)
+        if current in self.pieces:
+            self.cb_piece.setCurrentIndex(self.pieces.index(current))
+        self.hidden_pieces &= set(self.pieces) | {""}
+        try:
+            from PySide6.QtWidgets import QListWidgetItem
+            from PySide6.QtGui import QPixmap, QIcon
+            self.piece_list.blockSignals(True)
+            self.piece_list.clear()
+            for k_, p_ in enumerate(self.pieces + [""]):
+                n_ = sum(1 for kk, _n, _kd, _t in self.leaves if (self.keys.get(kk) or "") == p_)
+                if p_ == "" and not n_:
+                    continue
+                li = QListWidgetItem("%s  (%d part%s)" % (p_ or "On their own", n_, "" if n_ == 1 else "s"))
+                pm = QPixmap(16, 16)
+                pm.fill(QColor(*(piece_colour(k_) if p_ else LOOSE_COLOUR)))
+                li.setIcon(QIcon(pm))
+                li.setData(_qt('ItemDataRole', 'UserRole'), p_)
+                li.setFlags(li.flags() | _qt('ItemFlag', 'ItemIsUserCheckable'))
+                li.setCheckState(_qt('CheckState', 'Unchecked') if p_ in self.hidden_pieces
+                                 else _qt('CheckState', 'Checked'))
+                self.piece_list.addItem(li)
+            self.piece_list.blockSignals(False)
+        except Exception:
+            pass
+        n_alone = sum(1 for k, _n, _kd, _t in self.leaves if k not in self.keys)
+        self.lbl.setText("%d piece%s, %d part%s on their own - %d to print." % (
+            len(self.pieces), "" if len(self.pieces) == 1 else "s", n_alone, "" if n_alone == 1 else "s",
+            len(self.pieces) + n_alone))
+        self.canvas.update()
+
+    def context_menu(self, gpos):
+        """Right-click on the parts (in the list or the picture): what to do with the picked ones."""
+        from PySide6.QtWidgets import QMenu
+        rows = self.picked_rows()
+        n = len(rows)
+        m = QMenu(self)
+        what = ("%d picked part%s" % (n, "" if n == 1 else "s")) if n else "nothing picked"
+        t = m.addAction(what)
+        t.setEnabled(False)
+        m.addSeparator()
+        # first: make a piece of them and hide it, so you work your way round the model
+        a_nh = m.addAction("New piece and hide it")
+        a_nh.setEnabled(n > 0)
+        try:
+            f_ = a_nh.font()
+            f_.setBold(True)
+            a_nh.setFont(f_)
+            m.setDefaultAction(a_nh)
+        except Exception:
+            pass
+        sub_h = m.addMenu("Add to piece and hide")
+        sub_h.setEnabled(n > 0 and bool(self.pieces))
+        for p_ in self.pieces:
+            act = sub_h.addAction("\u25a0 " + p_)
+            act.triggered.connect(lambda _=False, p_=p_: self._add_to(p_, hide=True))
+        a_h1 = m.addAction("Hide picked")
+        a_h1.setEnabled(n > 0)
+        a_h1.triggered.connect(self.hide_picked)
+        a_nh.triggered.connect(self.new_piece_and_hide)
+        m.addSeparator()
+        a_new = m.addAction("New piece from picked")
+        a_new.setEnabled(n > 0)
+        sub = m.addMenu("Add picked to")
+        sub.setEnabled(n > 0 and bool(self.pieces))
+        for p_ in self.pieces:
+            act = sub.addAction("\u25a0 " + p_)
+            act.triggered.connect(lambda _=False, p_=p_: self._add_to(p_))
+        a_out = m.addAction("Print on their own")
+        a_out.setEnabled(n > 0 and any(self.leaves[r][0] in self.keys for r in rows))
+        m.addSeparator()
+        a_only = m.addAction("Show only picked")
+        a_only.setEnabled(n > 0)
+        a_show = m.addAction("Show all")
+        m.addSeparator()
+        a_below = m.addAction("Look from above" if self.canvas.el < 0 else "Look from below")
+        a_turn = m.addAction("Turn picture")
+        a_new.triggered.connect(self.new_piece)
+        a_out.triggered.connect(self.take_out)
+        a_only.triggered.connect(self.show_only_picked)
+        a_show.triggered.connect(self.show_all)
+        a_below.triggered.connect(self.flip_view)
+        a_turn.triggered.connect(self.turn)
+        m.exec(gpos)
+
+    def piece_menu(self, item, gpos):
+        """Right-click on a piece in the pieces list."""
+        from PySide6.QtWidgets import QMenu
+        if item is None:
+            return
+        name = item.data(_qt('ItemDataRole', 'UserRole'))
+        m = QMenu(self)
+        rows = [i for i in range(len(self.leaves)) if self.piece_of(i) == name]
+        a_pick = m.addAction("Pick its parts")
+        a_hide = m.addAction("Show" if name in self.hidden_pieces else "Hide")
+        a_only = m.addAction("Show only this")
+        a_ren = m.addAction("Rename...")
+        a_ren.setEnabled(bool(name))
+        a_free = m.addAction("Break up (each part on its own)")
+        a_free.setEnabled(bool(name))
+
+        def pick():
+            self.table.clearSelection()
+            for r in rows:
+                self.pick_row(r, True)
+
+        def hide():
+            if name in self.hidden_pieces:
+                self.hidden_pieces.discard(name)
+            else:
+                self.hidden_pieces.add(name)
+            self.refresh()
+
+        def only():
+            self.hidden_parts = set()
+            self.hidden_pieces = (set(self.pieces) | {""}) - {name}
+            self.refresh()
+
+        def ren():
+            for i in range(self.cb_piece.count()):
+                if self.cb_piece.itemData(i) == name:
+                    self.cb_piece.setCurrentIndex(i)
+            self.rename()
+
+        def free():
+            for k, p_ in list(self.keys.items()):
+                if p_ == name:
+                    del self.keys[k]
+            self.refresh()
+        a_pick.triggered.connect(pick)
+        a_hide.triggered.connect(hide)
+        a_only.triggered.connect(only)
+        a_ren.triggered.connect(ren)
+        a_free.triggered.connect(free)
+        m.exec(gpos)
+
+    def _add_to(self, name, hide=False):
+        rows = self.picked_rows()
+        if not rows or name not in self.pieces:
+            return
+        for r in rows:
+            self.keys[self.leaves[r][0]] = name
+        if hide:
+            self.hidden_pieces.add(name)
+            self.table.clearSelection()
+        self.refresh(name)
+
+    def new_piece_and_hide(self, *_):
+        """Makes a piece of the picked parts and hides it, so what's left is easier to get at."""
+        rows = self.picked_rows()
+        if not rows:
+            self.lbl.setText("Pick some parts first.")
+            return
+        name = self._unused_name()
+        self.pieces.append(name)
+        for r in rows:
+            self.keys[self.leaves[r][0]] = name
+        self.hidden_pieces.add(name)
+        self.table.clearSelection()
+        self.refresh(name)
+        self.lbl.setText("%s made (%d part%s) and hidden - tick it in the pieces list to see it again." % (
+            name, len(rows), "" if len(rows) == 1 else "s"))
+
+    def show_only_picked(self, *_):
+        picked = set(self.picked_rows())
+        self.hidden_pieces = set()
+        self.hidden_parts = {self.leaves[i][0] for i in range(len(self.leaves)) if i not in picked}
+        self.refresh()
+
+    def piece_of(self, i):
+        p = self.keys.get(self.leaves[i][0])
+        return p if p in self.pieces else ""
+
+    def shown(self, i):
+        return self.leaves[i][0] not in self.hidden_parts and self.piece_of(i) not in self.hidden_pieces
+
+    def part_ticked(self, it):
+        if it.column() != 0:
+            return
+        key = self.leaves[it.row()][0]
+        if it.checkState() == _qt('CheckState', 'Checked'):
+            self.hidden_parts.discard(key)
+        else:
+            self.hidden_parts.add(key)
+        self.canvas.update()
+
+    def piece_ticked(self, it):
+        name = it.data(_qt('ItemDataRole', 'UserRole'))
+        if it.checkState() == _qt('CheckState', 'Checked'):
+            self.hidden_pieces.discard(name)
+        else:
+            self.hidden_pieces.add(name)
+        self.canvas.update()
+
+    def hide_picked(self, *_):
+        for r in self.picked_rows():
+            self.hidden_parts.add(self.leaves[r][0])
+        self.table.clearSelection()
+        self.refresh()
+
+    def show_all(self, *_):
+        self.hidden_parts, self.hidden_pieces = set(), set()
+        self.refresh()
+
+    def flip_view(self, *_):
+        self.canvas.el = -self.canvas.el
+        self.b_below.setText("Look from above" if self.canvas.el < 0 else "Look from below")
+        self.canvas.view()
+        self.canvas.update()
+
+    def turn(self, *_):
+        self.canvas.az = (self.canvas.az + 90.0) % 360.0
+        self.canvas.view()
+        self.refresh()
+
+    def plan(self):
+        return {'pieces': list(self.pieces), 'keys': dict(self.keys)}
+
+
+def lay_out(parts, row_width, gap):
+    """Lays the parts (already in mm) side by side on the bed in rows, each standing on z = 0,
+    the whole lot centred on the origin. Returns the parts moved, and the total size."""
+    placed = []
+    x = y = row_h = 0.0
+    for name, tris in parts:
+        xs = [c[0] for t in tris for c in t]
+        ys = [c[1] for t in tris for c in t]
+        zs = [c[2] for t in tris for c in t]
+        w, d = max(xs) - min(xs), max(ys) - min(ys)
+        if x > 0 and x + w > row_width:
+            x, y, row_h = 0.0, y + row_h + gap, 0.0
+        dx, dy, dz = x - min(xs), y - min(ys), -min(zs)
+        placed.append((name, [tuple((c[0] + dx, c[1] + dy, c[2] + dz) for c in t) for t in tris]))
+        x += w + gap
+        row_h = max(row_h, d)
+    allx = [c[0] for _, tr in placed for t in tr for c in t]
+    ally = [c[1] for _, tr in placed for t in tr for c in t]
+    allz = [c[2] for _, tr in placed for t in tr for c in t]
+    cx, cy = (min(allx) + max(allx)) / 2, (min(ally) + max(ally)) / 2
+    placed = [(n, [tuple((c[0] - cx, c[1] - cy, c[2]) for c in t) for t in tr]) for n, tr in placed]
+    return placed, (max(allx) - min(allx), max(ally) - min(ally), max(allz) - min(allz))
+
+
+def open_in_slicer(files, slicer=""):
+    """Opens the saved file(s): in the slicer you named (all at once, so they load together),
+    or else in whatever program Windows opens that type of file with. Returns a note."""
+    import subprocess
+    import sys
+    files = [f for f in files if f]
+    if not files:
+        return ""
+    try:
+        if slicer and os.path.exists(slicer):
+            subprocess.Popen([slicer] + files)
+            return "Opened in %s." % os.path.basename(slicer)
+        target = os.path.dirname(files[0]) if len(files) > 1 else files[0]
+        if hasattr(os, 'startfile'):
+            os.startfile(target)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', target])
+        else:
+            subprocess.Popen(['xdg-open', target])
+        if len(files) > 1:
+            return ("Opened the folder (%d files). Set your slicer's program in the window to have them "
+                    "all opened in it at once." % len(files))
+        return "Opened it with your default program for that type of file."
+    except Exception as e:
+        return "Couldn't open it (%s)." % e
+
+
+INFO_TEXT = (
+    "<b>3D Print Scaler</b><br><br>"
+    "<b>Export scaled</b> writes the selection straight to a file in millimetres, every detail kept, "
+    "however small - the best way for printing. Open it in your slicer as it is: it's already the "
+    "right size.<br>"
+    "<b>Scale a copy / Scale in place</b> scale inside IngeTrazo. IngeTrazo treats points closer than "
+    "0.1 mm as one point, so at small scales tiny details (rivets, thin edges) can be lost - you're told "
+    "how many faces were lost. Use Export for printing.<br><br>"
+    "<b>Each group as a separate part</b>: every group with faces of its own becomes a separate part "
+    "(a canopy: each column, bracket, beam, valance ...), laid out side by side on the bed, 'Gap "
+    "between parts' apart. In a 3MF they're separate objects in one file, so the slicer shows them as "
+    "separate items. Other file types save one file per part, in a new folder.<br>"
+    "<b>Open in the slicer</b>: with the slicer's program set (e.g. PrusaSlicer's prusa-slicer.exe) "
+    "all the files open in it at once; otherwise the file opens in whatever program Windows uses for "
+    "that type of file.<br>"
+    "<b>Keep this window open</b>: select the next part in the model and press the button again - "
+    "the sizes follow what's selected.<br><br>"
+    "<b>Model's units</b>: IngeTrazo keeps every model in metres, so this is nearly always Metres. "
+    "Only change it for a model that came in 1000 times too big.<br>"
+    "<b>Small sizes</b>: under 1 mm is fine detail - good for resin, too small for a 0.4 mm FDM "
+    "nozzle. Under 0.05 mm is smaller than a resin printer's pixel: check the units.")
+
+
+# file types offered when saving: (label shown in the save box, extension, writer)
+EXPORTS = [("STL - binary (*.stl)", ".stl", write_stl),
+           ("3MF - PrusaSlicer, Bambu, Cura (*.3mf)", ".3mf", write_3mf),
+           ("OBJ - Rhino, ZBrush, Blender (*.obj)", ".obj", write_obj),
+           ("PLY (*.ply)", ".ply", write_ply),
+           ("STL - text / ASCII (*.stl)", ".stl", write_stl_ascii)]
+
+
+def bounds(verts):
+    pts = [p for p in (vertex_to_vector3d(v) for v in verts) if p is not None]
+    if not pts:
+        raise RuntimeError("Could not read the position of any selected vertex.")
+    lo = QVector3D(min(p.x() for p in pts), min(p.y() for p in pts), min(p.z() for p in pts))
+    hi = QVector3D(max(p.x() for p in pts), max(p.y() for p in pts), max(p.z() for p in pts))
+    return lo, hi
+
+
+def pivot_point(kind, lo, hi):
+    if kind == "origin":
+        return QVector3D(0, 0, 0)
+    if kind == "corner":
+        return QVector3D(lo.x(), lo.y(), lo.z())
+    if kind == "centre":
+        return QVector3D((lo.x() + hi.x()) / 2, (lo.y() + hi.y()) / 2, (lo.z() + hi.z()) / 2)
+    return QVector3D((lo.x() + hi.x()) / 2, (lo.y() + hi.y()) / 2, lo.z())   # bottom centre
+
+
+def set_vertex(v, p):
+    """Moves a vertex to p using whichever mechanism the vertex object supports.
+    Returns True only if the vertex is verifiably at p afterwards."""
+    x, y, z = p.x(), p.y(), p.z()
+    attempts = []
+    if isinstance(v, QVector3D):
+        attempts.append(lambda: (v.setX(x), v.setY(y), v.setZ(z)))
+    for name in ('pos', 'position', 'co'):
+        if hasattr(v, name):
+            attempts.append(lambda n=name: setattr(v, n, QVector3D(x, y, z)))
+            attempts.append(lambda n=name: getattr(v, n).setX(x) or getattr(v, n).setY(y) or getattr(v, n).setZ(z))
+    if all(hasattr(v, a) and not callable(getattr(v, a)) for a in 'xyz'):
+        attempts.append(lambda: (setattr(v, 'x', x), setattr(v, 'y', y), setattr(v, 'z', z)))
+    if callable(getattr(v, 'set', None)):
+        attempts.append(lambda: v.set(x, y, z))
+    tol = 1e-6 * (1.0 + abs(x) + abs(y) + abs(z))
+    for attempt in attempts:
+        try:
+            attempt()
+        except Exception:
+            continue
+        q = vertex_to_vector3d(v)
+        if q is not None and abs(q.x() - x) < tol and abs(q.y() - y) < tol and abs(q.z() - z) < tol:
+            return True
+    return False
+
+
+def refresh_meshes(meshes):
+    for m in meshes:
+        for name in ('recompute_normals', 'update_normals', 'rebuild', 'invalidate'):
+            fn = getattr(m, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+
+def guess_unit(size):
+    """IngeTrazo stores models in metres. Only something over 500 'metres' long is taken to be a
+    model that came in from millimetres without being converted."""
+    return "m" if max(size) < 500.0 else "mm"
+
+
+# ---------------------------------------------------------------------------
+# Dialog
+# ---------------------------------------------------------------------------
+
+
+def _mm(x):
+    """A size in mm, with enough figures to read: 1234, 12.3, 0.20, 0.0057."""
+    a = abs(x)
+    if a >= 100:
+        return "%.0f" % x
+    if a >= 1:
+        return "%.1f" % x
+    if a >= 0.01:
+        return "%.2f" % x
+    return "%.2g" % x
+
+
 class ScaleDialog(QDialog):
     def __init__(self, cur, size, unit_key, count_text, parent=None, tool=None, viewport=None):
         super().__init__(parent)
@@ -1203,6 +2215,36 @@ class ScaleDialog(QDialog):
         self.lab_gap = QLabel("   Gap between parts:")
         self.lab_gap.setToolTip(self.sp_gap.toolTip())
         form.addRow(self.lab_gap, self.sp_gap)
+        self.cb_depth = QComboBox()
+        for lab_, k_ in (("Every group (smallest pieces)", 0), ("Groups 1 level in", 1), ("Groups 2 levels in", 2),
+                         ("Groups 3 levels in", 3), ("Groups 4 levels in", 4)):
+            self.cb_depth.addItem(lab_, k_)
+            if k_ == int(cur.get('split_depth', 0) or 0):
+                self.cb_depth.setCurrentIndex(self.cb_depth.count() - 1)
+        self.cb_depth.setToolTip(
+            "Which groups become the pieces. Every group: each group with faces is a piece (a canopy: every "
+            "column, bracket and board). 'n levels in': each group that many levels inside what you selected is "
+            "one piece with everything in it - so open a group, group together the bits you'll print as one, "
+            "and they come out as one piece while the rest stay separate. For a canopy, '2 levels in' gives a "
+            "piece per column, bracket ... with your own groups kept whole; '1 level in' gives one piece per "
+            "kind (all the columns together ...).")
+        self.lab_depth = QLabel("   Pieces are:")
+        self.lab_depth.setToolTip(self.cb_depth.toolTip())
+        form.addRow(self.lab_depth, self.cb_depth)
+        self.plan = PrintScalerTool._plan
+        self.b_plan = QPushButton("Plan the pieces...")
+        self.b_plan.setToolTip("Shows every part of what's selected, in a list and a picture. Pick parts and put "
+                               "them into pieces - each piece prints as one and gets its own colour. When "
+                               "there's a plan, it decides the pieces (instead of 'Pieces are').")
+        self.b_plan.clicked.connect(self.plan_pieces)
+        self.b_unplan = QPushButton("Forget plan")
+        self.b_unplan.setToolTip("Goes back to 'Pieces are' to decide the pieces.")
+        self.b_unplan.clicked.connect(self.forget_plan)
+        prow_ = QHBoxLayout()
+        prow_.addWidget(self.b_plan)
+        prow_.addWidget(self.b_unplan)
+        prow_.addStretch(1)
+        form.addRow("", prow_)
         form.addRow(self.cb_open)
         self.lab_slicer = QLabel("   Slicer program:")
         self.lab_slicer.setToolTip(self.ed_slicer.toolTip())
@@ -1235,7 +2277,7 @@ class ScaleDialog(QDialog):
         self.b_go.clicked.connect(self.go)
         b_close.clicked.connect(self.close)
 
-        for w in (self.cb_scale, self.cb_unit, self.cb_bed, self.cb_mode, self.cb_sep, self.cb_open):
+        for w in (self.cb_scale, self.cb_unit, self.cb_bed, self.cb_mode, self.cb_sep, self.cb_open, self.cb_depth):
             sig = w.currentIndexChanged if isinstance(w, QComboBox) else w.toggled
             sig.connect(self.update_info)
         self.sp_custom.valueChanged.connect(self.update_info)
@@ -1288,6 +2330,27 @@ class ScaleDialog(QDialog):
         self.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if bad else "#2e7d32"))
         self.lbl_report.setText(text)
         self.lbl_report.setVisible(True)
+
+    def plan_pieces(self, *_):
+        ents = self.selection()
+        leaves = piece_leaves(ents)
+        if not leaves:
+            self.report("Select the object (a group, or its faces) first.", bad=True)
+            return
+        pdlg = PiecesDialog(self, leaves, self.plan)
+        try:
+            eddy_window(pdlg, PLUGIN_NAME + " - pieces", EDDY_TIPS, place=True)
+        except Exception:
+            pass
+        if pdlg.exec():
+            self.plan = pdlg.plan()
+            PrintScalerTool._plan = self.plan
+            self.update_info()
+
+    def forget_plan(self, *_):
+        self.plan = None
+        PrintScalerTool._plan = None
+        self.update_info()
 
     def show_info(self, *_):
         txt = INFO_TEXT
@@ -1418,6 +2481,11 @@ class ScaleDialog(QDialog):
             w.setEnabled(export)
         for w in (self.sp_gap, self.lab_gap):
             w.setEnabled(export and self.cb_sep.isChecked())
+        planned = bool(self.plan and self.plan.get('pieces'))
+        for w in (self.cb_depth, self.lab_depth):
+            w.setEnabled(export and self.cb_sep.isChecked() and not planned)
+        self.b_plan.setEnabled(export and self.cb_sep.isChecked())
+        self.b_unplan.setEnabled(export and self.cb_sep.isChecked() and planned)
         for w in (self.ed_slicer, self.b_browse, self.lab_slicer):
             w.setEnabled(export and self.cb_open.isChecked())
         self.b_go.setText("Export..." if export else "Scale")
@@ -1446,8 +2514,16 @@ class ScaleDialog(QDialog):
                 color = "color: #c0392b;"
         if export and self.cb_sep.isChecked():
             try:
-                n = count_parts(self.selection())
-                txt += "<br>%d separate part%s." % (n, "" if n == 1 else "s")
+                if self.plan and self.plan.get('pieces'):
+                    lv = piece_leaves(self.selection(), with_tris=False)
+                    keys = self.plan.get('keys', {})
+                    used = {keys[k] for k, _a, _b, _c in lv if keys.get(k) in self.plan['pieces']}
+                    alone = sum(1 for k, _a, _b, _c in lv if keys.get(k) not in self.plan['pieces'])
+                    txt += "<br>Planned: %d piece%s + %d part%s on their own." % (
+                        len(used), "" if len(used) == 1 else "s", alone, "" if alone == 1 else "s")
+                else:
+                    n = count_parts(self.selection(), self.cb_depth.currentData() or 0)
+                    txt += "<br>%d separate part%s." % (n, "" if n == 1 else "s")
             except Exception:
                 pass
         self.lbl_info.setStyleSheet(color)
@@ -1462,6 +2538,7 @@ class ScaleDialog(QDialog):
             'check_bed': self.cb_bed.isChecked(),
             'bed_x': self.bed[0].value(), 'bed_y': self.bed[1].value(), 'bed_z': self.bed[2].value(),
             'separate': self.cb_sep.isChecked(), 'part_gap': self.sp_gap.value(),
+            'split_depth': int(self.cb_depth.currentData() or 0), 'plan': self.plan,
             'open_after': self.cb_open.isChecked(), 'slicer': self.ed_slicer.text().strip(),
             'keep_open': self.cb_keep.isChecked(), 'lay_flat': self.cb_flat.isChecked(),
         }
@@ -1494,6 +2571,7 @@ class PrintScalerTool(Tool):
     _saved = None
     _last_export = None
     _dialog = None
+    _plan = None
 
     def on_activate(self, viewport):
         dlg = PrintScalerTool._dialog
@@ -1600,8 +2678,12 @@ class PrintScalerTool(Tool):
         unit_mm = dict((u[2], u[1]) for u in UNITS).get(p.get('unit') or 'm', 1000.0)
         k = unit_mm / p['denominator']                      # model units -> printed mm
         if p.get('separate'):
-            parts = [(n, [tuple((c[0] * k, c[1] * k, c[2] * k) for c in t) for t in tr])
-                     for n, tr in split_parts(entities)]
+            plan = p.get('plan')
+            if plan and plan.get('pieces'):
+                raw = plan_parts(piece_leaves(entities), plan)
+            else:
+                raw = split_parts(entities, int(p.get('split_depth', 0) or 0))
+            parts = [(n, [tuple((c[0] * k, c[1] * k, c[2] * k) for c in t) for t in tr]) for n, tr in raw]
             if not parts:
                 return "Nothing to export: select the object (a group, or its faces) first.", True
             if p.get('lay_flat', True):

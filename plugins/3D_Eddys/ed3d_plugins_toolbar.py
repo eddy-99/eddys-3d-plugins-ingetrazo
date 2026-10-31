@@ -731,7 +731,8 @@ def group_eddy_menu(win=None):
             if a.isSeparator():
                 continue
             stem = owners.get(a)
-            if _clean(a.text()) in names or (stem is not None and stem in EDDY_STEMS):
+            if _clean(a.text()) in names or (stem is not None and (
+                    stem in EDDY_STEMS or str(stem).lower().startswith("ed3d_") or str(stem) == "3D_Eddys")):
                 found.append((m, a))
     scan(menu, 0)
     if not found:

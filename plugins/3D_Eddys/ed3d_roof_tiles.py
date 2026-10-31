@@ -662,6 +662,154 @@ def lay_tiles(outline, holes, v):
 
 
 # ---------------------------------------------------------------------------
+# Lead flashings where the roof meets a wall
+# ---------------------------------------------------------------------------
+FLASH_DEFAULTS = dict(flash_top=False, flash_left=False, flash_right=False, flash_t=32.0, flash_up=150.0,
+                      flash_cover=150.0)
+FLASH_EDGES = (('flash_top', "Top edge (against a wall)",
+                "Where the top of the roof meets a wall (a lean-to): the flashing's upstand stands truly upright "
+                "against the wall, its apron lies down over the top course."),
+               ('flash_left', "Left side (against a wall)",
+                "Where the left side of the roof runs along a wall (a gable wall or chimney side): the upstand "
+                "against the wall, the apron over the edge of the roof."),
+               ('flash_right', "Right side (against a wall)",
+                "The same down the right side of the roof."))
+FLASH_FIELDS = (('flash_t', "Flashing thickness", 1.0, 200.0, 1,
+                 "How thick the lead is. For 1:80 printing 32 mm (0.4 mm) or more."),
+                ('flash_up', "Up the wall", 20.0, 2000.0, 0, "How far the upstand runs up the wall above the roof."),
+                ('flash_cover', "Onto the roof", 20.0, 2000.0, 0,
+                 "How far the apron lies over the roof from the wall."))
+
+
+def _extrude_along(sec, a, b, axis):
+    """A solid with cross-section sec, run along x (sec in (y, z)) or along y (sec in (x, z))
+    from a to b."""
+    so = slab(sec, lambda p, q: a, lambda p, q: b)
+    if so is None:
+        return None
+    if axis == 'x':
+        return so.mapped(lambda q: (q[2], q[0], q[1]))
+    return so.mapped(lambda q: (q[0], q[2], q[1]))
+
+
+def _top_in(solids, test):
+    zs = [p[2] for so in solids for f in so.faces for p in f if test(p)]
+    return max(zs) if zs else 0.0
+
+
+def build_flashings(outline, solids, v, up=(0.0, 1.0)):
+    """Lead flashings along the chosen edges of a roof face (local mm: x across, y up the
+    slope, z out of the face), sitting 0.5 mm clear of whatever is under them (solids).
+    up = 'straight up' as (y, z) in this face's terms. Returns ([solids], [notes])."""
+    out, notes = [], []
+    if not any(v.get(k) for k in ('flash_top', 'flash_left', 'flash_right')):
+        return out, notes
+    ft = max(1.0, v.get('flash_t', 32.0))
+    uph = max(2 * ft, v.get('flash_up', 150.0))
+    cw = max(2 * ft, v.get('flash_cover', 150.0))
+    g = 0.5
+    x0, x1, y0, y1 = bbox(outline)
+    tol = max(1.0, 1e-3 * ((x1 - x0) + (y1 - y0)))
+    if v.get('flash_top'):
+        xs = [p[0] for p in outline if p[1] >= y1 - tol]
+        if len(xs) < 2 or max(xs) - min(xs) < 2 * cw:
+            notes.append("no level top edge for a top flashing (a pointed or hipped top?)")
+        else:
+            xa, xb = min(xs), max(xs)
+            zt = _top_in(solids, lambda p: p[1] >= y1 - cw - 2 * ft and xa - 1 <= p[0] <= xb + 1) + g
+            uy, uz = up
+            if uz < 0.15:                     # a wall face: stand the upstand square to it
+                uy, uz = 0.0, 1.0
+            L = math.hypot(uy, uz)
+            uy, uz = uy / L, uz / L
+            ny, nz = -uz, uy                  # from the wall in over the roof
+
+            def on(off, z):
+                s = (z - off * nz) / uz
+                return (y1 + off * ny + s * uy, z)
+            p1, p2 = on(g, zt), on(g, zt + ft + uph)
+            p3, p4 = on(g + ft, zt + ft + uph), on(g + ft, zt + ft)
+            ya = min(p4[0], p1[0]) - cw
+            sec = clean([p1, p2, p3, p4, (ya, zt + ft), (ya, zt)])
+            so = _extrude_along(sec, xa, xb, 'x') if sec else None
+            if so:
+                out.append(so)
+    for key, side in (('flash_left', -1), ('flash_right', 1)):
+        if not v.get(key):
+            continue
+        xe = x0 if side < 0 else x1
+        ys = [p[1] for p in outline if abs(p[0] - xe) <= tol]
+        if len(ys) < 2 or max(ys) - min(ys) < 2 * cw:
+            notes.append("no straight %s side for a flashing" % ("left" if side < 0 else "right"))
+            continue
+        ya, yb = min(ys), max(ys)
+        zt = _top_in(solids, lambda p: abs(p[0] - xe) <= cw + 2 * ft and ya - 1 <= p[1] <= yb + 1) + g
+        d = -side                              # from the wall in over the roof
+        w0 = xe + d * g
+        w1 = xe + d * (g + ft)
+        w2 = xe + d * (g + cw)
+        sec = clean([(w0, zt), (w2, zt), (w2, zt + ft), (w1, zt + ft), (w1, zt + ft + uph), (w0, zt + ft + uph)])
+        so = _extrude_along(sec, ya, yb, 'y') if sec else None
+        if so:
+            out.append(so)
+    return out, notes
+
+
+def add_flashing_tab(dlg, tabs, on_change):
+    """A 'Flashing' tab for a roofing dialog: which edges, and the lead's sizes."""
+    page = QWidget()
+    form = QFormLayout(page)
+    tabs.addTab(page, "Flashing")
+    try:
+        tabs.setTabToolTip(tabs.count() - 1, "Lead flashings where the roof meets a wall.")
+    except Exception:
+        pass
+    dlg.fl_cb, dlg.fl_sp = {}, {}
+    for key, label, tip in FLASH_EDGES:
+        cb = QCheckBox(label)
+        cb.setToolTip(tip)
+        form.addRow(cb)
+        cb.toggled.connect(on_change)
+        dlg.fl_cb[key] = cb
+    for key, label, lo, hi, dec, tip in FLASH_FIELDS:
+        s = QDoubleSpinBox()
+        s.setDecimals(dec)
+        s.setRange(lo, hi)
+        s.setSuffix(" mm")
+        s.setKeyboardTracking(False)
+        s.setToolTip(tip)
+        lab = QLabel(label)
+        lab.setToolTip(tip)
+        form.addRow(lab, s)
+        s.valueChanged.connect(on_change)
+        dlg.fl_sp[key] = s
+    note = QLabel("Each flashing is a closed solid in its own 'Flashing' group, 0.5 mm clear of the roof.")
+    note.setWordWrap(True)
+    form.addRow(note)
+
+
+def flashing_values(dlg):
+    v = {k: cb.isChecked() for k, cb in dlg.fl_cb.items()}
+    v.update({k: float(s.value()) for k, s in dlg.fl_sp.items()})
+    for s in dlg.fl_sp.values():
+        s.setEnabled(any(v[k] for k in dlg.fl_cb))
+    return v
+
+
+def set_flashing_values(dlg, d):
+    for k, cb in dlg.fl_cb.items():
+        cb.setChecked(bool(d.get(k, FLASH_DEFAULTS[k])))
+    for k, s in dlg.fl_sp.items():
+        s.setValue(float(d.get(k, FLASH_DEFAULTS[k])))
+    on = any(cb.isChecked() for cb in dlg.fl_cb.values())
+    for s in dlg.fl_sp.values():
+        s.setEnabled(on)
+
+
+DEFAULTS.update(FLASH_DEFAULTS)
+
+
+# ---------------------------------------------------------------------------
 # Reading the selected face
 # ---------------------------------------------------------------------------
 def _items(x):
@@ -1237,6 +1385,8 @@ class TilesDialog(QDialog):
         for w_ in (self.cb_rstyle, self.cb_crest, self.cb_finial, self.cb_fends, self.cb_fface):
             w_.currentIndexChanged.connect(self.changed)
 
+        add_flashing_tab(self, self.tabs, self.changed)
+
         prow = QHBoxLayout()
         prow.addWidget(QLabel("Preset:"))
         self.cb_preset = QComboBox()
@@ -1291,6 +1441,7 @@ class TilesDialog(QDialog):
                  turn=self.cb_turn.currentData() or 0, flip=self.cb_flip.isChecked())
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
+        v.update(flashing_values(self))
         return v
 
     def set_values(self, d):
@@ -1320,6 +1471,7 @@ class TilesDialog(QDialog):
             for key, (s, _) in self.sp.items():
                 if d.get(key) is not None:
                     s.setValue(float(d[key]))
+            set_flashing_values(self, d)
         finally:
             self._busy = False
         self.changed()
@@ -1513,7 +1665,7 @@ class RoofTilesTool(Tool):
             QMessageBox.information(dlg, PLUGIN_NAME, "Select a roof face first.")
             return
         parts, total, problems = [], 0, []
-        ridge_sols, finial_sols = [], []
+        ridge_sols, finial_sols, flash_sols = [], [], []
         ridges = 0
         for i, f in enumerate(faces):
             try:
@@ -1531,6 +1683,9 @@ class RoofTilesTool(Tool):
             fins = [s for s in sols if getattr(s, 'finial', False)]
             rids = [s for s in sols if getattr(s, 'ridge', False) and not getattr(s, 'finial', False)]
             tiles = [s for s in sols if not getattr(s, 'ridge', False) and not getattr(s, 'finial', False)]
+            fl, notes = build_flashings(outline, sols, v, up)
+            flash_sols += [s.mapped(tw) for s in fl]
+            problems += ["Face %d (flashing): %s" % (i + 1, n_) for n_ in notes]
             ridge_sols += [s.mapped(tw) for s in rids]
             finial_sols += [s.mapped(tw) for s in fins]
             if tiles:
@@ -1545,6 +1700,8 @@ class RoofTilesTool(Tool):
             parts.append(("Ridge - %d ridge tiles" % ridges, ridge_sols))
         if finial_sols:
             parts.append(("Finials", finial_sols))
+        if flash_sols:
+            parts.append(("Flashing", flash_sols))
         top = "Roof - %s%s" % (TILE_INFO[v['tile']][0], " (for 3D printing)" if v['print_mode'] else "")
         nf = self.add_to_scene(viewport, parts, top)
         if nf is None:

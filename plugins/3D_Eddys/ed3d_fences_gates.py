@@ -1911,6 +1911,213 @@ TABS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Sizes: a front view and a cut through the fence, each size marked by its letter
+# ---------------------------------------------------------------------------
+def fence_sizes_drawing(v):
+    """{'front': [(kind, pts, rgb)], 'cut': [(pts, rgb)], 'dims': [(letter, view, p1, p2, out, off)],
+    'xc': where the cut is taken} - all in mm."""
+    t = v['type']
+    POST, RAIL, PALE, WALL = (120, 86, 52), (150, 108, 66), (176, 132, 84), (190, 182, 172)
+    if t in ('palisade', 'railings'):
+        POST, RAIL, PALE = (70, 74, 80), (90, 94, 100), (110, 114, 120)
+    A = max(100.0, v['height'])
+    B = max(200.0, v['bay'])
+    C = max(10.0, v['post_w'])
+    Dab = v['post_above'] if t != 'railings' else 0.0
+    E = max(5.0, v['rail_h'])
+    F = min(max(5.0, v['rail_t']), C)
+    G, Hg = max(5.0, v['pale_w']), max(0.2, v['pale_gap'])
+    J = max(1.0, v['pale_t'])
+    K, Lg = max(10.0, v['board_w']), max(0.2, v['board_gap'])
+    flat = v.get('flat', True)
+    clear = max(0.0, v.get('clear', 0.0))
+    base = 0.0
+    front, cut, dims = [], [], []
+
+    def rect(x0, y0, x1, y1, rgb, view='F'):
+        pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        (front if view == 'F' else cut).append(('poly', pts, rgb) if view == 'F' else (pts, rgb))
+    # railings stand on a dwarf wall
+    if t == 'railings' and v['wall_h'] > 0:
+        wt = max(C + 20.0, v['wall_t'])
+        rect(-C, 0, B + C, v['wall_h'], WALL)
+        base = v['wall_h'] + max(0.0, v['coping_h'])
+        if v['coping_h'] > 0:
+            rect(-C - 20, v['wall_h'], B + C + 20, base, (205, 200, 192))
+        w0 = -C / 2 if flat else -wt / 2
+        rect(w0, 0, w0 + wt, v['wall_h'], WALL, 'C')
+        co = v['coping_over']
+        rect(w0 if flat else w0 - co, v['wall_h'], w0 + wt + co, base, (205, 200, 192), 'C')
+    top = base + A
+    # posts: one each end of the bay
+    for x in (0.0, B):
+        rect(x - C / 2, base, x + C / 2, top + Dab, POST)
+    # rails
+    rails = []
+    n_r = max(1, int(v['rails'])) if t in ('picket', 'palisade', 'close', 'post_rail', 'wire') else 0
+    if t == 'railings':
+        n_r = 2
+    if n_r:
+        lo, hi = base + clear + max(E, A * 0.12), top - max(E, A * 0.12)
+        for k in range(n_r):
+            y = (lo + hi) / 2 if n_r == 1 else lo + (hi - lo) * k / (n_r - 1)
+            rails.append(y)
+            hh = v['wire_d'] if t == 'wire' else E
+            rect(C / 2, y - hh / 2, B - C / 2, y + hh / 2, RAIL)
+    # pales, boards or bars across the bay
+    xa, xb = C / 2, B - C / 2
+    pw, gap = (G, Hg) if t in ('picket', 'palisade') else (K, Lg) if t in ('close', 'panel') else \
+        (max(2.0, v['bar_w']), max(5.0, v['bar_gap'])) if t == 'railings' else (0, 0)
+    first = None
+    if pw:
+        x = xa + gap
+        while x + pw <= xb - gap * 0.3 + 1e-6:
+            pts = [(x, base + clear), (x + pw, base + clear), (x + pw, top), (x, top)]
+            if t in ('picket', 'palisade') and v.get('pale_top', 'pointed') != 'flat':
+                pts = [(x, base + clear), (x + pw, base + clear), (x + pw, top - pw * 0.5),
+                       (x + pw / 2, top), (x, top - pw * 0.5)]
+            front.append(('poly', pts, PALE))
+            if first is None:
+                first = x
+            x += pw + gap
+    # the cut through, side on: front of the fence to the right
+    wb = -C / 2
+    rect(wb if flat else -C / 2, base, (wb if flat else -C / 2) + C, top + Dab, POST, 'C')
+    w_rail = (wb if flat else -F / 2, F / 2)
+    for y in rails:
+        hh = v['wire_d'] if t == 'wire' else E
+        rect(w_rail[0], y - hh / 2, w_rail[1] if t != 'wire' else w_rail[0] + v['wire_d'], y + hh / 2, RAIL, 'C')
+    if pw:
+        if t == 'railings':
+            w_p = (wb if flat else -pw / 2, pw / 2)
+        else:
+            w_p = (wb if flat else F / 2 - 1, F / 2 + J)
+        rect(w_p[0], base + clear, w_p[1], top, PALE, 'C')
+    # the size marks
+    dims.append(('A', 'F', (xa - C / 2 - C, base + clear), (xa - C / 2 - C, top), (-1, 0), 14))
+    dims.append(('B', 'F', (0.0, 0.0), (B, 0.0), (0, -1), 16))
+    dims.append(('C', 'F', (-C / 2, top + Dab), (C / 2, top + Dab), (0, 1), 12))
+    if Dab > 0:
+        dims.append(('D', 'F', (B + C / 2, top), (B + C / 2, top + Dab), (1, 0), 10))
+    if rails and t != 'wire':
+        y = rails[-1]
+        dims.append(('E', 'C', (w_rail[1], y - E / 2), (w_rail[1], y + E / 2), (1, 0), 10))
+        dims.append(('F', 'C', (w_rail[0], y + E / 2), (w_rail[1], y + E / 2), (0, 1), 10))
+    if pw and first is not None and t != 'railings':
+        l1, l2 = ('G', 'H') if t in ('picket', 'palisade') else ('K', 'L')
+        p2 = first + pw + gap                      # the second pale (or board)
+        ymid = base + clear + (A - clear) * 0.42
+        dims.append((l1, 'F', (p2, ymid), (p2 + pw, ymid), (0, 1), 0))
+        dims.append((l2, 'F', (first + pw, ymid - A * 0.18), (p2, ymid - A * 0.18), (0, -1), 0))
+        dims.append(('J', 'C', (w_p[0] if flat else F / 2, top - A * 0.05),
+                     (w_p[1], top - A * 0.05), (0, 1), 10))
+    return {'front': front, 'cut': cut, 'dims': dims, 'xc': B * 0.5 + (pw / 2 if pw else 0)}
+
+
+class FenceSizes(QWidget):
+    """Front view and a cut through the fence, with each size marked by its letter."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 300)
+        self.d = None
+        self.msg = ""
+
+    def show_fence(self, v):
+        try:
+            self.d = fence_sizes_drawing(v)
+            self.msg = ""
+        except Exception as e:
+            self.d, self.msg = None, str(e)
+        self.update()
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPolygonF, QPen, QFont, QBrush
+        from PySide6.QtCore import QPointF, Qt, QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(252, 252, 250))
+        d = self.d
+        if not d:
+            p.drawText(self.rect().adjusted(10, 10, -10, -10), Qt.AlignCenter | Qt.TextWordWrap,
+                       self.msg or "No drawing")
+            p.end()
+            return
+        fx = [q[0] for _, pts, _ in d['front'] for q in pts]
+        fy = [q[1] for _, pts, _ in d['front'] for q in pts]
+        cz = [q[0] for pts, _ in d['cut'] for q in pts]
+        cy = [q[1] for pts, _ in d['cut'] for q in pts]
+        M = 40.0
+        W, Hh = self.width(), self.height()
+        fw_mm = max(fx) - min(fx)
+        cw_mm = max(cz) - min(cz)
+        ylo, yhi = min(fy + cy + [0.0]), max(fy + cy)
+        # the cut is narrow: drawn bigger than the front if it would be tiny
+        sc = min((W - 3 * M - 20) / (fw_mm + max(cw_mm, fw_mm * 0.15)), (Hh - 2 * M - 16) / ((yhi - ylo) or 1))
+        csc = min(sc * max(1.0, fw_mm * 0.15 / max(cw_mm, 1.0)), (W - 3 * M - 20 - fw_mm * sc) / max(cw_mm, 1.0))
+        fx0 = M - min(fx) * sc
+        cx0 = M + fw_mm * sc + M + 20 - min(cz) * csc
+        ybase = Hh - M - 16
+
+        def F(q):
+            return QPointF(fx0 + q[0] * sc, ybase - (q[1] - ylo) * sc)
+
+        def Cv(q):
+            return QPointF(cx0 + q[0] * csc, ybase - (q[1] - ylo) * sc)
+        p.setPen(QPen(QColor(150, 150, 150), 1))
+        p.drawLine(F((min(fx), 0)), F((max(fx), 0)))
+        p.drawLine(Cv((min(cz) - 20, 0)), Cv((max(cz) + 20, 0)))
+        for _, pts, rgb in d['front']:
+            col = QColor(*rgb)
+            p.setBrush(col)
+            p.setPen(QPen(col.darker(140), 0.6))
+            p.drawPolygon(QPolygonF([F(q) for q in pts]))
+        p.setPen(QPen(QColor(120, 120, 200), 1, Qt.DashLine))
+        p.drawLine(F((d['xc'], yhi)), F((d['xc'], ylo)))
+        for pts, rgb in d['cut']:
+            col = QColor(*rgb)
+            p.setBrush(col)
+            p.setPen(QPen(col.darker(150), 0.8))
+            p.drawPolygon(QPolygonF([Cv(q) for q in pts]))
+        f = QFont()
+        f.setPointSize(7)
+        p.setFont(f)
+        p.setPen(QColor(90, 90, 90))
+        p.drawText(QRectF(M, Hh - 18, W / 2, 16), Qt.AlignLeft, "Front")
+        p.drawText(QRectF(cx0 + min(cz) * csc - 10, Hh - 18, W / 2, 16), Qt.AlignLeft, "Cut (back on the left)")
+        fb = QFont()
+        fb.setPointSize(8)
+        fb.setBold(True)
+        p.setFont(fb)
+        blue = QColor(20, 90, 200)
+        for letter, view, p1, p2, o, off in d['dims']:
+            T = F if view == 'F' else Cv
+            a, b = T(p1), T(p2)
+            ox, oy = o[0], -o[1]
+            L = math.hypot(ox, oy) or 1.0
+            ox, oy = ox / L, oy / L
+            a2 = QPointF(a.x() + ox * off, a.y() + oy * off)
+            b2 = QPointF(b.x() + ox * off, b.y() + oy * off)
+            p.setPen(QPen(blue, 0.8))
+            if off:
+                p.drawLine(a, QPointF(a2.x() + ox * 3, a2.y() + oy * 3))
+                p.drawLine(b, QPointF(b2.x() + ox * 3, b2.y() + oy * 3))
+            p.drawLine(a2, b2)
+            dx, dy = b2.x() - a2.x(), b2.y() - a2.y()
+            Ld = math.hypot(dx, dy) or 1.0
+            tx, ty = (dx - dy) / Ld * 3, (dy + dx) / Ld * 3
+            for q in (a2, b2):
+                p.drawLine(QPointF(q.x() - tx, q.y() - ty), QPointF(q.x() + tx, q.y() + ty))
+            mx = (a2.x() + b2.x()) / 2 + ox * 10
+            my = (a2.y() + b2.y()) / 2 + oy * 10
+            r = 7.0
+            p.setBrush(QBrush(QColor(255, 255, 255)))
+            p.drawEllipse(QPointF(mx, my), r, r)
+            p.drawText(QRectF(mx - r, my - r, 2 * r, 2 * r), Qt.AlignCenter, letter)
+        p.end()
+
+
 class FenceDialog(QDialog):
     def __init__(self, cur, viewport, tool):
         super().__init__(viewport)
@@ -1932,9 +2139,16 @@ class FenceDialog(QDialog):
         lay.addWidget(self.lbl_report)
         row = QHBoxLayout()
         lay.addLayout(row)
-        self.preview = FencePreview()
-        row.addWidget(self.preview, 1)
         from PySide6.QtWidgets import QTabWidget
+        self.preview = FencePreview()
+        self.sizes = FenceSizes()
+        self.views = QTabWidget()
+        self.views.addTab(self.preview, "3D view")
+        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        self.views.setTabToolTip(0, "A 3D look at the fence you'll get.")
+        self.views.setTabToolTip(1, "A front view and a cut through the fence, showing what each lettered "
+                                    "size (A, B, C ...) measures.")
+        row.addWidget(self.views, 1)
         self.tabs = QTabWidget()
         row.addWidget(self.tabs, 1)
         self.w, self.labels = {}, {}
@@ -2065,6 +2279,10 @@ class FenceDialog(QDialog):
             self.w[k].setEnabled(bool(on))
             self.labels[k].setEnabled(bool(on))
         self.preview.show_fence(v)
+        try:
+            self.sizes.show_fence(v)
+        except Exception:
+            pass
 
     def show_report(self, text, bad=False):
         self.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if bad else "#2e7d32"))

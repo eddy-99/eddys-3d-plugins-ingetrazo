@@ -26,7 +26,7 @@ Every part they make is a closed, watertight solid with flat faces, ready to pri
 | 3D Corrugated Iron | Ctrl+Alt+I | Corrugated, box-profile and flat sheet cladding for walls and roofs, round any openings: flat-backed for 3D printing (joint lines and end-lap steps) or real lapped sheets on rails. Rust holes, rusted ragged bottoms, missing, skew and lifted sheets, flashings and corner trims. |
 | 3D Station Canopies | Ctrl+Alt+C | Railway platform canopies: lean-to off a building's wall, island / umbrella over a platform (ridged or butterfly roof), and ridge and furrow with glazed ridges. Cast-iron columns with pierced spandrels or timber posts with knee braces, plain or glazed roofs, and dagger, rounded, fleur, saw-tooth or plain valancing as one flat printable strip. Live 3D preview and a lettered Sizes drawing. |
 | 3D Loft | Ctrl+Alt+L | Makes a solid between two or more profile faces, such as a square into a circle. |
-| 3D Print Scaler | Ctrl+Alt+P | Scales the selected object to a chosen scale for printing and checks it fits your print bed. |
+| 3D Print Scaler | Ctrl+Alt+P | Scales the selected object to a chosen scale for printing and checks it fits your print bed. Exports STL, 3MF, OBJ or PLY in mm with full detail, can split a model into a separate part per group laid out on the bed (separate items in one 3MF), opens it in your slicer, and can stay open for scaling lots of parts. Model railway scales built in, plus your own. |
 | 3D Scale Converter | Ctrl+Alt+K | A toolbar that turns real sizes (ft / in / mm) into model sizes at any scale. |
 | 3D Notepad | Ctrl+Alt+J | A note pad that stays on screen and saves itself, with a real-to-model size converter. |
 | 3D Plugins Toolbar | Ctrl+Alt+B | A toolbar with a button for each plugin, and a "3D Plugins by Eddy" submenu under Extensions. |
@@ -36,11 +36,25 @@ left it.
 
 ## Installing
 
+All the plugins live in one folder, **3D_Eddys**, so they stay together and don't get mixed up
+with other people's plugins. Every file in it starts with `ed3d_`, so you can tell at a glance
+it's one of this set.
+
 1. Download the files: click the green **Code** button above, then **Download ZIP**, and unzip it.
 2. In IngeTrazo, choose **Extensions > Open extensions folder**.
-3. Copy the `.py` files from the `plugins` folder into that folder.
+3. Copy the whole **3D_Eddys** folder (from inside the `plugins` folder) into that folder.
 4. Restart IngeTrazo. The plugins appear under **Extensions > 3D Plugins by Eddy**, and on the
    3D Plugins toolbar.
+
+**Upgrading from the loose files?** Earlier versions put each plugin straight in the extensions
+folder (`period_windows.py`, `roof_tiles.py` ...). Delete those old files when you copy the
+3D_Eddys folder in, or you'll get every tool twice.
+
+**Leaving one out:** rename its file inside 3D_Eddys so it no longer ends in `.py`
+(for example `ed3d_loft.py.off`).
+
+**Just one plugin?** You can also copy a single `ed3d_...py` file straight into the extensions
+folder on its own - it works the same.
 
 ## Pictures
 
