@@ -15,6 +15,7 @@
 Pick a scale (1:50, 1:100 ...), see the printed size, check it against your print bed.
 """
 
+import os
 from tools.base import Tool
 from core.history import SnapshotImport
 from PySide6.QtGui import QVector3D
@@ -31,10 +32,16 @@ PIVOTS = [("Bottom centre (stays on the print bed)", "bottom"),
           ("Centre of the object", "centre"),
           ("Lowest corner", "corner"),
           ("World origin (0, 0, 0)", "origin")]
-MODES = [("Scale in place", "inplace"),
-         ("Scale a copy (keep the original)", "copy")]
+MODES = [("Export scaled - STL, 3MF, OBJ, PLY (full detail)", "stl"),
+         ("Scale a copy (keep the original)", "copy"),
+         ("Scale in place", "inplace")]
 
-DEFAULTS = {'denominator': 50.0, 'pivot': 'bottom', 'mode': 'copy', 'unit': None,
+# IngeTrazo treats points closer than this as the same point (its weld tolerance, metres):
+# a model scaled down so far that its details are smaller than this loses faces in IngeTrazo.
+# Exporting scaled keeps every detail, because the scaling is done outside the model.
+WELD = 1e-4
+
+DEFAULTS = {'denominator': 50.0, 'pivot': 'bottom', 'mode': 'stl', 'unit': None,
             'check_bed': True, 'bed_x': 220.0, 'bed_y': 220.0, 'bed_z': 250.0}
 
 COPY_GAP = 0.1   # gap between original and copy, as a fraction of the original's width
@@ -146,6 +153,185 @@ def collect(entities):
     return verts, faces, meshes
 
 
+def world_loops(entities):
+    """The selection's faces in world space, as [(outer [QVector3D], [holes], face)]: component
+    instances and moved groups come through their placement (as IngeTrazo's own STL export
+    does), so a copy or an STL comes out where - and the way round - the object really is."""
+    out = []
+    seen = set()
+    try:
+        from core.group import world_mesh
+    except Exception:
+        world_mesh = None
+
+    def pos(v):
+        return vertex_to_vector3d(v)
+
+    def add(f):
+        if id(f) in seen:
+            return
+        seen.add(id(f))
+        outer = [pos(v) for v in _items(getattr(f, 'vertices', None))]
+        if len(outer) < 3 or any(q is None for q in outer):
+            return
+        holes = []
+        for h in _items(getattr(f, 'holes', None)):
+            hl = [pos(v) for v in _items(h)]
+            if len(hl) >= 3 and all(q is not None for q in hl):
+                holes.append(hl)
+        out.append((outer, holes, f))
+    for e in entities:
+        if _is_group(e):
+            m = None
+            if world_mesh is not None:
+                try:
+                    m = world_mesh(e)
+                except Exception:
+                    m = None
+            if m is None:
+                ms = []
+                _meshes_of(e, ms, set())
+                for m_ in ms:
+                    for f in _items(getattr(m_, 'faces', None)):
+                        add(f)
+            else:
+                for f in _items(getattr(m, 'faces', None)):
+                    add(f)
+        elif _is_face(e):
+            add(e)
+    return out
+
+
+def loops_bounds(loops):
+    pts = [q for o, hs, _ in loops for q in o]
+    lo = QVector3D(min(q.x() for q in pts), min(q.y() for q in pts), min(q.z() for q in pts))
+    hi = QVector3D(max(q.x() for q in pts), max(q.y() for q in pts), max(q.z() for q in pts))
+    return lo, hi
+
+
+def face_triangles(face):
+    """A face's triangles (world space), as IngeTrazo's own STL export makes them."""
+    try:
+        from formats.meshexport import export_triangles
+        return list(export_triangles(face))
+    except Exception:
+        pass
+    try:
+        return list(face.triangulate())
+    except Exception:
+        return []
+
+
+def write_stl(path, tris, name="scaled"):
+    """A binary STL: tris = [((x, y, z), (x, y, z), (x, y, z))] in mm."""
+    import struct
+    with open(path, "wb") as fh:
+        head = ("IngeTrazo %s - %s" % (PLUGIN_NAME, name)).encode("ascii", "replace")[:80]
+        fh.write(head + b" " * (80 - len(head)))
+        fh.write(struct.pack("<I", len(tris)))
+        for a, b, c in tris:
+            ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+            vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+            nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            L = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
+            fh.write(struct.pack("<12fH", nx / L, ny / L, nz / L, *a, *b, *c, 0))
+
+
+def weld(tris, decimals=6):
+    """Shared corners for formats that list vertices once (3MF, OBJ, PLY): (points, triangles
+    as index triples). Points are welded only where they are the same to a millionth of a mm, so
+    nothing small is merged."""
+    pts, idx, out = [], {}, []
+    for t in tris:
+        tri = []
+        for c in t:
+            k = (round(c[0], decimals), round(c[1], decimals), round(c[2], decimals))
+            if k not in idx:
+                idx[k] = len(pts)
+                pts.append(c)
+            tri.append(idx[k])
+        if len(set(tri)) == 3:
+            out.append(tuple(tri))
+    return pts, out
+
+
+def write_stl_ascii(path, tris, name="scaled"):
+    with open(path, "w", encoding="ascii", errors="replace") as fh:
+        fh.write("solid %s\n" % name.replace(" ", "_"))
+        for a, b, c in tris:
+            ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+            vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+            nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            L = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
+            fh.write(" facet normal %.6e %.6e %.6e\n  outer loop\n" % (nx / L, ny / L, nz / L))
+            for q in (a, b, c):
+                fh.write("   vertex %.9g %.9g %.9g\n" % q)
+            fh.write("  endloop\n endfacet\n")
+        fh.write("endsolid %s\n" % name.replace(" ", "_"))
+
+
+def write_obj(path, tris, name="scaled"):
+    pts, faces = weld(tris)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("# %s - %s (millimetres)\n" % (PLUGIN_NAME, name))
+        fh.write("o %s\n" % name.replace(" ", "_"))
+        for q in pts:
+            fh.write("v %.9g %.9g %.9g\n" % q)
+        for a, b, c in faces:
+            fh.write("f %d %d %d\n" % (a + 1, b + 1, c + 1))
+
+
+def write_ply(path, tris, name="scaled"):
+    import struct
+    pts, faces = weld(tris)
+    with open(path, "wb") as fh:
+        fh.write(("ply\nformat binary_little_endian 1.0\ncomment %s - %s (millimetres)\n"
+                  "element vertex %d\nproperty float x\nproperty float y\nproperty float z\n"
+                  "element face %d\nproperty list uchar int vertex_indices\nend_header\n"
+                  % (PLUGIN_NAME, name, len(pts), len(faces))).encode("ascii", "replace"))
+        for q in pts:
+            fh.write(struct.pack("<3f", *q))
+        for f in faces:
+            fh.write(struct.pack("<B3i", 3, *f))
+
+
+def write_3mf(path, tris, name="scaled"):
+    """A 3MF (what PrusaSlicer, Bambu, Cura ... like best): one object, units millimetres."""
+    import zipfile
+    from xml.sax.saxutils import escape
+    pts, faces = weld(tris)
+    vs = "".join('<vertex x="%.9g" y="%.9g" z="%.9g"/>' % q for q in pts)
+    ts = "".join('<triangle v1="%d" v2="%d" v3="%d"/>' % f for f in faces)
+    model = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+             '<model unit="millimeter" xml:lang="en-US" '
+             'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+             '<metadata name="Application">IngeTrazo %s</metadata>'
+             '<resources><object id="1" name="%s" type="model"><mesh><vertices>%s</vertices>'
+             '<triangles>%s</triangles></mesh></object></resources>'
+             '<build><item objectid="1"/></build></model>' % (escape(PLUGIN_NAME), escape(name), vs, ts))
+    types = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+             '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
+             '</Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Target="/3D/3dmodel.model" Id="rel0" '
+            'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("3D/3dmodel.model", model)
+
+
+# file types offered when saving: (label shown in the save box, extension, writer)
+EXPORTS = [("STL - binary (*.stl)", ".stl", write_stl),
+           ("3MF - PrusaSlicer, Bambu, Cura (*.3mf)", ".3mf", write_3mf),
+           ("OBJ - Rhino, ZBrush, Blender (*.obj)", ".obj", write_obj),
+           ("PLY (*.ply)", ".ply", write_ply),
+           ("STL - text / ASCII (*.stl)", ".stl", write_stl_ascii)]
+
+
 def bounds(verts):
     pts = [p for p in (vertex_to_vector3d(v) for v in verts) if p is not None]
     if not pts:
@@ -204,10 +390,9 @@ def refresh_meshes(meshes):
 
 
 def guess_unit(size):
-    """Best guess at the drawing unit from the object's largest dimension."""
-    # Under 50 units: almost certainly metres. Otherwise assume millimetres.
-    # (Pick cm by hand in the dialog; the choice is remembered.)
-    return "m" if max(size) < 50.0 else "mm"
+    """IngeTrazo stores models in metres. Only something over 500 'metres' long is taken to be a
+    model that came in from millimetres without being converted."""
+    return "m" if max(size) < 500.0 else "mm"
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +574,26 @@ def eddy_window(dlg, key, tips=None, place=True):
 EDDY_TIPS = {'Scale': 'The scale to print at, e.g. 1 : 80.',
  'Custom scale': "Your own scale: pick 'Custom...' above, then type it here.",
  'Scale about': 'The point that stays put while the model shrinks.',
- 'Mode': 'Scale the model itself, or a copy (keeping the original).',
+ 'Mode': 'Export scaled: writes the scaled model straight to a file in mm - STL, 3MF, OBJ or '
+         'PLY - every detail kept (best for printing small scales). Scale a copy: a scaled '
+         'copy beside the original. Scale in place: the model itself. IngeTrazo merges points '
+         'closer than 0.1 mm, so very small details can be lost in a copy or in place - the '
+         'STL keeps them.',
  'Check against print bed (mm)': "Warns you if the scaled model won't fit on your print bed.",
  '@bed': 'Your print bed size in mm: width, depth and height.'}
 EDDY_TIPS_END = None
+
+
+def _mm(x):
+    """A size in mm, with enough figures to read: 1234, 12.3, 0.20, 0.0057."""
+    a = abs(x)
+    if a >= 100:
+        return "%.0f" % x
+    if a >= 1:
+        return "%.1f" % x
+    if a >= 0.01:
+        return "%.2f" % x
+    return "%.2g" % x
 
 
 class ScaleDialog(QDialog):
@@ -426,10 +627,10 @@ class ScaleDialog(QDialog):
             self.cb_unit.addItem(label, mm)
             if key == unit_key:
                 self.cb_unit.setCurrentIndex(self.cb_unit.count() - 1)
-        self.unit_guessed = cur.get('unit') is None
-        if self.unit_guessed:
-            self.cb_unit.setToolTip("Guessed from the object's size. Change it if it's wrong; "
-                                    "your choice is remembered.")
+        self.unit_guessed = True
+        self.cb_unit.setToolTip("IngeTrazo keeps every model in metres, whatever units it shows you, so "
+                                "this is nearly always Metres. Only change it for a model that came in 1000 "
+                                "times too big (an STL in millimetres imported as metres).")
 
         self.cb_pivot = QComboBox()
         for label, key in PIVOTS:
@@ -463,8 +664,7 @@ class ScaleDialog(QDialog):
         form.addRow(lbl_sel)
         form.addRow("Scale:", self.cb_scale)
         form.addRow("   Custom scale:", self.sp_custom)
-        form.addRow("Model is drawn in (guessed):" if self.unit_guessed else "Model is drawn in:",
-                    self.cb_unit)
+        form.addRow("Model's units:", self.cb_unit)
         form.addRow("Scale about:", self.cb_pivot)
         form.addRow("Mode:", self.cb_mode)
         form.addRow(self.cb_bed)
@@ -502,10 +702,18 @@ class ScaleDialog(QDialog):
         den = self.denominator()
         unit_mm = self.cb_unit.currentData()
         sx, sy, sz = [d * unit_mm / den for d in self.size]
-        txt = ("Current size: %.4g x %.4g x %.4g (model units)<br>"
-               "<b>Printed size: %.1f x %.1f x %.1f mm</b>" % (
-                   self.size[0], self.size[1], self.size[2], sx, sy, sz))
+        rx, ry, rz = [d * unit_mm for d in self.size]
+        txt = ("Full size: %s x %s x %s mm<br>"
+               "<b>Printed size: %s x %s x %s mm</b>" % (
+                   _mm(rx), _mm(ry), _mm(rz), _mm(sx), _mm(sy), _mm(sz)))
         color = ""
+        big = max(sx, sy, sz)
+        if big < 0.05:
+            txt += ("<br>That's under 0.05 mm - smaller than even a resin printer's pixel. If it should be "
+                    "bigger, check the model's units (IngeTrazo works in metres).")
+            color = "color: #b35900;"
+        elif big < 1.0:
+            txt += "<br>Fine detail: good for resin printing; too small for a 0.4 mm FDM nozzle."
         if self.cb_bed.isChecked():
             bx, by, bz = [s.value() for s in self.bed]
             fits = sz <= bz and ((sx <= bx and sy <= by) or (sy <= bx and sx <= by))
@@ -537,6 +745,7 @@ class PrintScalerTool(Tool):
     description = "Scale the selected object to a chosen scale (1:50, 1:100 ...) for 3D printing."
 
     _saved = None
+    _last_export = None
 
     def on_activate(self, viewport):
         scene = getattr(viewport, 'scene', None)
@@ -550,12 +759,22 @@ class PrintScalerTool(Tool):
             return
 
         lo, hi = bounds(verts)
+        try:
+            wl = world_loops(entities)             # a moved or turned component: its real size
+            if wl:
+                lo, hi = loops_bounds(wl)
+        except Exception:
+            pass
         size = (hi.x() - lo.x(), hi.y() - lo.y(), hi.z() - lo.z())
 
         cur = dict(DEFAULTS)
         if PrintScalerTool._saved:
             cur.update(PrintScalerTool._saved)
-        unit_key = cur['unit'] or guess_unit(size)
+        # IngeTrazo keeps every model in metres, whatever units it shows, so start from metres
+        # each time; millimetres is only for a model that came in 1000 times too big (an STL in mm
+        # imported as metres)
+        unit_key = guess_unit(size)
+        cur['unit'] = None
 
         text = "Selected: %d vertices, %d faces" % (len(verts), len(faces))
         dialog = ScaleDialog(cur, size, unit_key, text, viewport)
@@ -570,10 +789,26 @@ class PrintScalerTool(Tool):
 
     def apply_scale(self, viewport, entities, p):
         s = 1.0 / p['denominator']
+        if p['mode'] == 'stl':
+            return self._export_stl(viewport, entities, p)
+
+        report = {}
 
         def mutate(scene):
             from core.mesh import Mesh
             from core.group import Group
+
+            if p['mode'] == 'copy':
+                loops = world_loops(entities)
+                if not loops:
+                    raise RuntimeError("Copy mode needs faces in the selection.")
+                lo, hi = loops_bounds(loops)
+                pv = pivot_point(p['pivot'], lo, hi)
+
+                def scaled(pt):
+                    return pv + (pt - pv) * s
+                report.update(self._make_copy(scene, Mesh, Group, loops, lo, hi, scaled, p['denominator']))
+                return
 
             verts, faces, meshes = collect(entities)
             if not verts:
@@ -588,11 +823,6 @@ class PrintScalerTool(Tool):
 
             def scaled(pt):
                 return pv + (pt - pv) * s
-
-            if p['mode'] == 'copy':
-                self._make_copy(scene, Mesh, Group, faces, lo, hi, scaled, key, p['denominator'])
-                return
-
             self._scale_in_place(scene, verts, faces, meshes, scaled, key)
 
         try:
@@ -601,66 +831,128 @@ class PrintScalerTool(Tool):
             QMessageBox.warning(viewport, PLUGIN_NAME, "Scaling failed:\n%s" % e)
             return
         viewport.notify_scene_changed()
+        if report.get('lost'):
+            QMessageBox.warning(
+                viewport, PLUGIN_NAME,
+                "The copy at 1:%g is missing %d of %d faces.\n\nIngeTrazo treats points closer than 0.1 mm "
+                "as the same point, so details smaller than that can't be kept once the model is scaled down "
+                "this far.\n\nFor printing, use 'Export scaled (full detail)' instead: it writes the "
+                "scaled model straight to a file (STL, 3MF, OBJ or PLY), every detail kept." % (
+                    p['denominator'], report['lost'], report['lost'] + report['made']))
         try:
             viewport.flash_status("%s: scaled to 1:%g" % (PLUGIN_NAME, p['denominator']), 3000)
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ copy
-    def _make_copy(self, scene, Mesh, Group, faces, lo, hi, scaled, key, den):
-        if not faces:
-            raise RuntimeError("Copy mode needs faces in the selection.")
+    # ------------------------------------------------------------------ STL
+    def _export_stl(self, viewport, entities, p):
+        """Scale the selection outside the model, at full precision, and write it as an STL in mm
+        - no detail is lost, however small, and the original isn't touched."""
+        from PySide6.QtWidgets import QFileDialog
+        loops = world_loops(entities)
+        if not loops:
+            QMessageBox.warning(viewport, PLUGIN_NAME, "Select the object (a group or its faces) first.")
+            return
+        unit_mm = dict((u[2], u[1]) for u in UNITS).get(p.get('unit') or 'm', 1000.0)
+        k = unit_mm / p['denominator']                      # model units -> printed mm
+        tris = []
+        for outer, holes, f in loops:
+            for t in face_triangles(f):
+                q = [vertex_to_vector3d(v) if not isinstance(v, QVector3D) else v for v in t]
+                if any(x is None for x in q):
+                    continue
+                tris.append(tuple((x.x() * k, x.y() * k, x.z() * k) for x in q))
+        if not tris:
+            QMessageBox.warning(viewport, PLUGIN_NAME, "Those faces couldn't be turned into triangles.")
+            return
+        # on the print bed: centred, standing on z = 0
+        xs = [c[0] for t in tris for c in t]
+        ys = [c[1] for t in tris for c in t]
+        zs = [c[2] for t in tris for c in t]
+        ox, oy, oz = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, min(zs)
+        tris = [tuple((c[0] - ox, c[1] - oy, c[2] - oz) for c in t) for t in tris]
+        name = "scaled"
+        for e in entities:
+            if getattr(e, 'name', None):
+                name = str(e.name)
+                break
+        safe = "".join(ch for ch in name if ch not in '\\/:*?"<>|').strip() or "scaled"
+        # the file type you used last time comes first
+        last = PrintScalerTool._last_export if PrintScalerTool._last_export in [e[0] for e in EXPORTS] \
+            else EXPORTS[0][0]
+        start = os.path.join(os.path.expanduser("~"), "Downloads", "%s 1-%g%s" % (
+            safe, p['denominator'], dict((e[0], e[1]) for e in EXPORTS)[last]))
+        res = QFileDialog.getSaveFileName(viewport, "Save the scaled model", start,
+                                          ";;".join(e[0] for e in EXPORTS), last)
+        path, chosen = (res[0], res[1]) if isinstance(res, (tuple, list)) and len(res) > 1 else (res, last)
+        if not path:
+            return
+        fmt = next((e for e in EXPORTS if e[0] == chosen), None)
+        if fmt is None or not path.lower().endswith(fmt[1]):
+            # typed an extension of their own: go by that
+            fmt = next((e for e in EXPORTS if path.lower().endswith(e[1])), fmt or EXPORTS[0])
+        if not path.lower().endswith(fmt[1]):
+            path += fmt[1]
+        PrintScalerTool._last_export = fmt[0]
+        try:
+            fmt[2](path, tris, "%s at 1:%g" % (name, p['denominator']))
+        except Exception as e:
+            QMessageBox.warning(viewport, PLUGIN_NAME, "Could not write the file:\n%s" % e)
+            return
+        QMessageBox.information(
+            viewport, PLUGIN_NAME,
+            "Saved %d triangles at 1:%g, %.1f x %.1f x %.1f mm, in millimetres:\n%s\n\nOpen it in your slicer "
+            "(or Rhino, ZBrush...) as it is - it's already the right size, in mm." % (len(tris), p['denominator'], max(xs) - min(xs),
+                                                          max(ys) - min(ys), max(zs) - min(zs), path))
 
+    # ------------------------------------------------------------------ copy
+    def _make_copy(self, scene, Mesh, Group, loops, lo, hi, scaled, den):
         # Put the copy beside the original (along +X) so it isn't hidden inside it.
         width = hi.x() - lo.x()
         scaled_lo = scaled(QVector3D(lo))
         offset = QVector3D(hi.x() + width * COPY_GAP - scaled_lo.x(), 0, 0)
 
-        # One shared vertex object per position, so faces that meet share their
-        # corners and the copy stays watertight for slicing / STL export.
-        welded = {}
-
-        def wv(v):
-            q = vertex_to_vector3d(v)
-            if q is None:
-                return None
-            k = key(q)
-            if k not in welded:
-                n = scaled(q) + offset
-                welded[k] = VertexWrapper(n.x(), n.y(), n.z())
-            return welded[k]
-
+        def P(q):
+            n = scaled(q) + offset
+            return VertexWrapper(n.x(), n.y(), n.z())
         target = Mesh()
-        made = 0
-        for f in faces:
-            loop = [wv(v) for v in _items(f.vertices)]
-            if len(loop) < 3 or any(v is None for v in loop):
-                continue
+        made = lost = 0
+        for outer, holes, f in loops:
             try:
-                nf = target.add_face(loop)
+                nf = target.add_face([P(q) for q in outer], [[P(q) for q in h] for h in holes] or None)
+            except TypeError:                          # an older IngeTrazo: holes one by one
+                try:
+                    nf = target.add_face([P(q) for q in outer])
+                    for h in holes:
+                        target.add_hole(nf, [P(q) for q in h])
+                except Exception:
+                    lost += 1
+                    continue
             except Exception:
+                lost += 1                              # too small to keep: its corners merged
+                continue
+            if nf is None:
+                lost += 1
                 continue
             made += 1
-            if nf is None:
-                continue
-            holes = _items(getattr(f, 'holes', None))
-            if holes:
-                try:
-                    nf.holes = [[wv(v) for v in _items(h)] for h in holes]
-                except Exception:
-                    pass
             try:
                 col = getattr(f, 'attrs', {}).get('color')
                 if col is not None:
                     nf.attrs['color'] = col
             except Exception:
                 pass
-
         if made == 0:
-            raise RuntimeError("None of the selected faces could be copied.")
-
-        g = Group("Scaled 1:%g" % den)
-        g.mesh = target
+            raise RuntimeError("None of the faces could be made at this scale (they're all smaller than "
+                               "IngeTrazo's 0.1 mm). Use 'Export scaled' instead.")
+        try:
+            g = Group(target, name="Scaled 1:%g" % den)
+        except TypeError:
+            g = Group("Scaled 1:%g" % den)
+            g.mesh = target
+        try:
+            g.name = "Scaled 1:%g" % den
+        except Exception:
+            pass
         if hasattr(scene, 'add_group'):
             scene.add_group(g)
         elif hasattr(scene, 'groups') and isinstance(scene.groups, list):
@@ -668,7 +960,7 @@ class PrintScalerTool(Tool):
         else:
             raise RuntimeError("Could not add the scaled copy to the scene.")
         refresh_meshes([target])
-        print("%s: copied %d faces at 1:%g" % (PLUGIN_NAME, made, den))
+        return {'made': made, 'lost': lost}
 
     # -------------------------------------------------------------- in place
     def _scale_in_place(self, scene, verts, faces, meshes, scaled, key):

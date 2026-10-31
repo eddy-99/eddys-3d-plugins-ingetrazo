@@ -22,6 +22,8 @@ Every part they make is a closed, watertight solid with flat faces, ready to pri
 | 3D Gutters & Downpipes | Ctrl+Alt+G | Gutters, downpipes and fittings that join onto each other, with presets. |
 | 3D Soil & Waste Pipes | Ctrl+Alt+W | Soil stacks and outside waste pipes with fittings that join onto each other, with presets. |
 | 3D Wrap | Ctrl+Alt+U | Lays bricks course by course round round, square, many-sided or drawn chimneys (no seam, bonded corners, level courses stepping in up a taper), or bends any flat pattern round a solid, like Flowify. |
+| 3D Chimneys | Ctrl+Alt+H | House chimney stacks that stand on the roof faces you pick, every brick cut to the slope, with oversailing courses, flaunching and pots; industrial mill and factory chimneys (square, octagonal or round, tapered, with plinth, bands, corbelled cap and coping); and six styles of chimney pot. |
+| 3D Corrugated Iron | Ctrl+Alt+I | Corrugated, box-profile and flat sheet cladding for walls and roofs, round any openings: flat-backed for 3D printing (joint lines and end-lap steps) or real lapped sheets on rails. Rust holes, rusted ragged bottoms, missing, skew and lifted sheets, flashings and corner trims. |
 | 3D Loft | Ctrl+Alt+L | Makes a solid between two or more profile faces, such as a square into a circle. |
 | 3D Print Scaler | Ctrl+Alt+P | Scales the selected object to a chosen scale for printing and checks it fits your print bed. |
 | 3D Scale Converter | Ctrl+Alt+K | A toolbar that turns real sizes (ft / in / mm) into model sizes at any scale. |
@@ -47,6 +49,10 @@ left it.
 | ![Period doors](pictures/Period-Doors-presets.png) | ![Fences and gates](pictures/Fences-and-Gates-presets.png) |
 | ![Period windows](pictures/3D-Period-Windows-examples.png) | ![Wrapped chimneys](pictures/Wrap-brick-chimneys-course-by-course.png) |
 | ![Roof tile shapes](pictures/Roof-Tiles-tile-shapes.png) | ![Soil and waste pipes](pictures/3D-Soil-and-Waste-Pipes-parts.png) |
+
+![Chimneys](pictures/3D-Chimneys-examples.png)
+
+![Corrugated iron](pictures/3D-Corrugated-Iron-presets.png)
 
 More in the [pictures](pictures) folder, and user guides in the [guides](guides) folder.
 

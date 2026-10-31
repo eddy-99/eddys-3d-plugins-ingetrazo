@@ -888,6 +888,9 @@ def lay_bricks(target, v):
     lift = v['lift'] * SCALE
     every = int(v.get('header_every', 0))
     level = bool(v.get('level', True))          # courses laid level, stepping in up a taper
+    # some courses can stand out further (oversailing courses, bands, a plinth): a function of
+    # the course number and its height, giving the extra depth in metres
+    extra_depth = v.get('extra_depth') or (lambda c_, z_: 0.0)
     z0 = target.z0 + v['raise'] * SCALE
     top = target.z0 + target.h if v.get('lay_h', 0) <= 0 else min(target.z0 + target.h, z0 + v['lay_h'] * SCALE)
     th0 = math.radians(v.get('start', 0.0))
@@ -997,7 +1000,7 @@ def lay_bricks(target, v):
             zm = zc + H / 2.0
             header = every > 0 and (c % every == every - 1)
             unit = (D if header else L) + J
-            depth = L if header else D
+            depth = (L if header else D) + extra_depth(c, zc)
             frames = []
             for si in range(nc):
                 a0, a1 = corners[si], corners[(si + 1) % nc] + (2 * math.pi if si == nc - 1 else 0.0)
@@ -1104,7 +1107,7 @@ def lay_bricks(target, v):
                     hi = mid
             t = (sv - cum[lo]) / ((cum[hi] - cum[lo]) or 1.0)
             return th0 + 2 * math.pi * (lo + t) / n_s
-        depth = L if header else D
+        depth = (L if header else D) + extra_depth(c, zc)
 
         def s_at(th):
             idx = ((th - th0) % (2 * math.pi)) / (2 * math.pi) * n_s

@@ -21,6 +21,7 @@ they have labels. Ctrl+Alt+B shows or hides the toolbar.
 
 import os
 import json
+import math
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Plugins Toolbar"
@@ -42,6 +43,8 @@ PLUGINS = [
     ("3D Period Doors", "Ctrl+Alt+D", "Doors", "door"),
     ("3D Fences & Gates", "Ctrl+Alt+F", "Fences", "fence"),
     ("3D Wrap", "Ctrl+Alt+U", "Wrap", "wrap"),
+    ("3D Chimneys", "Ctrl+Alt+H", "Chimneys", "chimney"),
+    ("3D Corrugated Iron", "Ctrl+Alt+I", "Tin sheet", "corrugated"),
 ]
 
 
@@ -190,6 +193,31 @@ def make_icon(kind):
                 x = 16 + k * w0 + (w0 / 2 if r % 2 else 0)
                 if 16 - 2 * w0 <= x <= 16 + w0:
                     p.drawRect(QRectF(x, y, w0 - 0.8, 4.2))
+    elif kind == "corrugated":
+        path = QPainterPath()
+        for row, y0 in enumerate((6.0, 18.0)):
+            p.setPen(QPen(QColor(70, 76, 82), 1.0))
+            p.setBrush(QColor(150, 158, 164) if row == 0 else QColor(168, 112, 74))
+            pts = [QPointF(3 + i * 0.5, y0 + 1.6 * math.sin(i * 0.5 * 2 * math.pi / 5.0)) for i in range(53)]
+            pts += [QPointF(29, y0 + 10), QPointF(3, y0 + 10)]
+            p.drawPolygon(QPolygonF(pts))
+            p.setPen(QPen(QColor(90, 96, 100), 0.7))
+            for k in range(6):
+                x = 5.5 + k * 5.0
+                p.drawLine(QPointF(x, y0 + 2), QPointF(x, y0 + 10))
+    elif kind == "chimney":
+        p.setPen(QPen(QColor(60, 60, 60), 1.4))
+        p.drawLine(QPointF(1, 30), QPointF(31, 18))          # the roof slope
+        p.setPen(QPen(QColor(90, 40, 25), 1.0))
+        p.setBrush(QColor(176, 84, 56))
+        p.drawPolygon(QPolygonF([QPointF(9, 27), QPointF(9, 11), QPointF(23, 11), QPointF(23, 21.7)]))
+        p.drawRect(QRectF(7.5, 8.5, 17, 3))                     # oversailing course
+        p.setBrush(QColor(200, 110, 60))
+        p.drawRect(QRectF(10.5, 2.5, 4, 6))                     # the pots
+        p.drawRect(QRectF(17.5, 2.5, 4, 6))
+        p.setPen(QPen(QColor(120, 50, 30), 0.8))
+        for y in (14, 17, 20, 23):
+            p.drawLine(QPointF(9, y), QPointF(23, y))
     elif kind == "fence":
         p.setPen(QPen(QColor(80, 50, 25), 1.0))
         p.setBrush(QColor(150, 104, 64))
@@ -636,7 +664,7 @@ def _install_when_ready(tries=0):
 EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
               "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "wood_planking",
-              "period_doors", "fences_gates", "wrap", "plugins_toolbar")
+              "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 

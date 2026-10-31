@@ -768,7 +768,7 @@ def turn_about(p, c, ang):
 STEEL = ('palisade', 'railings', 'wire')
 
 
-def post_solids(top, uc, pw, v0, H, w0, w1):
+def post_solids(top, uc, pw, v0, H, w0, w1, flat=False):
     """A post from v0 up to H (and its top: flat, pointed or a ball)."""
     out = []
     if top == 'pointed':
@@ -779,7 +779,10 @@ def post_solids(top, uc, pw, v0, H, w0, w1):
     if top == 'ball':
         r = pw * 0.62
         ball = arc(uc, H + r * 0.85, r, -math.pi / 2, 1.5 * math.pi, 16)[:-1]
-        out.append(slabw([ball], w0 * 0.8, w1 * 0.8, "post ball"))
+        if flat:          # flat back: the ball's back lies on the back of the post too
+            out.append(slabw([ball], w0, w0 + (w1 - w0) * 0.8, "post ball"))
+        else:
+            out.append(slabw([ball], w0 * 0.8, w1 * 0.8, "post ball"))
     return out
 
 
@@ -804,11 +807,13 @@ def build_run(L, v, rnd, gate=None, posts_at=(True, True), skip_post=None):
         ch = max(0.0, v['coping_h'])
         co = max(0.0, v['coping_over'])
         wall = slabw([rect(-pt / 2 if posts_at[0] else 0.0, L + (pt / 2 if posts_at[1] else 0.0),
-                           0.0, v['wall_h'])], -wt / 2, wt / 2, "dwarf wall")
+                           0.0, v['wall_h'])], (wback if flat else -wt / 2), (wback + wt if flat else wt / 2),
+                     "dwarf wall")
         out['wall'].append(wall)
         if ch > 0:
             cop = slabw([rect(-pt / 2 - co if posts_at[0] else 0.0, L + (pt / 2 + co if posts_at[1] else 0.0),
-                              v['wall_h'] - ov, v['wall_h'] + ch)], -wt / 2 - co, wt / 2 + co, "coping")
+                              v['wall_h'] - ov, v['wall_h'] + ch)],
+                        (wback if flat else -wt / 2 - co), (wback + wt + co if flat else wt / 2 + co), "coping")
             out['wall'].append(cop)
         base = v['wall_h'] + ch
     top_v = base + H
@@ -845,7 +850,9 @@ def build_run(L, v, rnd, gate=None, posts_at=(True, True), skip_post=None):
         w_ = max(pt, v['gate_post']) if gpost else pt
         ptop = 'ball' if (kind == 'railings') else v['post_top']
         hpost = top_v + (v['post_above'] if kind != 'railings' else 0.0)
-        out['posts'] += post_solids(ptop, u, w_, (base - ov) if base > 0 else 0.0, hpost, -w_ / 2, w_ / 2)
+        # with a flat back every post (a heavier gate post too) has its back on the back plane
+        pw0 = wback if flat else -w_ / 2
+        out['posts'] += post_solids(ptop, u, w_, (base - ov) if base > 0 else 0.0, hpost, pw0, pw0 + w_, flat)
     # the bays between posts
     plist = [(u, gp) for u, _, gp in posts]
     for (ua, ga), (ub, gb_) in zip(plist[:-1], plist[1:]):
