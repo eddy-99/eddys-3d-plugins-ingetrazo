@@ -45,6 +45,7 @@ PLUGINS = [
     ("3D Wrap", "Ctrl+Alt+U", "Wrap", "wrap"),
     ("3D Chimneys", "Ctrl+Alt+H", "Chimneys", "chimney"),
     ("3D Corrugated Iron", "Ctrl+Alt+I", "Tin sheet", "corrugated"),
+    ("3D Station Canopies", "Ctrl+Alt+C", "Canopy", "canopy"),
 ]
 
 
@@ -205,6 +206,27 @@ def make_icon(kind):
             for k in range(6):
                 x = 5.5 + k * 5.0
                 p.drawLine(QPointF(x, y0 + 2), QPointF(x, y0 + 10))
+    elif kind == "canopy":
+        p.setPen(QPen(QColor(50, 50, 60), 1.0))
+        p.setBrush(QColor(110, 112, 124))
+        p.drawPolygon(QPolygonF([QPointF(2, 5), QPointF(30, 10), QPointF(30, 13), QPointF(2, 8)]))   # the roof
+        p.setBrush(QColor(214, 200, 160))
+        p.setPen(QPen(QColor(130, 110, 70), 0.8))
+        pts = [QPointF(4, 13), QPointF(30, 13)]
+        x = 30.0
+        while x > 4.5:
+            pts.append(QPointF(x, 16.5))
+            pts.append(QPointF(x - 1.6, 19.5))
+            pts.append(QPointF(x - 3.2, 16.5))
+            x -= 3.2
+        p.drawPolygon(QPolygonF(pts))                                                         # the valance
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(50, 80, 65))
+        for cx in (9.0, 23.0):
+            p.drawRect(QRectF(cx - 1.2, 16, 2.4, 13))
+            p.drawRect(QRectF(cx - 2.2, 27, 4.4, 3))
+            p.drawPolygon(QPolygonF([QPointF(cx - 4, 16), QPointF(cx + 4, 16), QPointF(cx + 1.2, 19),
+                                     QPointF(cx - 1.2, 19)]))
     elif kind == "chimney":
         p.setPen(QPen(QColor(60, 60, 60), 1.4))
         p.drawLine(QPointF(1, 30), QPointF(31, 18))          # the roof slope
@@ -664,7 +686,8 @@ def _install_when_ready(tries=0):
 EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
               "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "wood_planking",
-              "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron", "plugins_toolbar")
+              "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
+              "station_canopies", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 

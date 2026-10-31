@@ -57,8 +57,8 @@ MODES = [("print", "3D print - flat back"), ("real", "Real sheets - lapped")]
 DIRECTIONS = [("Up the face", 0.0), ("Across the face", 90.0)]
 
 DEFAULTS = dict(
-    profile='corrugated', mode='print', angle=0.0, pitch=76.0, depth=19.0, rib_top=40.0, rib_base=100.0,
-    thick=32.0, sheet_w=760.0, sheet_l=2400.0, gap=0.4, step=16.0, lap=150.0,
+    profile='corrugated', mode='print', thin=False, angle=0.0, pitch=76.0, depth=19.0, rib_top=40.0, rib_base=100.0,
+    thick=32.0, sheet_w=760.0, sheet_l=2400.0, gap=0.4, step=16.0, lap=150.0, stagger=0.0,
     rails=False, rail_w=100.0, rail_t=50.0, rail_gap=1000.0,
     missing=0.0, rot_h=0.0, holes=0.0, hole_size=150.0, skew_pct=0.0, skew_ang=8.0,
     lifted_pct=0.0, lifted_mm=40.0, seed=1,
@@ -84,11 +84,14 @@ BUILTIN_PRESETS = {
     "1:80 print - flat sheet hut": dict(
         profile='flat', mode='print', angle=90.0, thick=32.0, sheet_w=1200.0, sheet_l=2400.0, gap=8.0,
         step=8.0),
+    "1:80 resin - thin corrugated sheets": dict(
+        profile='corrugated', mode='print', thin=True, angle=0.0, pitch=76.0, depth=24.0, thick=16.0,
+        sheet_w=760.0, sheet_l=2400.0, gap=0.4, step=16.0, backing=0.0),
     "Real sheets - corrugated on rails": dict(
         profile='corrugated', mode='real', angle=0.0, pitch=76.0, depth=19.0, thick=1.0, sheet_w=760.0,
         sheet_l=2400.0, lap=150.0, rails=True, rail_w=100.0, rail_t=50.0, rail_gap=1000.0),
 }
-NUM_KEYS = ('pitch', 'depth', 'rib_top', 'rib_base', 'thick', 'sheet_w', 'sheet_l', 'gap', 'step', 'lap',
+NUM_KEYS = ('stagger', 'pitch', 'depth', 'rib_top', 'rib_base', 'thick', 'sheet_w', 'sheet_l', 'gap', 'step', 'lap',
             'rail_w', 'rail_t', 'rail_gap', 'missing', 'rot_h', 'holes', 'hole_size', 'skew_pct',
             'skew_ang', 'lifted_pct', 'lifted_mm', 'hole_gap', 'trim_w', 'trim_t', 'corner_w',
             'backing', 'lift')
@@ -733,6 +736,9 @@ def lay_sheets(outline, holes, v):
     (counter-clockwise) with openings. Returns ({'sheets', 'rails', 'trims', 'backing'}, count)."""
     prof = v.get('profile', 'corrugated')
     real = v.get('mode', 'print') == 'real'
+    # 3D print with a thin sheet: the back follows the corrugations too, the sheet the true
+    # thickness E all over (no flat back) - for resin printing
+    thin = bool(v.get('thin')) and not real
     P = max(5.0, float(v['pitch']))
     Dd = max(0.0, float(v['depth']))
     t = max(0.2, float(v['thick']))
@@ -844,7 +850,27 @@ def lay_sheets(outline, holes, v):
         x, y = rot((p[0], p[1]), a)
         return (x, y, p[2])
 
-    # pass 1: where every sheet goes - columns across, rows up (end laps in line, as built)
+    # pass 1: where every sheet goes - columns across, rows up. The end laps are in line, or
+    # staggered: every other column starts with a shorter sheet, so its laps fall part way up
+    stag = min(95.0, max(0.0, float(v.get('stagger', 0.0)))) / 100.0 if Lb > 0 else 0.0
+
+    def rows_for(col):
+        if Lb <= 0:
+            return [(Y0 - 1.0, Y1 + 1.0)]
+        off = (col % 2) * stag * Lb
+        out_, y = [], Y0
+        first = Lb - off if off > 1.0 else Lb
+        nxt = y + first
+        while y < Y1 - 1.0:
+            out_.append((y, min(Y1 + 1.0, nxt)))
+            y = nxt
+            nxt = y + Lb
+        # a sliver of sheet at the top is joined onto the one below it
+        if len(out_) > 1 and out_[-1][1] - out_[-1][0] < 0.25 * Lb:
+            out_[-2:] = [(out_[-2][0], out_[-1][1])]
+        if len(out_) > 1 and out_[0][1] - out_[0][0] < 0.25 * Lb:
+            out_[:2] = [(out_[0][0], out_[1][1])]
+        return out_
     skew_p = min(90.0, max(0.0, v.get('skew_pct', 0.0))) / 100.0
     skew_a = math.radians(min(45.0, max(0.0, v.get('skew_ang', 0.0))))
     rows = []
@@ -855,10 +881,12 @@ def lay_sheets(outline, holes, v):
             y += Lb
     else:
         rows = [(Y0 - 1.0, Y1 + 1.0)]
-    if real and len(rows) > 1:
+    all_rows = [rows_for(0), rows_for(1)]
+    if real and max(len(r_) for r_ in all_rows) > 1:
         # how far a lapping sheet stands off the one under it: leaning out towards its foot, it
         # must still clear the sheet below all along the lap - the shortest sheet decides
-        spans = [(yb - ya) + (lap_e if r > 0 else 0.0) for r, (ya, yb) in enumerate(rows)]
+        spans = [(yb - ya) + (lap_e if r > 0 else 0.0) for rows in all_rows for r, (ya, yb) in enumerate(rows)
+                 if len(rows) > 1]
         sp_min = max(lap_e * 1.5, min(spans))
         clear = (t + 0.5) * sp_min / max(1.0, sp_min - lap_e)
         step = clear
@@ -867,6 +895,7 @@ def lay_sheets(outline, holes, v):
     col = 0
     while xa < X1 - 0.5:
         xb = xa + W
+        rows = rows_for(col)
         for r, (ya, yb) in enumerate(rows):
             if miss > 0 and rnd.random() < miss:
                 continue
@@ -878,7 +907,7 @@ def lay_sheets(outline, holes, v):
             if skew_p > 0 and skew_a > 0 and rnd.random() < skew_p:
                 sk = rnd.choice((-1.0, 1.0)) * skew_a * rnd.uniform(0.4, 1.0)
             ex = lift_mm * rnd.uniform(0.5, 1.0) if (lift_p > 0 and rnd.random() < lift_p) else 0.0
-            segs.append(dict(lo=lo, hi=hi, sa=sa, sb=sb, sk=sk, ex=ex, col=col, row=r))
+            segs.append(dict(lo=lo, hi=hi, sa=sa, sb=sb, sk=sk, ex=ex, col=col, row=r, nrows=len(rows)))
         xa = xb
         col += 1
 
@@ -887,7 +916,8 @@ def lay_sheets(outline, holes, v):
     # cut off (as roofers mitre them), so only two lie over each other there
     for sg in segs:
         sg['crops'] = []
-    if real and lap_s > 0 and lap_e > 0 and len(rows) > 1:
+    rows = rows_for(0)
+    if real and lap_s > 0 and lap_e > 0 and len(rows) > 1 and stag == 0:
         last = len(rows) - 1
         for sg in segs:
             c, r = sg['col'], sg['row']
@@ -941,9 +971,10 @@ def lay_sheets(outline, holes, v):
         wp = wave_points(prof, P, Dd, v.get('rib_top', 40.0), v.get('rib_base', 100.0), X0, lo, hi)
         # stand-off: a sheet lapping over its neighbour stands out a little (real sheets), and every
         # sheet leans out a little towards its foot, so the end laps show as a step
-        lvl = (sg['col'] % 2) * clear if real else 0.0
+        # staggered real sheets: the odd columns stand clear of a whole end lap of the even ones
+        lvl = (sg['col'] % 2) * (clear if stag == 0 else clear + t + 0.5) if real else 0.0
         span = max(1.0, sb - sa)
-        lean = (step if len(rows) > 1 else 0.0) + sg['ex']
+        lean = (step if sg['nrows'] > 1 else 0.0) + sg['ex']
 
         def wave(x, wp=wp):
             for (pa, za), (pb, zb) in zip(wp[:-1], wp[1:]):
@@ -953,14 +984,14 @@ def lay_sheets(outline, holes, v):
 
         def ztop(x, y, wave=wave, lvl=lvl, span=span, lean=lean, sb=sb):
             return sheet_base + lvl + t + wave(x) + lean * (sb - y) / span
-        if real:
+        if real or thin:
             def zbot(x, y, ztop=ztop):
                 return ztop(x, y) - t
         else:
             def zbot(x, y):
                 return sheet_base
         cuts = [u for u, _ in wp[1:-1]]
-        so = merged_slab(pieces, zbot, ztop, cuts, wavy_bottom=real)
+        so = merged_slab(pieces, zbot, ztop, cuts, wavy_bottom=real or thin)
         if not so:
             continue
         if sg['sk']:
@@ -1529,6 +1560,210 @@ class SheetPreview(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Sizes: the lettered drawing (front of the sheets, a cut across the corrugations,
+# and a cut up the sheets through an end lap)
+# ---------------------------------------------------------------------------
+def sheet_sizes_drawing(v):
+    """[panel]: each {'title', 'box': (x0, y0, x1, y1) as parts of the widget, 'polys': [(pts, rgb)],
+    'lines': [(p, q, rgb)], 'dims': [(letter, p, q, (ox, oy), off)], 'stretch': x exaggeration}.
+    Points in mm, y up."""
+    prof, real = v['profile'], v['mode'] == 'real'
+    thin = bool(v.get('thin')) and not real
+    P = max(5.0, v['pitch'])
+    Dd = 0.0 if prof == 'flat' else max(0.0, v['depth'])
+    E = max(0.2, v['thick'])
+    Fw = max(50.0, v['sheet_w'])
+    G = v['sheet_l'] if v['sheet_l'] > 0 else 2.0 * Fw
+    H = max(0.2, v['gap'])
+    I_ = max(0.0, v['step'])
+    J = max(0.0, v['lap'])
+    MET, MET2, LINE = (172, 178, 182), (150, 157, 162), (95, 100, 106)
+    panels = []
+
+    # --- front: two sheets across, two up ---
+    polys, lines, dims = [], [], []
+    Hs = max(H, Fw * 0.025)                 # the joint drawn wide enough to see
+    rows = [(0.0, G), (G - (J if real else 0.0), 2 * G - (J if real else 0.0))]
+    stg = min(95.0, max(0.0, v.get('stagger', 0.0))) / 100.0 * G if v['sheet_l'] > 0 else 0.0
+    for r in range(2):
+        for c in range(2):
+            ya, yb = rows[r]
+            if c == 1 and stg > 0:              # the second column's laps are staggered up
+                ya = 0.0 if r == 0 else ya - stg
+                yb = yb - stg if r == 0 else rows[1][1]
+            if real:
+                xa = c * (Fw - P * 0.5)            # real sheets lap one corrugation at the sides
+            else:
+                xa = c * (Fw + Hs)
+            polys.append(([(xa, ya), (xa + Fw, ya), (xa + Fw, yb), (xa, yb)], MET if (r + c) % 2 == 0 else MET2))
+            if prof != 'flat':
+                x = xa + P / 2
+                while x < xa + Fw - 1e-6:
+                    lines.append(((x, ya), (x, yb), LINE))
+                    x += P
+    top = rows[1][1]
+    dims.append(('F', (0.0, top), (Fw, top), (0, 1), 12))
+    if stg > 0:
+        xk = (2 * Fw - P * 0.5) if real else (2 * Fw + Hs)
+        dims.append(('K', (xk, G - stg), (xk, G), (1, 0), 12 if not real else 30))
+    dims.append(('G', (0.0, rows[0][0]), (0.0, rows[0][1]), (-1, 0), 12))
+    if real:
+        if J > 0:
+            xr = 2 * Fw - P * 0.5
+            dims.append(('J', (xr, rows[1][0]), (xr, rows[0][1]), (1, 0), 12))
+    else:
+        dims.append(('H', (Fw, G * 0.5), (Fw + Hs, G * 0.5), (0, -1), 0))
+    panels.append({'title': "Front", 'box': (0.0, 0.0, 0.5, 1.0), 'polys': polys, 'lines': lines,
+                   'dims': dims, 'stretch': 1.0})
+
+    # --- cut across the corrugations ---
+    polys, lines, dims = [], [], []
+    W = 2.5 * P if prof != 'flat' else max(P, Fw * 0.25)
+    wav = wave_points(prof, P, Dd, v['rib_top'], v['rib_base'], 0.0, 0.0, W)
+    if real or thin:
+        out = [(x, z + E) for x, z in wav] + [(x, z) for x, z in reversed(wav)]
+        polys.append((out, MET))
+        dims.append(('E', (0.0, 0.0), (0.0, E), (-1, 0), 12))
+    else:
+        out = [(x, z + E) for x, z in wav] + [(W, 0.0), (0.0, 0.0)]
+        polys.append((out, MET))
+        dims.append(('E', (0.0, 0.0), (0.0, E), (-1, 0), 12))
+    lines.append(((-P * 0.15, -E * 0.5 if (real or thin) else 0.0), (W + P * 0.15, -E * 0.5 if (real or thin) else 0.0),
+                  (150, 150, 150)))
+    if prof == 'corrugated':
+        dims.append(('A', (P / 2, E + Dd), (1.5 * P, E + Dd), (0, 1), 12))
+        dims.append(('B', (2.0 * P, E), (2.0 * P, E + Dd), (1, 0), 8))
+    elif prof == 'box':
+        tw = max(0.0, min(v['rib_top'], P * 0.9))
+        bw = max(tw + 1.0, min(v['rib_base'], P * 0.98))
+        dims.append(('A', ((P - tw) / 2, E + Dd), ((3 * P - tw) / 2, E + Dd), (0, 1), 26))
+        dims.append(('C', ((P - tw) / 2, E + Dd), ((P + tw) / 2, E + Dd), (0, 1), 8))
+        dims.append(('D', ((P - bw) / 2, 0.0), ((P + bw) / 2, 0.0), (0, -1), 10))
+        dims.append(('B', ((3 * P + bw) / 2 + 2, E), ((3 * P + bw) / 2 + 2, E + Dd), (1, 0), 8))
+    panels.append({'title': "Cut across", 'box': (0.52, 0.0, 1.0, 0.42), 'polys': polys, 'lines': lines,
+                   'dims': dims, 'stretch': 1.0})
+
+    # --- cut up the sheets, through the end lap (y up, x out from the face) ---
+    polys, lines, dims = [], [], []
+    Gs = min(G, max(Fw * 0.6, 600.0))       # only the ends near the lap are drawn
+    t_s = E + Dd
+    if real:
+        lo = [(0.0, G - Gs), (t_s, G - Gs), (t_s, G), (0.0, G)]
+        hi = [(t_s, G - J), (2 * t_s, G - J), (2 * t_s, G - J + Gs), (t_s, G - J + Gs)]
+        polys += [(lo, MET2), (hi, MET)]
+        if J > 0:
+            dims.append(('J', (2 * t_s, G - J), (2 * t_s, G), (1, 0), 12))
+        if v.get('rails'):
+            rt = max(1.0, v['rail_t'])
+            polys.append(([(-rt, G - Gs * 0.5 - 50), (0.0, G - Gs * 0.5 - 50), (0.0, G - Gs * 0.5 + 50),
+                           (-rt, G - Gs * 0.5 + 50)], (120, 92, 62)))
+    else:
+        # each sheet stands out I more at its foot than its head
+        lo = [(0.0, G - Gs), (t_s + I_ * Gs / G, G - Gs), (t_s, G), (0.0, G)]
+        hi = [(0.0, G), (t_s + I_, G), (t_s + I_ * (1 - Gs / G), G + Gs), (0.0, G + Gs)]
+        polys += [(lo, MET2), (hi, MET)]
+        if I_ > 0:
+            dims.append(('I', (t_s, G), (t_s + I_, G), (0, -1), 12))
+        dims.append(('E', (0.0, G + Gs * 0.8), (E, G + Gs * 0.8), (0, 1), 10))
+    lines.append(((-E * 0.2 if not real else 0.0, G - Gs - 40), (-E * 0.2 if not real else 0.0, G + Gs + 40),
+                  (150, 150, 150)))
+    width = max(p[0] for pp, _ in polys for p in pp) or 1.0
+    panels.append({'title': "Cut up the sheets (across exaggerated)", 'box': (0.52, 0.46, 1.0, 1.0),
+                   'polys': polys, 'lines': lines, 'dims': dims, 'stretch': max(1.0, Gs * 0.45 / width)})
+    return panels
+
+
+class SheetSizes(QWidget):
+    """The lettered sizes drawing: each size has the letter its box has in the window."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(320, 260)
+        self.panels = None
+        self.msg = ""
+
+    def show_sizes(self, v):
+        try:
+            self.panels = sheet_sizes_drawing(v)
+            self.msg = ""
+        except Exception as e:
+            self.panels, self.msg = None, str(e)
+        self.update()
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPolygonF, QPen, QFont, QBrush
+        from PySide6.QtCore import QPointF, Qt, QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(252, 252, 250))
+        if not self.panels:
+            p.drawText(self.rect().adjusted(10, 10, -10, -10), Qt.AlignCenter | Qt.TextWordWrap,
+                       self.msg or "No drawing")
+            p.end()
+            return
+        Wd, Hd = self.width(), self.height()
+        blue = QColor(20, 90, 200)
+        f_small = QFont()
+        f_small.setPointSize(7)
+        f_bold = QFont()
+        f_bold.setPointSize(8)
+        f_bold.setBold(True)
+        for pan in self.panels:
+            bx0, by0, bx1, by1 = pan['box']
+            M = 26.0
+            x0, y0 = bx0 * Wd + M, by0 * Hd + M
+            w, h = (bx1 - bx0) * Wd - 2 * M, (by1 - by0) * Hd - 2 * M - 12
+            k = pan['stretch']
+            pts = [q for pp, _ in pan['polys'] for q in pp]
+            pts += [q for a, b, _ in pan['lines'] for q in (a, b)]
+            xs = [q[0] * k for q in pts]
+            ys = [q[1] for q in pts]
+            sc = min(w / ((max(xs) - min(xs)) or 1), h / ((max(ys) - min(ys)) or 1))
+            ox = x0 + (w - (max(xs) - min(xs)) * sc) / 2 - min(xs) * sc
+            oy = y0 + (h - (max(ys) - min(ys)) * sc) / 2 + max(ys) * sc
+
+            def T(q):
+                return QPointF(ox + q[0] * k * sc, oy - q[1] * sc)
+            for pp, rgb in pan['polys']:
+                col = QColor(*rgb)
+                p.setBrush(col)
+                p.setPen(QPen(col.darker(150), 0.8))
+                p.drawPolygon(QPolygonF([T(q) for q in pp]))
+            for a, b, rgb in pan['lines']:
+                p.setPen(QPen(QColor(*rgb), 0.7))
+                p.drawLine(T(a), T(b))
+            p.setFont(f_small)
+            p.setPen(QColor(90, 90, 90))
+            p.drawText(QRectF(bx0 * Wd + 4, by1 * Hd - 16, (bx1 - bx0) * Wd - 8, 14), Qt.AlignLeft,
+                       pan['title'])
+            p.setFont(f_bold)
+            for letter, p1, p2, o, off in pan['dims']:
+                a, b = T(p1), T(p2)
+                ox_, oy_ = o[0], -o[1]
+                L = math.hypot(ox_, oy_) or 1.0
+                ox_, oy_ = ox_ / L, oy_ / L
+                a2 = QPointF(a.x() + ox_ * off, a.y() + oy_ * off)
+                b2 = QPointF(b.x() + ox_ * off, b.y() + oy_ * off)
+                p.setPen(QPen(blue, 0.8))
+                if off:
+                    p.drawLine(a, QPointF(a2.x() + ox_ * 3, a2.y() + oy_ * 3))
+                    p.drawLine(b, QPointF(b2.x() + ox_ * 3, b2.y() + oy_ * 3))
+                p.drawLine(a2, b2)
+                dx, dy = b2.x() - a2.x(), b2.y() - a2.y()
+                Ld = math.hypot(dx, dy) or 1.0
+                tx, ty = (dx - dy) / Ld * 3, (dy + dx) / Ld * 3
+                for q in (a2, b2):
+                    p.drawLine(QPointF(q.x() - tx, q.y() - ty), QPointF(q.x() + tx, q.y() + ty))
+                mx = (a2.x() + b2.x()) / 2 + ox_ * 10
+                my = (a2.y() + b2.y()) / 2 + oy_ * 10
+                r = 7.0
+                p.setBrush(QBrush(QColor(255, 255, 255)))
+                p.drawEllipse(QPointF(mx, my), r, r)
+                p.drawText(QRectF(mx - r, my - r, 2 * r, 2 * r), Qt.AlignCenter, letter)
+        p.end()
+
+
+# ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
 # (key, label, min, max, decimals, suffix, tip)
@@ -1542,12 +1777,17 @@ FIELDS = [
     ('rib_base', "D   Rib foot width (box)", 2.0, 2000.0, 1, " mm",
      "Box profile: across the foot of each rib (wider than C - the difference is the sloping sides)."),
     ('thick', "E   Thickness", 0.2, 500.0, 1, " mm",
-     "3D print: the flat plate behind the corrugations (32 = 0.4 mm at 1:80). Real sheets: the metal "
-     "itself (about 1 mm)."),
+     "3D print: the flat plate behind the corrugations (32 = 0.4 mm at 1:80). 3D print with 'Thin sheet' "
+     "ticked, and real sheets: the thickness of the tin itself, the same all over (for resin at 1:80, "
+     "16 mm = 0.2 mm)."),
     ('sheet_w', "F   Sheet width", 50.0, 5000.0, 0, " mm",
      "How much of the face each sheet covers across (made a whole number of corrugations)."),
     ('sheet_l', "G   Sheet length (0 = full height)", 0.0, 20000.0, 0, " mm",
      "Sheets come in lengths: taller faces get end laps every this far. 0 = one sheet all the way."),
+    ('stagger', "K   Stagger end laps", 0.0, 95.0, 0, " %",
+     "Staggers the end laps: every other column of sheets starts with a shorter sheet, so its laps fall "
+     "this far up a sheet length from the ones beside it, like brickwork. 50 = half a sheet. 0 = the laps in "
+     "line (as usual on roofs). Needs a sheet length (G)."),
     ('gap', "H   Joint line (3D print)", 0.2, 100.0, 2, " mm",
      "3D print: the fine line between sheets side by side. Never 0, so no faces touch."),
     ('step', "I   End lap step (3D print)", 0.0, 200.0, 1, " mm",
@@ -1610,8 +1850,15 @@ class SheetDialog(QDialog):
         row = QHBoxLayout()
         lay.addLayout(row)
         self.preview = SheetPreview()
-        row.addWidget(self.preview, 1)
         from PySide6.QtWidgets import QTabWidget
+        self.sizes = SheetSizes()
+        self.views = QTabWidget()
+        self.views.addTab(self.preview, "3D view")
+        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        self.views.setTabToolTip(0, "A close-up of the sheets you'll get.")
+        self.views.setTabToolTip(1, "The front of the sheets, a cut across the corrugations and a cut up "
+                                    "through an end lap, showing what each lettered size is.")
+        row.addWidget(self.views, 1)
         self.tabs = QTabWidget()
         row.addWidget(self.tabs, 1)
         self.sp = {}
@@ -1631,6 +1878,11 @@ class SheetDialog(QDialog):
                                 "flat. Real sheets: thin sheets lapping over each other, for full size or big "
                                 "scales.")
         form.addRow("Make", self.cb_mode)
+        self.cb_thin = QCheckBox("Thin sheet (no flat back) - resin")
+        self.cb_thin.setToolTip("3D print: instead of a flat back, the back follows the corrugations, so each "
+                                "sheet is a thin tin sheet of thickness E all over - see-through where it's "
+                                "rusted or missing. Best with no backing (0), for resin printing.")
+        form.addRow(self.cb_thin)
         self.cb_dir = QComboBox()
         for lab, a in DIRECTIONS:
             self.cb_dir.addItem(lab, a)
@@ -1699,7 +1951,7 @@ class SheetDialog(QDialog):
 
         for w in (self.cb_style, self.cb_dir, self.cb_mode):
             w.currentIndexChanged.connect(self.changed)
-        for w in (self.cb_flip, self.cb_trims, self.cb_corners, self.cb_remove, self.cb_rails):
+        for w in (self.cb_thin, self.cb_flip, self.cb_trims, self.cb_corners, self.cb_remove, self.cb_rails):
             w.toggled.connect(self.changed)
         self.sp_seed.valueChanged.connect(self.changed)
         self.cb_preset.currentIndexChanged.connect(self.apply_preset)
@@ -1729,7 +1981,7 @@ class SheetDialog(QDialog):
 
     # ---- values ----
     def values(self):
-        v = dict(profile=self.cb_style.currentData() or 'corrugated',
+        v = dict(profile=self.cb_style.currentData() or 'corrugated', thin=self.cb_thin.isChecked(),
                  mode=self.cb_mode.currentData() or 'print',
                  angle=float(self.cb_dir.currentData() or 0.0),
                  flip=self.cb_flip.isChecked(), trims=self.cb_trims.isChecked(),
@@ -1747,7 +1999,7 @@ class SheetDialog(QDialog):
                     for i in range(cb.count()):
                         if cb.itemData(i) == d[key]:
                             cb.setCurrentIndex(i)
-            for cbx, key in ((self.cb_flip, 'flip'), (self.cb_trims, 'trims'), (self.cb_corners, 'corners'),
+            for cbx, key in ((self.cb_thin, 'thin'), (self.cb_flip, 'flip'), (self.cb_trims, 'trims'), (self.cb_corners, 'corners'),
                              (self.cb_remove, 'remove_face'), (self.cb_rails, 'rails')):
                 cbx.setChecked(bool(d.get(key, DEFAULTS[key])))
             self.sp_seed.setValue(int(d.get('seed', DEFAULTS['seed'])))
@@ -1764,6 +2016,7 @@ class SheetDialog(QDialog):
         pr, real = v['profile'], v['mode'] == 'real'
         on = {'pitch': pr != 'flat', 'depth': pr != 'flat', 'rib_top': pr == 'box', 'rib_base': pr == 'box',
               'gap': not real, 'step': not real, 'lap': real,
+              'stagger': v['sheet_l'] > 0,
               'rail_w': v['rails'], 'rail_t': v['rails'], 'rail_gap': v['rails'],
               'trim_w': v['trims'], 'trim_t': v['trims'] or v['corners'], 'corner_w': v['corners'],
               'skew_ang': v['skew_pct'] > 0, 'lifted_mm': v['lifted_pct'] > 0,
@@ -1772,7 +2025,9 @@ class SheetDialog(QDialog):
             s, lab = self.sp[key]
             s.setEnabled(ok)
             lab.setEnabled(ok)
+        self.cb_thin.setEnabled(not real)
         self.preview.show_sheets(v)
+        self.sizes.show_sizes(v)
 
     def show_report(self, text, bad=False):
         self.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if bad else "#2e7d32"))
