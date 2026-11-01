@@ -7,7 +7,7 @@ or any other scale.
 
 Every part they make is a closed, watertight solid with flat faces, ready to print.
 
-![Roof tiles](pictures/Roof-Tiles-showcase.png)
+![Roof tiles](pictures/old/Roof-Tiles-showcase.png)
 
 ## The plugins
 
@@ -26,10 +26,12 @@ Every part they make is a closed, watertight solid with flat faces, ready to pri
 | 3D Corrugated Iron | Ctrl+Alt+I | Corrugated, box-profile and flat sheet cladding for walls and roofs, round any openings: flat-backed for 3D printing (joint lines and end-lap steps) or real lapped sheets on rails. Rust holes, rusted ragged bottoms, missing, skew and lifted sheets, flashings and corner trims. |
 | 3D Station Canopies | Ctrl+Alt+C | Railway platform canopies: lean-to off a building's wall, island / umbrella over a platform (ridged or butterfly roof), and ridge and furrow with glazed ridges. Cast-iron columns with pierced spandrels or timber posts with knee braces, plain or glazed roofs, and dagger, rounded, fleur, saw-tooth or plain valancing as one flat printable strip. Live 3D preview and a lettered Sizes drawing. |
 | 3D Loft | Ctrl+Alt+L | Makes a solid between two or more profile faces, such as a square into a circle. |
+| 3D Centre Finder | Ctrl+Alt+M | Finds the centre of a face, an edge or an object and shows its size: marks the centre with a guide point or centre lines, or moves another object so its centre lands there (a door central on a wall, a vent on a roof). |
 | 3D Print Scaler | Ctrl+Alt+P | Scales the selected object to a chosen scale for printing and checks it fits your print bed. Exports STL, 3MF, OBJ or PLY in mm with full detail, can split a model into a separate part per group laid out on the bed (separate items in one 3MF), opens it in your slicer, and can stay open for scaling lots of parts. Model railway scales built in, plus your own. |
 | 3D Scale Converter | Ctrl+Alt+K | A toolbar that turns real sizes (ft / in / mm) into model sizes at any scale. |
 | 3D Notepad | Ctrl+Alt+J | A note pad that stays on screen and saves itself, with a real-to-model size converter. |
 | 3D Plugins Toolbar | Ctrl+Alt+B | A toolbar with a button for each plugin, and a "3D Plugins by Eddy" submenu under Extensions. |
+| 3D Better Icons | Ctrl+Alt+Y | Clearer colour icons for IngeTrazo's own toolbar buttons, drawn sharp at any size, with optional names under the icons (Ctrl+Alt+Q turns the names on or off). Remove the file to get the original icons back. |
 
 Every window has pop-up notes on its boxes when you hover over them, and opens where you last
 left it.
@@ -60,10 +62,10 @@ folder on its own - it works the same.
 
 | | |
 |---|---|
-| ![Wood planking](pictures/Wood-Planking-styles.png) | ![Derelict planking](pictures/Wood-Planking-derelict.png) |
+| ![Wood planking](pictures/Wood-Planking-styles.png) | ![Derelict planking](pictures/old/Wood-Planking-derelict.png) |
 | ![Period doors](pictures/Period-Doors-presets.png) | ![Fences and gates](pictures/Fences-and-Gates-presets.png) |
 | ![Period windows](pictures/3D-Period-Windows-examples.png) | ![Wrapped chimneys](pictures/Wrap-brick-chimneys-course-by-course.png) |
-| ![Roof tile shapes](pictures/Roof-Tiles-tile-shapes.png) | ![Soil and waste pipes](pictures/3D-Soil-and-Waste-Pipes-parts.png) |
+| ![Roof tile shapes](pictures/old/Roof-Tiles-tile-shapes.png) | ![Soil and waste pipes](pictures/3D-Soil-and-Waste-Pipes-parts.png) |
 
 ![Chimneys](pictures/3D-Chimneys-examples.png)
 
