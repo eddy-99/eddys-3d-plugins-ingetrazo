@@ -2045,8 +2045,7 @@ FIELDS = {
     'lift': ("Gap round the window", 0.0, 5.0, 3, " mm", "A tiny gap between the window (with its sill "
                                                         "and head) and the wall, so slicers don't get "
                                                         "confused by faces lying exactly on top of each "
-                                                        "other (the same trick as nudging it off the "
-                                                        "wall in SketchUp). 0.01 mm is plenty."),
+                                                        "other. 0.01 mm is plenty."),
     'flip': ("Window faces the other way", "Tick if the window, sill and head come out on the wrong "
                                            "side of the wall or roof."),
     'open': ("Show the window open", "Sashes slide up, casements swing out, top lights and "

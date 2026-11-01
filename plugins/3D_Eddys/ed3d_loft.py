@@ -132,7 +132,7 @@ def _face_normal(f):
 
 def soften_edges(mesh, faces_made, max_angle):
     """Softens (hides and smooths) every edge whose two faces meet at less than
-    max_angle degrees, like SketchUp's Soften Edges. Sharp edges stay visible."""
+    max_angle degrees. Sharp edges stay visible."""
     edges = _items(_val(mesh, 'edges'))
     if not edges:
         # no edge list on the mesh: look the edges up from the faces instead
@@ -610,8 +610,7 @@ EDDY_TIPS = {'Path': 'How the sides run from profile to profile: a smooth S-curv
  'Cap the last profile': 'Closes the last end with a face.',
  'Side faces': 'Whether twisted side faces are split into triangles (so they stay flat).',
  'Group name': 'The name of the group the loft goes in.',
- 'Smooth finish (soften edges, like SketchUp)': 'Hides the edges between the side faces, so '
-                                                'the curve looks smooth.'}
+ 'Smooth finish (soften edges)': 'Hides the edges between the side faces, so the curve looks smooth.'}
 EDDY_TIPS_END = None
 
 
@@ -668,7 +667,7 @@ class LoftDialog(QDialog):
 
         self.le_name = QLineEdit(cur['name'])
 
-        self.cb_soft = QCheckBox("Smooth finish (soften edges, like SketchUp)")
+        self.cb_soft = QCheckBox("Smooth finish (soften edges)")
         self.cb_soft.setChecked(cur['soften'])
         self.sp_soft = QSpinBox()
         self.sp_soft.setRange(0, 180)

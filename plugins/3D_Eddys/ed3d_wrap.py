@@ -11,30 +11,52 @@
 # PURPOSE. See the LICENSE file or <https://www.gnu.org/licenses/> for details.
 
 """
-3D Wrap - bend a flat pattern round a chimney (like SketchUp's Flowify), for IngeTrazo
+3D Wrap - bend a flat pattern round a chimney, for IngeTrazo
 Pick a flat pattern standing upright - a panel of bricks from Brick & Block Studio, boards
 from Wood Planking, anything in a group - and a target: a round, square or octagonal
 chimney made to size (straight or tapered), or any upright solid you've drawn (the Loft
 plugin makes good tapered chimneys). The pattern is bent round it: its width goes round
 the girth, its height up the side, and its thickness stands out from the surface. On a
-tapered chimney everything gets narrower towards the top, as it does with Flowify.
+tapered chimney everything gets narrower towards the top.
 
 Or skip the pattern and lay new bricks straight onto the target, course by course: every
 course is a whole number of bricks (never longer than a standard brick), so there's no seam.
+
+New bricks can lie level (stepping in up a taper) or lean back onto a tapered chimney's face;
+the courses can sit on each other with no mortar between them; and there are cant bricks:
+cant corners, cant top or bottom courses, and a small bevel on every brick's front edges.
+
+Your own setups can be saved as presets (everything, or the Bricks tab only), and one of
+them set as the default that 3D Wrap opens with. They're kept in
+Documents\\IngeTrazo Presets\\Wrap.
+
+Beside the settings, a Close-up tab shows a few bricks as they'll be laid (it follows every
+change), and a Sizes tab shows what each lettered size (A, B, C ...) measures; the same
+letters are next to the boxes.
+
+On square and many-sided chimneys the corners can be bonded (one side's end brick runs past
+the corner) or made with special corner bricks: a dog-leg brick made to the corner's own
+angle, so it fits exactly even on a tapered chimney.
+
+A solid you've drawn that goes only part way round (a curved wall with two ends) is found
+by itself: the bricks go along the wall from end to end, on its outside, inside or both
+faces, and its ends are stopped, toothed or returned round the end.
 
 The flat pattern is left as it was; the wrapped copy is a new group. Ctrl+Alt+U.
 """
 
 import math
+import os
+import json
 from tools.base import Tool
 from core.history import SnapshotImport
 from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox, QCheckBox,
                                QDoubleSpinBox, QSpinBox, QPushButton, QLabel, QMessageBox,
-                               QTabWidget, QWidget)
+                               QTabWidget, QWidget, QInputDialog)
 
 PLUGIN_NAME = "3D Wrap"
-VERSION = "7"
+VERSION = "14"
 SCALE = 0.001
 Z = (0.0, 0.0, 1.0)
 
@@ -252,6 +274,21 @@ def group_faces(g, fn=None, depth=0):
 def selected_groups(scene):
     return [e for e in _items(getattr(scene, 'selection', None))
             if getattr(e, 'mesh', None) is not None or getattr(e, 'children', None)]
+
+
+def _in_scene(scene, g):
+    """True if the group g is still in the model (at the top or inside another group)."""
+    if scene is None or g is None:
+        return g is not None
+    todo = list(_items(getattr(scene, 'groups', None)))
+    seen = 0
+    while todo and seen < 200000:
+        e = todo.pop()
+        seen += 1
+        if e is g:
+            return True
+        todo.extend(_items(getattr(e, 'children', None)))
+    return False
 
 
 def group_label(g):
@@ -875,6 +912,153 @@ def wrap(faces, target, v):
 
 
 # ---------------------------------------------------------------------------
+# A brick, with cant (chamfered) front edges if wanted
+# ---------------------------------------------------------------------------
+def _box6(q):
+    """The six faces of a brick from its eight corners q[(end, bottom/top, back/front)]."""
+    return [[q[(0, 0, 1)], q[(1, 0, 1)], q[(1, 1, 1)], q[(0, 1, 1)]],
+            [q[(0, 0, 0)], q[(0, 1, 0)], q[(1, 1, 0)], q[(1, 0, 0)]],
+            [q[(0, 1, 0)], q[(0, 1, 1)], q[(1, 1, 1)], q[(1, 1, 0)]],
+            [q[(0, 0, 0)], q[(1, 0, 0)], q[(1, 0, 1)], q[(0, 0, 1)]],
+            [q[(0, 0, 0)], q[(0, 0, 1)], q[(0, 1, 1)], q[(0, 1, 0)]],
+            [q[(1, 0, 0)], q[(1, 1, 0)], q[(1, 1, 1)], q[(1, 0, 1)]]]
+
+
+def _unit(a, b):
+    return v_norm(v_sub(b, a))
+
+
+def brick_faces(q, cant=None, extra=None):
+    """The faces of a brick. cant gives the size (metres) of the chamfer on each of its front
+    edges: 'top', 'bottom', 'end0', 'end1' (0 or missing = a sharp edge). The brick is made as
+    the solid inside its six faces and the chamfer planes, so any mix of cants (and bricks with
+    flared or angled ends) closes up neatly, with a little three-sided face where two meet."""
+    cant = {k: s for k, s in (cant or {}).items() if s and s > 0}
+    box = _box6(q)
+    if not cant and not extra:
+        return box
+    cen = v_mul(v_add(v_add(q[(0, 0, 0)], q[(1, 1, 1)]), v_add(q[(0, 1, 0)], q[(1, 0, 1)])), 0.25)
+    planes = []
+
+    def plane(a, b, c):
+        n = v_cross(v_sub(b, a), v_sub(c, a))
+        L_ = v_len(n)
+        if L_ < 1e-14:
+            return
+        n = v_mul(n, 1.0 / L_)
+        d = v_dot(n, a)
+        if v_dot(n, cen) > d:
+            n, d = v_mul(n, -1.0), -d
+        planes.append((n, d))
+    for f in box:
+        plane(f[0], f[1], f[2])
+    # the shortest edges, so a cant never eats a whole face
+    span = min(v_len(v_sub(q[(1, 0, 1)], q[(0, 0, 1)])), v_len(v_sub(q[(0, 1, 1)], q[(0, 0, 1)])),
+               v_len(v_sub(q[(0, 0, 0)], q[(0, 0, 1)])))
+    for edge, s in cant.items():
+        s = min(s, 0.45 * span)
+        if edge in ('top', 'bottom'):
+            ih = 1 if edge == 'top' else 0
+            pts = []
+            for iu in (0, 1):
+                A = q[(iu, ih, 1)]
+                pts.append((A, _unit(A, q[(iu, 1 - ih, 1)]), _unit(A, q[(iu, ih, 0)])))
+        else:
+            iu = 0 if edge == 'end0' else 1
+            pts = []
+            for ih in (0, 1):
+                A = q[(iu, ih, 1)]
+                pts.append((A, _unit(A, q[(1 - iu, ih, 1)]), _unit(A, q[(iu, ih, 0)])))
+        (A, a1, a2), (B, b1, _) = pts
+        plane(v_add(A, v_mul(a1, s)), v_add(B, v_mul(b1, s)), v_add(A, v_mul(a2, s)))
+    for a, b, c in (extra or []):         # e.g. one cant face across both legs of a corner brick
+        plane(a, b, c)
+    # the corners of the solid: where three planes meet, inside all the others
+    tol = 1e-9
+    verts = []
+    m = len(planes)
+    for i in range(m):
+        for j in range(i + 1, m):
+            for k in range(j + 1, m):
+                (n1, d1), (n2, d2), (n3, d3) = planes[i], planes[j], planes[k]
+                c23 = v_cross(n2, n3)
+                det = v_dot(n1, c23)
+                if abs(det) < 1e-10:
+                    continue
+                x = v_mul(v_add(v_add(v_mul(c23, d1), v_mul(v_cross(n3, n1), d2)), v_mul(v_cross(n1, n2), d3)),
+                          1.0 / det)
+                if all(v_dot(n, x) - d <= 1e-8 for n, d in planes):
+                    if not any(v_len(v_sub(x, y)) < 1e-8 for y in verts):
+                        verts.append(x)
+    faces = []
+    for n, d in planes:
+        on = [x for x in verts if abs(v_dot(n, x) - d) < 1e-8]
+        if len(on) < 3:
+            continue
+        c = v_mul(on[0], 0.0)
+        for x in on:
+            c = v_add(c, x)
+        c = v_mul(c, 1.0 / len(on))
+        e1 = v_norm(v_sub(on[0], c))
+        e2 = v_cross(n, e1)
+        on.sort(key=lambda x: math.atan2(v_dot(v_sub(x, c), e2), v_dot(v_sub(x, c), e1)))
+        faces.append(on)                  # counter-clockwise seen from outside
+    return faces if len(faces) >= 4 else box
+
+
+def _join_faces(f1, f2):
+    """Two flat faces sharing an edge (in opposite directions, as neighbours do), as one
+    face; None if they don't share one."""
+    n1, n2 = len(f1), len(f2)
+    for i in range(n1):
+        p, q = f1[i], f1[(i + 1) % n1]
+        for j in range(n2):
+            if f2[j] == q and f2[(j + 1) % n2] == p:
+                a = f1[i + 1:] + f1[:i + 1]           # from q round to p
+                b = f2[j + 1:] + f2[:j + 1]           # from p round to q
+                out = a + b[1:-1]
+                # leave out points in the middle of a straight edge
+                clean_ = []
+                m = len(out)
+                for k in range(m):
+                    p0, p1, p2 = out[k - 1], out[k], out[(k + 1) % m]
+                    if v_len(v_cross(v_sub(p1, p0), v_sub(p2, p1))) > 1e-12:
+                        clean_.append(p1)
+                return clean_ if len(clean_) >= 3 else None
+    return None
+
+
+def fit_courses(v, z0, top, H, J, Jb, lean_cos):
+    """Fit the courses to the height: a whole number of courses, the bed joints (between
+    courses) evened out so the last one finishes at the top. Returns (bed joint, courses),
+    or (the bed joint as set, 0) when it isn't fitted (turned off, or no bed joints at all)."""
+    if not v.get('fit_height', True) or Jb <= 0:
+        return Jb, 0
+    avail = top - z0
+    if avail < H:
+        return Jb, 0
+    cs = [lean_cos(z0 + avail * (k + 0.5) / 6.0) for k in range(6)]
+    cb = sum(cs) / len(cs)
+    # the highest point of the last course at the top: leaning back, a brick stands a little
+    # less than its height, and its front edge rises above its back by its depth x the slope
+    D = max(1.0, v.get('brick_d', 102.5)) * SCALE
+    last = H / 2.0 * (1.0 + cb) + D * math.sqrt(max(0.0, 1.0 - cb * cb))
+    room = avail - last                 # = (n - 1) * (H + bed) * cb
+    n = int(round(room / ((H + J) * cb))) + 1
+    while n > 1 and room / ((n - 1) * cb) - H < 0:
+        n -= 1
+    if n <= 1:
+        return Jb, 1
+    return room / ((n - 1) * cb) - H, n
+
+
+def _brick_cant(v, course_cant, end0=0.0, end1=0.0):
+    """The cants on one brick's front edges (metres), from the settings."""
+    b = max(0.0, v.get('bevel', 0.0)) * SCALE
+    return {'top': max(b, course_cant), 'bottom': b, 'end0': max(b, end0), 'end1': max(b, end1)}
+
+
+# ---------------------------------------------------------------------------
 # Laying new bricks straight onto the target, course by course
 # ---------------------------------------------------------------------------
 def lay_bricks(target, v):
@@ -886,6 +1070,7 @@ def lay_bricks(target, v):
     D = max(1.0, v['brick_d']) * SCALE
     J = max(0.2, v['joint']) * SCALE
     lift = v['lift'] * SCALE
+    Jb = 0.0 if v.get('no_bed') else J           # the bed joint (between courses) can be left out
     every = int(v.get('header_every', 0))
     level = bool(v.get('level', True))          # courses laid level, stepping in up a taper
     # some courses can stand out further (oversailing courses, bands, a plinth): a function of
@@ -905,7 +1090,58 @@ def lay_bricks(target, v):
         return (target.cx + r * math.cos(th), target.cy + r * math.sin(th))
     corners = target.corners() if hasattr(target, 'corners') else []
 
-    def box_faces(S, T, Vd, N, u0, u1, depth, pl0=None, pl1=None):
+    def lean_cos(zm):
+        """Leaning back with the taper, the bricks lie along the slope: a course then rises
+        a little less than its height (the cosine of the slope, round the chimney on average)."""
+        if level:
+            return 1.0
+        ez = H / 2.0
+        cs = []
+        for k in range(12):
+            th = th0 + 2 * math.pi * k / 12
+            dr = target.r(th, zm + ez) - target.r(th, zm - ez)
+            cs.append((2 * ez) / math.hypot(dr, 2 * ez))
+        return sum(cs) / len(cs)
+
+    def pitch(zc_):
+        return (H + Jb) * lean_cos(zc_ + H / 2.0)
+    # the bed joints evened out so the courses finish at the top (Fit the courses to the height)
+    Jb, n_fit = fit_courses(v, z0, top, H, J, Jb, lean_cos)
+    # how many courses there will be (for a cant course at the top)
+    n_courses = 0
+    zz = z0
+    while ((n_courses < n_fit) if n_fit else (zz + H <= top + 1e-9)) and n_courses < 100000:
+        n_courses += 1
+        zz += pitch(zz)
+    cwhere = v.get('cant_where', 'none')
+    csize = max(0.0, v.get('cant_course', 0.0)) * SCALE
+
+    def course_cant(c_):
+        if csize <= 0:
+            return 0.0
+        if c_ == n_courses - 1 and cwhere in ('top', 'both'):
+            return csize
+        if c_ == 0 and cwhere in ('bottom', 'both'):
+            return csize
+        return 0.0
+    corner_cant = max(0.0, v.get('cant_corner', 0.0)) * SCALE
+    each = v.get('_bricks_out')                  # (the close-up wants the bricks one by one)
+    # corners of a square or many-sided chimney: bonded (one side's end brick runs past the
+    # corner, turn and turn about) or special corner bricks (a dog-leg brick made to the
+    # corner's own angle, mitred so it fits exactly, even where a taper leans the faces)
+    squint = v.get('corner', 'bonded') == 'squint'
+
+    def tilt(th, zm):
+        """Up the face of the chimney at th, along its slope (a unit vector), for bricks that
+        lean back with the taper."""
+        ez = H / 2.0
+        c0, c1 = surf(th, zm - ez), surf(th, zm + ez)
+        Vd = v_norm((c1[0] - c0[0], c1[1] - c0[1], 2 * ez))
+        if math.hypot(Vd[0], Vd[1]) > 0.7:          # steeper than about 45 degrees: stay upright
+            Vd = (0.0, 0.0, 1.0)
+        return Vd
+
+    def box_faces(S, T, Vd, N, u0, u1, depth, pl0=None, pl1=None, cant=None, extra=None):
         def P(u, w, h):
             return (S[0] + T[0] * u + Vd[0] * h + N[0] * w,
                     S[1] + T[1] * u + Vd[1] * h + N[1] * w,
@@ -927,12 +1163,7 @@ def lay_bricks(target, v):
             for ih, hh in enumerate((-H / 2.0, H / 2.0)):
                 for iw, ww in enumerate((lift, lift + depth)):
                     q[(iu, ih, iw)] = onto(P(uu, ww, hh), pl0 if iu == 0 else pl1)
-        return [[q[(0, 0, 1)], q[(1, 0, 1)], q[(1, 1, 1)], q[(0, 1, 1)]],
-                [q[(0, 0, 0)], q[(0, 1, 0)], q[(1, 1, 0)], q[(1, 0, 0)]],
-                [q[(0, 1, 0)], q[(0, 1, 1)], q[(1, 1, 1)], q[(1, 1, 0)]],
-                [q[(0, 0, 0)], q[(1, 0, 0)], q[(1, 0, 1)], q[(0, 0, 1)]],
-                [q[(0, 0, 0)], q[(0, 0, 1)], q[(0, 1, 1)], q[(0, 1, 0)]],
-                [q[(1, 0, 0)], q[(1, 1, 0)], q[(1, 1, 1)], q[(1, 0, 1)]]]
+        return brick_faces(q, cant, extra)
     if corners:
         # square or octagonal: each flat side laid on its own, the corners bonded - one side's
         # end brick runs past the corner to cover the other side's end, turn and turn about
@@ -995,8 +1226,70 @@ def lay_bricks(target, v):
             out.append(a)
             return out[::-1]
 
-        while zc + H <= top + 1e-9:
+        def mitre(fa, fb):
+            """The plane half way between two neighbouring faces (through their corner), in the
+            form box_faces slides a brick's end onto: ((0,0,0), unit normal, distance)."""
+            Sa, _, _, Na, _ = fa
+            Sb, _, _, Nb, _ = fb
+            n = v_sub(Na, Nb)
+            L_ = v_len(n) or 1.0
+            return ((0.0, 0.0, 0.0), v_mul(n, 1.0 / L_), (v_dot(Sa, Na) - v_dot(Sb, Nb)) / L_)
+
+        def corner_chamfer(fa, fb, depth_, cs):
+            """Three points on the cant face across a corner brick's outside corner: cs back
+            along each face from the corner, the same plane for both legs."""
+            Sa, Ta, Va, Na, side_a = fa
+            Sb, Tb, Vb, Nb, _ = fb
+            out_ = []
+            for hh in (-H / 2.0, H / 2.0):
+                # the outside corner at this height: on both brick faces, at the course's top/bottom
+                rows = [Na, Nb, Va]
+                rhs = [v_dot(Sa, Na) + lift + depth_, v_dot(Sb, Nb) + lift + depth_, v_dot(Sa, Va) + hh]
+                det = v_dot(rows[0], v_cross(rows[1], rows[2]))
+                if abs(det) < 1e-12:
+                    X = v_add(v_add(Sa, v_mul(Ta, side_a)), v_add(v_mul(Na, lift + depth_), v_mul(Va, hh)))
+                else:
+                    X = v_mul(v_add(v_add(v_mul(v_cross(rows[1], rows[2]), rhs[0]),
+                                          v_mul(v_cross(rows[2], rows[0]), rhs[1])),
+                                    v_mul(v_cross(rows[0], rows[1]), rhs[2])), 1.0 / det)
+                out_.append((v_sub(X, v_mul(Ta, cs)), v_add(X, v_mul(Tb, cs))))
+            (a0, b0), (a1, _) = out_
+            return (a0, a1, b0)
+
+        def join_legs(fa, fb, pl):
+            """The two legs of a corner brick as one solid: the faces where they meet (on the
+            mitre) are left out when they match exactly; otherwise the two are kept as they are."""
+            if not fa or not fb:
+                return (fa or []) + (fb or [])
+            _, n_, d_ = pl
+
+            def on(f):
+                return all(abs(v_dot(p_, n_) - d_) < 1e-7 for p_ in f)
+            ma, mb = [f for f in fa if on(f)], [f for f in fb if on(f)]
+            if len(ma) == 1 and len(mb) == 1 and len(ma[0]) == len(mb[0]) and all(
+                    min(v_len(v_sub(p_, q_)) for q_ in mb[0]) < 1e-7 for p_ in ma[0]):
+                snap = {}
+                for p_ in mb[0]:                  # the very same points on both sides of the join
+                    snap[p_] = min(ma[0], key=lambda q_: v_len(v_sub(p_, q_)))
+                ra = [f for f in fa if f is not ma[0]]
+                rb = [[snap.get(p_, p_) for p_ in f] for f in fb if f is not mb[0]]
+                # faces of the two legs that lie flat together across the join (the top and
+                # bottom of a level course, a cant across the corner) become one face, no line
+                for i_, f1 in enumerate(ra):
+                    n1 = v_norm(_newell3(f1))
+                    for j_, f2 in enumerate(rb):
+                        if f2 is None or v_dot(n1, v_norm(_newell3(f2))) < 1 - 1e-9:
+                            continue
+                        u_ = _join_faces(f1, f2)
+                        if u_:
+                            ra[i_], rb[j_] = u_, None
+                            break
+                return ra + [f for f in rb if f is not None]
+            return fa + fb
+
+        while (c < n_fit) if n_fit else (zc + H <= top + 1e-9):
             this_cuts = {}
+            legs = {}
             zm = zc + H / 2.0
             header = every > 0 and (c % every == every - 1)
             unit = (D if header else L) + J
@@ -1015,11 +1308,7 @@ def lay_bricks(target, v):
                 dx, dy = pb[0] - pa[0], pb[1] - pa[1]
                 side = math.hypot(dx, dy)
                 T = (dx / side, dy / side, 0.0) if side > 0 else (1.0, 0.0, 0.0)
-                if level:
-                    Vd = (0.0, 0.0, 1.0)
-                else:
-                    c0, c1 = surf(am, zm - ez), surf(am, zm + ez)
-                    Vd = ((c1[0] - c0[0]) / (2 * ez), (c1[1] - c0[1]) / (2 * ez), 1.0)
+                Vd = (0.0, 0.0, 1.0) if level else tilt(am, zm)
                 N = v_norm(v_cross(T, Vd))
                 frames.append(((pa[0], pa[1], zm), T, Vd, N, side))
             for si in range(nc):
@@ -1030,6 +1319,11 @@ def lay_bricks(target, v):
                 ext = depth * math.tan(math.pi / nc)     # the corner square (or wedge)
                 s0 = -ext if long_side else J
                 s1 = side + ext if long_side else side - J
+                if squint:
+                    # the corner bricks' legs: a whole brick along this side and half a brick
+                    # along the next, swapping round each course, so the bond still steps half a brick
+                    s0 = 0.0 if long_side else -unit / 2.0
+                    s1 = side if long_side else side + unit / 2.0
                 # like a real chimney: on this course one side's end brick runs on past the
                 # corner (covering the other side's end) and the next course the other way round,
                 # so the corner is bonded. Each side is set out evenly between its ends, no brick
@@ -1046,10 +1340,23 @@ def lay_bricks(target, v):
                     B = [u if u < below[1] / 2.0 else u + dl for u in below[0]]
                 else:
                     B = None
-                cuts = set_out(s0, s1 + J, B, unit, side)
+                if squint:
+                    # corner bricks first: a leg of a whole brick (or half a brick) from each
+                    # corner, then the side set out between them as usual
+                    l0 = l1 = unit if long_side else unit / 2.0
+                    x1, x2 = l0, side + J - l1
+                    if x2 - x1 < 0.45 * unit:
+                        cuts = [0.0, (side + J) / 2.0, side + J]     # room for the corner bricks only
+                    else:
+                        cuts = [0.0] + set_out_middle(x1, x2, B, unit) + [side + J]
+                else:
+                    cuts = set_out(s0, s1 + J, B, unit, side)
                 # the joints this course leaves on this face, for the course above (a course
                 # that stops short of the corners also has a joint at each end, by the corner brick)
-                this_cuts[si] = (cuts[1:-1] if long_side else cuts[:-1] + [cuts[-1] - J], side)
+                if squint:
+                    this_cuts[si] = (cuts[1:-1], side)
+                else:
+                    this_cuts[si] = (cuts[1:-1] if long_side else cuts[:-1] + [cuts[-1] - J], side)
                 # the two ends at the corners meet the next sides' faces, which lean differently
                 # on a tapered chimney: the brick that runs past the corner finishes flush with
                 # the other face, and the one that stops short starts a joint away from it
@@ -1059,21 +1366,66 @@ def lay_bricks(target, v):
                 # clear of the other side's chimney face, where that corner brick sits)
                 off = (lift + depth) if long_side else (lift - J)
                 pl0, pl1 = (Sp, Np, off), (Sn, Nn, off)
+                if squint:
+                    # the two legs of each corner brick meet on the plane half way between the
+                    # two faces (a mitre), so the brick fits the corner exactly
+                    pl0 = mitre(frames[(si - 1) % nc], frames[si])
+                    pl1 = mitre(frames[si], frames[(si + 1) % nc])
                 spans = list(zip(cuts[:-1], cuts[1:]))
+                cc = course_cant(c)
                 for k_, (ca, cb) in enumerate(spans):
                     if cb - J - ca < 0.25 * (L if not header else D) * 0.5:
                         continue
-                    faces += box_faces(S, T, Vd, N, ca, cb - J, depth,
-                                       pl0 if k_ == 0 else None, pl1 if k_ == len(spans) - 1 else None)
+                    first, last = k_ == 0, k_ == len(spans) - 1
+                    extra = []
+                    if squint:
+                        # a corner brick: no bevel of its own on the corner (it's one brick round
+                        # the corner); a cant (or the bevel) is one face across both its legs
+                        cant = _brick_cant(v, cc)
+                        cs_ = max(corner_cant, max(0.0, v.get('bevel', 0.0)) * SCALE)
+                        if first:
+                            cant['end0'] = 0.0
+                            if cs_ > 0:
+                                extra.append(corner_chamfer(frames[(si - 1) % nc], frames[si], depth, cs_))
+                        if last:
+                            cant['end1'] = 0.0
+                            if cs_ > 0:
+                                extra.append(corner_chamfer(frames[si], frames[(si + 1) % nc], depth, cs_))
+                    else:
+                        # a cant brick at the corner: the brick that runs past the corner has its
+                        # outside corner cut back
+                        cant = _brick_cant(v, cc, corner_cant if (long_side and first) else 0.0,
+                                           corner_cant if (long_side and last) else 0.0)
+                    bf = box_faces(S, T, Vd, N, ca, cb - J, depth,
+                                   pl0 if first else None, pl1 if last else None, cant, extra)
+                    if squint and first != last:
+                        # the legs of a corner brick: joined into one brick once the course is done
+                        if first:
+                            legs.setdefault(si, [None, None])[1] = bf
+                        else:
+                            legs.setdefault((si + 1) % nc, [None, None])[0] = bf
+                        continue
+                    faces += bf
+                    if each is not None:
+                        each.append(bf)
+                    bricks += 1
+            for ci, (la_, lb_) in legs.items():
+                # one corner brick: the two legs (each side's end brick) joined on the mitre
+                pc = mitre(frames[(ci - 1) % nc], frames[ci])
+                bf = join_legs(la_, lb_, pc)
+                if bf:
+                    faces += bf
+                    if each is not None:
+                        each.append(bf)
                     bricks += 1
             prev_cuts = this_cuts
             courses += 1
             c += 1
-            zc += H + J
-        return faces, {'courses': courses, 'bricks': bricks}
+            zc += pitch(zc)
+        return faces, {'courses': courses, 'bricks': bricks, 'corners': nc, 'bed': Jb, 'fit': bool(n_fit)}
     frac_prev, n_prev = 0.0, 0
     prev_ring = None              # the angles of the joints in the course below
-    while zc + H <= top + 1e-9:
+    while (c < n_fit) if n_fit else (zc + H <= top + 1e-9):
         zm = zc + H / 2.0
         # the girth at this height, and where each length along it comes round
         n_s = 720
@@ -1189,10 +1541,9 @@ def lay_bricks(target, v):
                 Vd = (0.0, 0.0, 1.0)
                 zb = zm - ez if target.r(tc, zm - ez) >= target.r(tc, zm + ez) else zm + ez
             else:
-                c0, c1 = surf(tc, zm - ez), surf(tc, zm + ez)
-                Vd = ((c1[0] - c0[0]) / (2 * ez), (c1[1] - c0[1]) / (2 * ez), 1.0)
-                if math.hypot(Vd[0], Vd[1]) > 0.7:
-                    Vd = (0.0, 0.0, 1.0)
+                # leaning back with the taper: the brick is turned to lie flat on the slope
+                # (its back along the chimney's face, its bed square to it)
+                Vd = tilt(tc, zm)
             N = v_norm(v_cross(T, Vd))
             x, y = surf(tc, zb)
             S = (x, y, zm)
@@ -1207,19 +1558,430 @@ def lay_bricks(target, v):
                         q[(iu, ih, iw)] = (S[0] + T[0] * uu + Vd[0] * hh + N[0] * ww,
                                            S[1] + T[1] * uu + Vd[1] * hh + N[1] * ww,
                                            S[2] + Vd[2] * hh + N[2] * ww)
-            faces += [
-                [q[(0, 0, 1)], q[(1, 0, 1)], q[(1, 1, 1)], q[(0, 1, 1)]],
-                [q[(0, 0, 0)], q[(0, 1, 0)], q[(1, 1, 0)], q[(1, 0, 0)]],
-                [q[(0, 1, 0)], q[(0, 1, 1)], q[(1, 1, 1)], q[(1, 1, 0)]],
-                [q[(0, 0, 0)], q[(1, 0, 0)], q[(1, 0, 1)], q[(0, 0, 1)]],
-                [q[(0, 0, 0)], q[(0, 0, 1)], q[(0, 1, 1)], q[(0, 1, 0)]],
-                [q[(1, 0, 0)], q[(1, 1, 0)], q[(1, 1, 1)], q[(1, 0, 1)]],
-            ]
+            bf = brick_faces(q, _brick_cant(v, course_cant(c)))
+            faces += bf
+            if each is not None:
+                each.append(bf)
             bricks += 1
         courses += 1
         c += 1
-        zc += H + J
-    return faces, {'courses': courses, 'bricks': bricks}
+        zc += pitch(zc)
+    return faces, {'courses': courses, 'bricks': bricks, 'bed': Jb, 'fit': bool(n_fit)}
+
+
+# ---------------------------------------------------------------------------
+# A wall that goes only part way round (a curved wall with two ends)
+# ---------------------------------------------------------------------------
+def _fit_circle(pts):
+    """The circle (cx, cy, r) nearest all the points (least squares)."""
+    n = float(len(pts))
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    Sxx = Sxy = Syy = Sx = Sy = Sxz = Syz = Sz = 0.0
+    for p in pts:
+        x, y = p[0] - mx, p[1] - my
+        z = x * x + y * y
+        Sxx += x * x
+        Sxy += x * y
+        Syy += y * y
+        Sx += x
+        Sy += y
+        Sxz += x * z
+        Syz += y * z
+        Sz += z
+    M = [[Sxx, Sxy, Sx], [Sxy, Syy, Sy], [Sx, Sy, n]]
+    b = [-Sxz, -Syz, -Sz]
+
+    def det3(m):
+        return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+    d = det3(M)
+    if abs(d) < 1e-18:
+        raise ValueError("Couldn't find the centre of the curved wall (is it straight?).")
+    sol = []
+    for k in range(3):
+        Mk = [row[:] for row in M]
+        for i in range(3):
+            Mk[i][k] = b[i]
+        sol.append(det3(Mk) / d)
+    D_, E_, F_ = sol
+    cx, cy = -D_ / 2.0, -E_ / 2.0
+    r2 = cx * cx + cy * cy - F_
+    if r2 <= 0:
+        raise ValueError("Couldn't find the centre of the curved wall.")
+    return cx + mx, cy + my, math.sqrt(r2)
+
+
+def _tris_of(faces):
+    tris = []
+    for o, hs in faces:
+        for t in triangles(o):
+            tris.append(t)
+    return tris
+
+
+def _slice_tris(tris, z, cx, cy):
+    segs = []
+    for t in tris:
+        pts = []
+        for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            if (a[2] <= z) != (b[2] <= z):
+                s_ = (z - a[2]) / (b[2] - a[2])
+                pts.append((a[0] + s_ * (b[0] - a[0]) - cx, a[1] + s_ * (b[1] - a[1]) - cy))
+        if len(pts) == 2:
+            segs.append(pts)
+    return segs
+
+
+def is_open_wall(faces):
+    """True for a solid that doesn't go all the way round its middle (a curved wall with two
+    ends, say): looking out from its middle, some directions see nothing."""
+    tris = _tris_of(faces)
+    if not tris:
+        return False
+    xs = [p[0] for t in tris for p in t]
+    ys = [p[1] for t in tris for p in t]
+    zs = [p[2] for t in tris for p in t]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    z = min(zs) + 0.5 * (max(zs) - min(zs))
+    angs = [2 * math.pi * k / 180 for k in range(180)]
+    row = MeshTarget._rays(_slice_tris(tris, z, cx, cy), angs)
+    return sum(1 for r_ in row if r_ == 0.0) > 18
+
+
+class ArcTarget:
+    """A wall that goes part way round a circle: its centre, where its two ends are, and how
+    far out its outside and inside faces are, all the way up."""
+
+    def __init__(self, faces):
+        tris = _tris_of(faces)
+        if not tris:
+            raise ValueError("The target group has no faces.")
+        zs = [p[2] for t in tris for p in t]
+        self.z0, self.z1 = min(zs), max(zs)
+        self.h = self.z1 - self.z0
+        if self.h <= 0:
+            raise ValueError("The wall needs some height.")
+        pts = []
+        for fz in (0.25, 0.5, 0.75):
+            for a, b in _slice_tris(tris, self.z0 + self.h * fz, 0.0, 0.0):
+                pts += [a, b]
+        if len(pts) < 6:
+            raise ValueError("Couldn't find the curved wall's outline.")
+        self.cx, self.cy, self.R = _fit_circle(pts)
+        # again from the outside face alone (the ends and the inside pull the first try about)
+        for _ in range(2):
+            outer = [p for p in pts if math.hypot(p[0] - self.cx, p[1] - self.cy) >= self.R]
+            if len(outer) >= 6:
+                try:
+                    self.cx, self.cy, _r = _fit_circle(outer)
+                except ValueError:
+                    break
+        rs = sorted(math.hypot(p[0] - self.cx, p[1] - self.cy) for p in pts)
+        self.R = rs[len(rs) // 2]
+        # where it starts and stops: the biggest gap in the angles of its outline is the open side
+        ang = sorted(math.atan2(p[1] - self.cy, p[0] - self.cx) % (2 * math.pi) for p in pts)
+        gaps = [((ang[(i + 1) % len(ang)] - ang[i]) % (2 * math.pi), i) for i in range(len(ang))]
+        g, i = max(gaps)
+        if g < math.radians(8):
+            raise ValueError("The wall goes all the way round.")
+        self.a0 = ang[(i + 1) % len(ang)]
+        self.a1 = self.a0 + (2 * math.pi - g)
+        self.span = self.a1 - self.a0
+        na = max(48, int(math.degrees(self.span)))
+        e_ = min(1e-3, self.span / (4 * na))
+        self.angs = [self.a0 + e_ + (self.span - 2 * e_) * k / na for k in range(na + 1)]
+        self.na = len(self.angs)
+        self.nz = nz = int(min(300, max(40, self.h / 0.02)))
+        go, gi = [], []
+        for iz in range(nz + 1):
+            z = self.z0 + self.h * (0.002 + 0.996 * iz / nz)
+            segs = _slice_tris(tris, z, self.cx, self.cy)
+            ro, ri = [], []
+            for th in self.angs:
+                dx, dy = math.cos(th), math.sin(th)
+                lo, hi = 0.0, 0.0
+                for (ax_, ay_), (bx_, by_) in segs:
+                    ex, ey = bx_ - ax_, by_ - ay_
+                    den = dx * ey - dy * ex
+                    if abs(den) < 1e-15:
+                        continue
+                    tt = (ax_ * ey - ay_ * ex) / den
+                    ss = (ax_ * dy - ay_ * dx) / den
+                    if tt > 0 and -1e-9 <= ss <= 1 + 1e-9:
+                        hi = max(hi, tt)
+                        lo = tt if lo == 0.0 else min(lo, tt)
+                ro.append(hi)
+                ri.append(lo)
+            go.append(ro)
+            gi.append(ri)
+        for grid in (go, gi):
+            for row in grid:                         # misses: from the neighbours
+                for k in range(len(row)):
+                    if row[k] == 0.0:
+                        near = [row[j] for j in range(len(row)) if row[j] > 0.0]
+                        if near:
+                            j = min((j for j in range(len(row)) if row[j] > 0.0), key=lambda j: abs(j - k))
+                            row[k] = row[j]
+            have = [i for i, row in enumerate(grid) if any(row)]
+            if not have:
+                raise ValueError("Couldn't find the faces of the curved wall.")
+            for i, row in enumerate(grid):
+                if not any(row):
+                    j = min(have, key=lambda j: abs(j - i))
+                    grid[i] = list(grid[j])
+        self.go, self.gi = go, gi
+
+    def corners(self):
+        return []
+
+    def r(self, th, z, side='out'):
+        rel = (th - self.a0) % (2 * math.pi)
+        if rel > self.span:                           # past an end: the end's own value
+            rel = self.span if (rel - self.span) < (2 * math.pi - rel) else 0.0
+        th = self.a0 + rel
+        A = self.angs
+        fa = (th - A[0]) / ((A[-1] - A[0]) or 1.0) * (self.na - 1)
+        fa = min(max(fa, 0.0), self.na - 1.0)
+        ia = min(int(fa), self.na - 2)
+        ta = fa - ia
+        fz = min(max((z - self.z0) / self.h, 0.0), 1.0) * self.nz
+        iz = min(int(fz), self.nz - 1)
+        tz = fz - iz
+        g = self.go if side == 'out' else self.gi
+        r0 = g[iz][ia] * (1 - ta) + g[iz][ia + 1] * ta
+        r1 = g[iz + 1][ia] * (1 - ta) + g[iz + 1][ia + 1] * ta
+        return r0 * (1 - tz) + r1 * tz
+
+
+FACES = [("outside", "Outside"), ("inside", "Inside"), ("both", "Outside and inside")]
+WALL_ENDS = [("stopped", "Stopped (whole and half bricks)"), ("toothed", "Toothed (every other course out)"),
+             ("return", "Return round the end")]
+
+
+def lay_arc_bricks(tg, v):
+    """Bricks along a part-round wall, course by course, on its outside face, inside face or
+    both, from one end to the other in half-brick bond, finished at the ends as chosen.
+    Returns ([faces in world metres], info)."""
+    L = max(10.0, v['brick_l']) * SCALE
+    H = max(5.0, v['brick_h']) * SCALE
+    D = max(1.0, v['brick_d']) * SCALE
+    J = max(0.2, v['joint']) * SCALE
+    lift = v['lift'] * SCALE
+    Jb = 0.0 if v.get('no_bed') else J
+    every = int(v.get('header_every', 0))
+    level = bool(v.get('level', True))
+    sides = {'outside': ['out'], 'inside': ['in'], 'both': ['out', 'in']}[v.get('faces', 'outside')]
+    ends = v.get('ends', 'stopped')
+    each = v.get('_bricks_out')
+    z0 = tg.z0 + v['raise'] * SCALE
+    top = tg.z0 + tg.h if v.get('lay_h', 0) <= 0 else min(tg.z0 + tg.h, z0 + v['lay_h'] * SCALE)
+    a0, a1 = tg.a0, tg.a1
+    cx, cy = tg.cx, tg.cy
+    faces = []
+    bricks = 0
+
+    def surf(th, z, s):
+        r = tg.r(th, z, s)
+        return (cx + r * math.cos(th), cy + r * math.sin(th))
+
+    def lean_cos(zm):
+        if level:
+            return 1.0
+        ez = H / 2.0
+        cs = []
+        for k in range(9):
+            th = a0 + (a1 - a0) * (k + 0.5) / 9
+            dr = tg.r(th, zm + ez) - tg.r(th, zm - ez)
+            cs.append((2 * ez) / math.hypot(dr, 2 * ez))
+        return sum(cs) / len(cs)
+
+    def pitch(zc_):
+        return (H + Jb) * lean_cos(zc_ + H / 2.0)
+    Jb, n_fit = fit_courses(v, z0, top, H, J, Jb, lean_cos)
+    n_courses = 0
+    zz = z0
+    while ((n_courses < n_fit) if n_fit else (zz + H <= top + 1e-9)) and n_courses < 100000:
+        n_courses += 1
+        zz += pitch(zz)
+    cwhere = v.get('cant_where', 'none')
+    csize = max(0.0, v.get('cant_course', 0.0)) * SCALE
+
+    def course_cant(c_):
+        if csize <= 0:
+            return 0.0
+        if c_ == n_courses - 1 and cwhere in ('top', 'both'):
+            return csize
+        if c_ == 0 and cwhere in ('bottom', 'both'):
+            return csize
+        return 0.0
+
+    def add(bf):
+        nonlocal faces, bricks
+        faces += bf
+        if each is not None:
+            each.append(bf)
+        bricks += 1
+
+    def onto_end(X, T, a_end, outward, off):
+        """Slide X along the brick (T) onto the plane off beyond the wall's end at a_end."""
+        n_ = (math.sin(a_end), -math.cos(a_end), 0.0) if outward < 0 else (-math.sin(a_end), math.cos(a_end), 0.0)
+        tn = T[0] * n_[0] + T[1] * n_[1]
+        if abs(tn) < 0.2:
+            return X
+        cur = (X[0] - cx) * n_[0] + (X[1] - cy) * n_[1]
+        t_ = (off - cur) / tn
+        return (X[0] + T[0] * t_, X[1] + T[1] * t_, X[2])
+
+    zc = z0
+    c = 0
+    while (c < n_fit) if n_fit else (zc + H <= top + 1e-9):
+        zm = zc + H / 2.0
+        ez = H / 2.0
+        header = every > 0 and (c % every == every - 1)
+        unit = (D if header else L) + J
+        depth = D if not header else L
+        odd = c % 2 == 1
+        cant_c = _brick_cant(v, course_cant(c))
+        for s in sides:
+            m = 240
+            ths = [a0 + (a1 - a0) * k / m for k in range(m + 1)]
+            pts = [surf(th, zm, s) for th in ths]
+            cum = [0.0]
+            for k in range(m):
+                cum.append(cum[-1] + math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1]))
+            S_len = cum[-1]
+            r_a0, r_a1 = max(1e-6, tg.r(a0, zm, s)), max(1e-6, tg.r(a1, zm, s))
+
+            def theta_at(sv):
+                if sv <= 0:
+                    return a0 + sv / r_a0
+                if sv >= S_len:
+                    return a1 + (sv - S_len) / r_a1
+                lo, hi = 0, m
+                while hi - lo > 1:
+                    mid = (lo + hi) // 2
+                    if cum[mid] <= sv:
+                        lo = mid
+                    else:
+                        hi = mid
+                t = (sv - cum[lo]) / ((cum[hi] - cum[lo]) or 1.0)
+                return a0 + (a1 - a0) * (lo + t) / m
+            n = max(1, int(math.ceil(S_len / unit - 1e-9)))
+            step = S_len / n
+            # the set-out: whole bricks one course; the next a half brick each end (stopped and
+            # returned), or a half brick out past each end (toothed), so the bond steps half a brick
+            if odd and ends == 'toothed':
+                pieces = [(-step / 2 + k * step, step / 2 + k * step) for k in range(n + 1)]
+            elif odd:
+                pieces = [(0.0, step / 2)] + [(step / 2 + k * step, step / 2 + (k + 1) * step)
+                                             for k in range(n - 1)] + [(S_len - step / 2, S_len)]
+            else:
+                pieces = [(k * step, (k + 1) * step) for k in range(n)]
+            ret_run = ends == 'return' and not odd      # face bricks run past the end bricks
+            for k_, (pa, pb) in enumerate(pieces):
+                first, last = k_ == 0, k_ == len(pieces) - 1
+                sa = pa if first else pa + J / 2.0
+                sb = pb if last else pb - J / 2.0
+                if ends == 'return' and odd:
+                    if first:
+                        sa += J                       # a joint against the end brick
+                    if last:
+                        sb -= J
+                if sb - sa < 0.2 * unit:
+                    continue
+                ta, tb = theta_at(sa), theta_at(sb)
+                tc = (ta + tb) / 2.0
+                phi = (tb - ta) / 2.0
+                e = 1e-5
+                A_, B_ = surf(tc - e, zm, s), surf(tc + e, zm, s)
+                tx, ty = B_[0] - A_[0], B_[1] - A_[1]
+                Lt = math.hypot(tx, ty) or 1.0
+                T = (tx / Lt, ty / Lt, 0.0)
+                zb = zm
+                if level:
+                    Vd = (0.0, 0.0, 1.0)
+                    r_lo, r_hi = tg.r(tc, zm - ez, s), tg.r(tc, zm + ez, s)
+                    # the back where the face stands out furthest over the brick's height
+                    if s == 'out':
+                        zb = zm - ez if r_lo >= r_hi else zm + ez
+                    else:
+                        zb = zm - ez if r_lo <= r_hi else zm + ez
+                else:
+                    c0, c1 = surf(tc, zm - ez, s), surf(tc, zm + ez, s)
+                    Vd = v_norm((c1[0] - c0[0], c1[1] - c0[1], 2 * ez))
+                    if math.hypot(Vd[0], Vd[1]) > 0.7:
+                        Vd = (0.0, 0.0, 1.0)
+                if s == 'in':
+                    T = (-T[0], -T[1], 0.0)           # so the bricks face in, towards the middle
+                N = v_norm(v_cross(T, Vd))
+                x, y = surf(tc, zb, s)
+                S = (x, y, zm)
+                r_ = max(1e-6, tg.r(tc, zb, s))
+                half = r_ * math.sin(phi)
+                flare = math.tan(phi) if s == 'out' else -math.tan(phi)
+                q = {}
+                for iu, sg in enumerate((-1.0, 1.0)):
+                    for ih, hh in enumerate((-H / 2.0, H / 2.0)):
+                        for iw, ww in enumerate((lift, lift + depth)):
+                            uu = sg * (half + ww * flare)
+                            q[(iu, ih, iw)] = (S[0] + T[0] * uu + Vd[0] * hh + N[0] * ww,
+                                               S[1] + T[1] * uu + Vd[1] * hh + N[1] * ww,
+                                               S[2] + Vd[2] * hh + N[2] * ww)
+                # the ends at the wall's ends: flat on the end (or, running past an end brick,
+                # flush with the end brick's face)
+                stops = not (ends == 'return' and odd)   # (those stop short of the end bricks)
+                for at_start, is_end in ((True, first and abs(pa) < 1e-12 and stops),
+                                         (False, last and abs(pb - S_len) < 1e-12 and stops)):
+                    if not is_end:
+                        continue
+                    a_end = a0 if at_start else a1
+                    outward = -1 if at_start else 1
+                    off = (lift + D) if ret_run else 0.0
+                    # which of the brick's two ends is this one (the inside bricks run the other way)
+                    iu = (0 if at_start else 1) if s == 'out' else (1 if at_start else 0)
+                    for ih in (0, 1):
+                        for iw in (0, 1):
+                            q[(iu, ih, iw)] = onto_end(q[(iu, ih, iw)], T, a_end, outward, off)
+                add(brick_faces(q, cant_c))
+        # bricks across the ends of the wall (Return round the end)
+        if ends == 'return':
+            for a_end, outward in ((a0, -1), (a1, 1)):
+                a_in = a_end - outward * 1e-3
+                r_in, r_out = tg.r(a_in, zm, 'in'), tg.r(a_in, zm, 'out')
+                d_out = (lift + depth) if 'out' in sides else 0.0
+                d_in = (lift + depth) if 'in' in sides else 0.0
+                if odd:                                   # across the ends of the face bricks too
+                    lo, hi = r_in - d_in, r_out + d_out
+                else:                                     # between the face bricks running past
+                    lo = r_in + (J if 'in' in sides else 0.0)
+                    hi = r_out - (J if 'out' in sides else 0.0)
+                Wd = hi - lo
+                if Wd <= 0.2 * L:
+                    continue
+                k = max(1, int(math.ceil(Wd / (L + J) - 1e-9)))
+                seg = Wd / k
+                Rv = (math.cos(a_end), math.sin(a_end), 0.0)
+                Tn = (math.sin(a_end), -math.cos(a_end), 0.0) if outward < 0 else \
+                    (-math.sin(a_end), math.cos(a_end), 0.0)
+                T = Rv if outward < 0 else (-Rv[0], -Rv[1], 0.0)
+                Vd = (0.0, 0.0, 1.0)
+                N = Tn
+                for i in range(k):
+                    u0 = lo + i * seg + (J / 2.0 if i > 0 else 0.0)
+                    u1 = lo + (i + 1) * seg - (J / 2.0 if i < k - 1 else 0.0)
+                    if outward > 0:
+                        u0, u1 = -u1, -u0
+                    q = {}
+                    for iu, uu in enumerate((u0, u1)):
+                        for ih, hh in enumerate((-H / 2.0, H / 2.0)):
+                            for iw, ww in enumerate((lift, lift + D)):
+                                q[(iu, ih, iw)] = (cx + T[0] * uu + N[0] * ww, cy + T[1] * uu + N[1] * ww, zm + hh)
+                    add(brick_faces(q, cant_c))
+        c += 1
+        zc += pitch(zc)
+    return faces, {'courses': c, 'bricks': bricks, 'span': math.degrees(a1 - a0), 'radius': tg.R, 'bed': Jb,
+                   'fit': bool(n_fit)}
 
 
 # ---------------------------------------------------------------------------
@@ -1235,7 +1997,83 @@ HFITS = [("stretch", "Stretch to the height"), ("true", "True height")]
 DEFAULTS = dict(target='round', bottom=1200.0, top=800.0, height=6000.0, add_core=True,
                 fit='repeat', ignore=100.0, source='bricks', brick_l=215.0, brick_h=65.0, brick_d=102.5,
                 joint=10.0, header_every=0, lay_h=0.0, height_fit='true', raise_=0.0, start=0.0, lift=0.01, detail=50.0, flat_max=300.0,
-                flip=False, scale_depth=False, level=True)
+                flip=False, scale_depth=False, level=True, no_bed=False, bevel=0.0, cant_corner=0.0,
+                cant_where='none', cant_course=30.0, corner='squint', faces='outside', ends='stopped',
+                fit_height=True)
+CANT_WHERE = [("none", "None"), ("top", "Top course"), ("bottom", "Bottom course"), ("both", "Top and bottom")]
+COURSE_LAY = [(True, "Level (step in up a taper)"), (False, "Lean back with the taper")]
+CORNERS = [("squint", "Special corner bricks"), ("bonded", "Bonded (run past the corner)")]
+# what a 'Bricks only' preset keeps
+BRICK_KEYS = ('brick_l', 'brick_h', 'brick_d', 'joint', 'header_every', 'level', 'no_bed', 'bevel',
+              'cant_corner', 'cant_where', 'cant_course', 'corner', 'faces', 'ends', 'fit_height')
+
+# ---------------------------------------------------------------------------
+# Presets: your own setups, saved as files, and one of them as the default
+# ---------------------------------------------------------------------------
+PRESETS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Wrap")
+DEFAULT_FILE = os.path.join(PRESETS_DIR, "_default.txt")
+
+
+def load_presets():
+    out = []
+    try:
+        for fn in sorted(os.listdir(PRESETS_DIR), key=str.lower):
+            if fn.lower().endswith(".json"):
+                try:
+                    with open(os.path.join(PRESETS_DIR, fn), "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    if isinstance(d, dict):
+                        out.append((fn[:-5], d))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+def save_preset(name, values):
+    os.makedirs(PRESETS_DIR, exist_ok=True)
+    safe = "".join(ch for ch in name if ch not in '\\/:*?"<>|').strip().lstrip("_") or "My bricks"
+    with open(os.path.join(PRESETS_DIR, safe + ".json"), "w", encoding="utf-8") as f:
+        json.dump(values, f, indent=1)
+    return safe
+
+
+def delete_preset(name):
+    try:
+        os.remove(os.path.join(PRESETS_DIR, name + ".json"))
+    except Exception:
+        pass
+    if default_preset() == name:
+        set_default_preset(None)
+
+
+def default_preset():
+    try:
+        with open(DEFAULT_FILE, "r", encoding="utf-8") as f:
+            name = f.read().strip()
+        return name if os.path.exists(os.path.join(PRESETS_DIR, name + ".json")) else None
+    except Exception:
+        return None
+
+
+def set_default_preset(name):
+    try:
+        if name:
+            os.makedirs(PRESETS_DIR, exist_ok=True)
+            with open(DEFAULT_FILE, "w", encoding="utf-8") as f:
+                f.write(name)
+        elif os.path.exists(DEFAULT_FILE):
+            os.remove(DEFAULT_FILE)
+    except Exception:
+        pass
+
+
+def preset_values(name):
+    for n, d in load_presets():
+        if n == name:
+            return {k: v for k, v in d.items() if not k.startswith("_")}
+    return {}
 
 
 def _narrow(cb, n):
@@ -1440,8 +2278,381 @@ def eddy_window(dlg, key, tips=None, place=True):
             pass
 # --- Eddy's 3D plugins: hover help and remembered window places (end) ---
 
-EDDY_TIPS = {}
+EDDY_TIPS = {'Close-up': "A few bricks close up, as they'll be laid with the settings in the window. "
+                         "It changes as you change them.",
+             'Sizes (A, B, C ...)': "What each lettered size (A, B, C ...) measures. The letters are next to "
+                                    "the boxes on the right."}
 EDDY_TIPS_END = None
+
+
+# ---------------------------------------------------------------------------
+# Close-up and sizes drawings (the two tabs beside the settings)
+# ---------------------------------------------------------------------------
+# each size has a letter, shown next to its box and on the 'Sizes' drawing
+LETTERS = {'bottom': 'A', 'top': 'B', 'height': 'C', 'raise_': 'D', 'lay_h': 'E',
+           'brick_l': 'F', 'brick_h': 'G', 'brick_d': 'H', 'joint': 'J', 'bevel': 'K',
+           'cant_course': 'L', 'cant_corner': 'M'}
+CLOSEUP_COURSES = 5
+
+
+def closeup_bricks(v):
+    """A few courses of the bricks as they'd be laid with these settings, round the front
+    of the chimney (at a corner, on a square or many-sided one): ([brick faces...],
+    [core faces], the angle looked at, a caption)."""
+    mesh = v.get('target') == 'mesh'
+    shape = 'round' if mesh else v.get('target', 'round')
+    b = 1200.0 if mesh else max(50.0, v['bottom'])
+    t_ = 1200.0 if mesh else max(10.0, v['top'])
+    h_full = 6000.0 if mesh else max(50.0, v['height'])
+    Jb = 0.0 if v.get('no_bed') else v['joint']
+    hs = CLOSEUP_COURSES * (v['brick_h'] + Jb) + 0.5 * v['brick_h']
+    top_s = b - (b - t_) * min(1.0, hs / h_full)          # the same taper as the real one
+    tg = ShapeTarget(shape, 0.0, 0.0, 0.0, hs * SCALE, b * SCALE, top_s * SCALE)
+    vv = dict(v)
+    vv.update(raise_=0.0, lay_h=0.0, start=0.0)
+    vv['raise'] = 0.0
+    out = []
+    vv['_bricks_out'] = out
+    lay_bricks(tg, vv)
+    cs = tg.corners()
+    focus = cs[0] if cs else 0.0
+    if shape == 'square':
+        half = math.radians(32)
+    elif shape == 'octagon':
+        half = math.radians(19)
+    else:
+        half = min(math.radians(40), 1.9 * v['brick_l'] / (b / 2.0))
+
+    def near(pts):
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        return abs((math.atan2(cy, cx) - focus + math.pi) % (2 * math.pi) - math.pi) <= half
+    bricks = [bf for bf in out if near([p for f in bf for p in f])]
+    core = [f for f in tg.solid_faces(n=144) if near(f)]
+    words = {'round': "round", 'square': "square", 'octagon': "octagonal"}[shape]
+    cap = "Close-up: %d courses, %s%s, %s" % (CLOSEUP_COURSES, words, " (a sample)" if mesh else "",
+                                             "level" if v.get('level', True) else "leaning back")
+    return bricks, core, focus, cap
+
+
+def closeup_arc(v, tg):
+    """The close-up for a curved wall: a few courses at one end of the wall itself."""
+    Jb = 0.0 if v.get('no_bed') else v['joint']
+    hs = CLOSEUP_COURSES * (v['brick_h'] + Jb) + 0.5 * v['brick_h']
+    vv = dict(v)
+    vv.update(raise_=0.0, lay_h=hs)
+    vv['raise'] = 0.0
+    out = []
+    vv['_bricks_out'] = out
+    lay_arc_bricks(tg, vv)
+    a0 = tg.a0
+    reach = min(tg.span, 2.6 * v['brick_l'] * SCALE / max(tg.R, 1e-6))
+
+    def ang_of(pts):
+        cx_ = sum(p[0] for p in pts) / len(pts) - tg.cx
+        cy_ = sum(p[1] for p in pts) / len(pts) - tg.cy
+        return (math.atan2(cy_, cx_) - a0 + math.pi) % (2 * math.pi) - math.pi
+    bricks = [bf for bf in out if -0.2 < ang_of([p for f in bf for p in f]) < reach]
+    # the wall itself, round to the end
+    core = []
+    z0, z1 = tg.z0, tg.z0 + hs * SCALE
+    n = 24
+    angs = [a0 + reach * k / n for k in range(n + 1)]
+
+    def P(a, side, z):
+        r_ = tg.r(a, z, side)
+        return (tg.cx + r_ * math.cos(a), tg.cy + r_ * math.sin(a), z)
+    for k in range(n):
+        A, B = angs[k], angs[k + 1]
+        core.append([P(A, 'out', z0), P(B, 'out', z0), P(B, 'out', z1), P(A, 'out', z1)])
+        core.append([P(B, 'in', z0), P(A, 'in', z0), P(A, 'in', z1), P(B, 'in', z1)])
+        core.append([P(A, 'in', z1), P(A, 'out', z1), P(B, 'out', z1), P(B, 'in', z1)])
+    core.append([P(a0, 'in', z0), P(a0, 'out', z0), P(a0, 'out', z1), P(a0, 'in', z1)][::-1])
+    cap = "Close-up: the end of your curved wall, %s, ends %s" % (
+        dict(FACES)[v.get('faces', 'outside')].lower(), dict(WALL_ENDS)[v.get('ends', 'stopped')].split(" (")[0].lower())
+    return bricks, core, a0 + reach * 0.35, cap
+
+
+class CloseupView(QWidget):
+    """A few bricks, close up and shaded, as they'll be laid with the settings now in the window."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        try:
+            self.setMinimumSize(300, 330)
+        except Exception:
+            pass
+        self.polys = []
+        self.msg = ""
+        self.cap = ""
+
+    def show_values(self, v, arc=None):
+        self.polys, self.msg, self.cap = [], "", ""
+        if v.get('source') != 'bricks':
+            self.msg = "The close-up shows new bricks.\n\nYour own pattern is bent round as it is."
+        else:
+            try:
+                if arc is not None:
+                    bricks, core, focus, self.cap = closeup_arc(v, arc)
+                else:
+                    bricks, core, focus, self.cap = closeup_bricks(v)
+                self.polys = self._project(bricks, core, focus)
+                if not self.polys:
+                    self.msg = "No bricks fit: check the sizes."
+            except Exception as e:
+                self.msg = "No close-up: %s" % e
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _project(bricks, core, focus):
+        az = focus - math.radians(22)
+        el = math.radians(16)
+        d = (math.cos(el) * math.cos(az), math.cos(el) * math.sin(az), math.sin(el))   # to the viewer
+        right = (-math.sin(az), math.cos(az), 0.0)
+        up = v_cross(d, right)
+        light = v_norm((0.45, -0.55, 0.7))
+        light = v_norm(v_add(v_mul(d, 0.6), v_mul(light, 0.8)))
+        def faces_of(faces, rgb, edge):
+            out_ = []
+            for f in faces:
+                n = v_norm(_newell3(f))
+                if v_dot(n, d) <= 1e-6:
+                    continue                                   # facing away
+                sh = 0.42 + 0.58 * max(0.0, v_dot(n, light))
+                out_.append((0.0, [(v_dot(p, right), v_dot(p, up)) for p in f],
+                             tuple(int(c * sh) for c in rgb), edge))
+            return out_
+        # the chimney behind, then the bricks one whole brick at a time, the furthest first
+        # (each brick's own visible faces never hide each other)
+        out = []
+        for f in sorted(core, key=lambda f: sum(v_dot(p, d) for p in f) / len(f)):
+            out += faces_of([f], (200, 196, 188), (150, 146, 140))
+        keyed = []
+        for bf in bricks:
+            pts = [p for f in bf for p in f]
+            keyed.append((sum(v_dot(p, d) for p in pts) / len(pts), bf))
+        keyed.sort(key=lambda z: z[0])
+        for _, bf in keyed:
+            out += faces_of(bf, (178, 86, 58), (95, 42, 26))
+        return out
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPolygonF, QPen
+        from PySide6.QtCore import QPointF, Qt, QRectF
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing)
+            p.fillRect(self.rect(), QColor(244, 245, 247))
+            if not self.polys:
+                p.setPen(QColor(90, 90, 90))
+                p.drawText(QRectF(self.rect().adjusted(12, 12, -12, -12)), Qt.AlignCenter | Qt.TextWordWrap,
+                           self.msg or "No close-up")
+                return
+            xs = [x for _, pts, _, _ in self.polys for x, _ in pts]
+            ys = [y for _, pts, _, _ in self.polys for _, y in pts]
+            W, H = self.width(), self.height()
+            sc = min((W - 20) / ((max(xs) - min(xs)) or 1), (H - 40) / ((max(ys) - min(ys)) or 1))
+            ox = W / 2 - (max(xs) + min(xs)) / 2 * sc
+            oy = (H - 20) / 2 + (max(ys) + min(ys)) / 2 * sc
+            for _, pts, rgb, edge in self.polys:
+                p.setBrush(QColor(*rgb))
+                p.setPen(QPen(QColor(*edge), 0.6))
+                p.drawPolygon(QPolygonF([QPointF(ox + x * sc, oy - y * sc) for x, y in pts]))
+            p.setPen(QColor(80, 80, 80))
+            p.drawText(QRectF(6, H - 20, W - 12, 18), Qt.AlignLeft | Qt.AlignVCenter, self.cap)
+        finally:
+            p.end()
+
+
+class SizesView(QWidget):
+    """What each lettered size measures: the chimney, a brick from the front, a cut through
+    the courses, and a corner seen from above."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        try:
+            self.setMinimumSize(300, 330)
+        except Exception:
+            pass
+        self.v = dict(DEFAULTS)
+
+    def show_values(self, v):
+        self.v = dict(v)
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPolygonF, QPen, QFont, QBrush
+        from PySide6.QtCore import QPointF, Qt, QRectF
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing)
+            p.fillRect(self.rect(), QColor(252, 252, 250))
+            W, H = self.width(), self.height()
+            v = self.v
+            BR, BRE, CORE, CE = QColor(196, 104, 72), QColor(110, 50, 30), QColor(214, 210, 202), QColor(150, 146, 140)
+            BLUE = QColor(20, 90, 200)
+            small = QFont()
+            small.setPointSize(7)
+            bold = QFont()
+            bold.setPointSize(8)
+            bold.setBold(True)
+
+            def panel(rect, title, shapes, dims, pad=26):
+                """shapes: [(points mm, fill, edge)], dims: [(letter, a, b, side (x, y) away)]."""
+                xs = [x for pts, _, _ in shapes for x, _ in pts]
+                ys = [y for pts, _, _ in shapes for _, y in pts]
+                if not xs:
+                    return
+                x0, y0, w_, h_ = rect
+                sc = min((w_ - 2 * pad) / ((max(xs) - min(xs)) or 1), (h_ - 2 * pad - 12) / ((max(ys) - min(ys)) or 1))
+                ox = x0 + w_ / 2 - (max(xs) + min(xs)) / 2 * sc
+                oy = y0 + 12 + (h_ - 12) / 2 + (max(ys) + min(ys)) / 2 * sc
+
+                def P(q):
+                    return QPointF(ox + q[0] * sc, oy - q[1] * sc)
+                for pts, fill, edge in shapes:
+                    p.setBrush(fill if fill is not None else Qt.NoBrush)
+                    p.setPen(QPen(edge, 0.8))
+                    p.drawPolygon(QPolygonF([P(q) for q in pts]))
+                p.setFont(small)
+                p.setPen(QColor(90, 90, 90))
+                p.drawText(QRectF(x0 + 4, y0 + 1, w_ - 8, 12), Qt.AlignLeft, title)
+                p.setFont(bold)
+                for letter, a, b, side in dims:
+                    A, B = P(a), P(b)
+                    sx, sy = side[0], -side[1]
+                    L_ = math.hypot(sx, sy) or 1.0
+                    sx, sy = sx / L_, sy / L_
+                    off = 9.0
+                    A2 = QPointF(A.x() + sx * off, A.y() + sy * off)
+                    B2 = QPointF(B.x() + sx * off, B.y() + sy * off)
+                    p.setPen(QPen(BLUE, 0.8))
+                    p.drawLine(A, QPointF(A2.x() + sx * 3, A2.y() + sy * 3))
+                    p.drawLine(B, QPointF(B2.x() + sx * 3, B2.y() + sy * 3))
+                    p.drawLine(A2, B2)
+                    dx, dy = B2.x() - A2.x(), B2.y() - A2.y()
+                    Ld = math.hypot(dx, dy) or 1.0
+                    tx, ty = (dx - dy) / Ld * 3, (dy + dx) / Ld * 3
+                    for q in (A2, B2):
+                        p.drawLine(QPointF(q.x() - tx, q.y() - ty), QPointF(q.x() + tx, q.y() + ty))
+                    mx = (A2.x() + B2.x()) / 2 + sx * 10
+                    my = (A2.y() + B2.y()) / 2 + sy * 10
+                    r = 7.0
+                    p.setBrush(QBrush(QColor(255, 255, 255)))
+                    p.drawEllipse(QPointF(mx, my), r, r)
+                    p.drawText(QRectF(mx - r, my - r, 2 * r, 2 * r), Qt.AlignCenter, letter)
+
+            bl, bh, bd = max(10.0, v['brick_l']), max(5.0, v['brick_h']), max(1.0, v['brick_d'])
+            J = max(0.2, v['joint'])
+            Jb = 0.0 if v.get('no_bed') else J
+            # K, L and M are always drawn: at their size, or at a sample size if they're off (0)
+            bev = max(0.0, v.get('bevel', 0.0)) or 0.1 * min(bh, bd)
+            cc = (max(0.0, v.get('cant_course', 0.0)) if v.get('cant_where', 'none') != 'none' else 0.0) \
+                or 0.3 * min(bh, bd)
+            cm = max(0.0, v.get('cant_corner', 0.0)) or 0.3 * bd
+            off = [k for k, on in (('K', v.get('bevel', 0.0) > 0),
+                                   ('L', v.get('cant_where', 'none') != 'none' and v.get('cant_course', 0.0) > 0),
+                                   ('M', v.get('cant_corner', 0.0) > 0)) if not on]
+            hw, hh = W / 2.0, (H - 4) / 2.0
+
+            # 1. the chimney, from the front
+            Bw, Tw, Ht = max(50.0, v['bottom']), max(10.0, v['top']), max(50.0, v['height'])
+            rs = min(v['raise_'], Ht)
+            re_ = Ht if v['lay_h'] <= 0 else min(Ht, rs + v['lay_h'])
+
+            def wid(z):
+                return Bw + (Tw - Bw) * z / Ht
+            body = [(-Bw / 2, 0), (Bw / 2, 0), (Tw / 2, Ht), (-Tw / 2, Ht)]
+            band = [(-wid(rs) / 2, rs), (wid(rs) / 2, rs), (wid(re_) / 2, re_), (-wid(re_) / 2, re_)]
+            dims = [('A', (-Bw / 2, 0), (Bw / 2, 0), (0, -1)), ('B', (-Tw / 2, Ht), (Tw / 2, Ht), (0, 1)),
+                    ('C', (Bw / 2, 0), (Bw / 2, Ht), (1, 0))]
+            if rs > 0:
+                dims.append(('D', (-Bw / 2, 0), (-Bw / 2, rs), (-1, 0)))
+            if v['lay_h'] > 0:
+                dims.append(('E', (-wid(rs) / 2, rs), (-wid(rs) / 2, re_), (-1, 0)) if rs <= 0 else
+                            ('E', (-Bw / 2 - 0.0001, rs), (-Bw / 2 - 0.0001, re_), (-1, 0)))
+            panel((0, 0, hw, hh), "Chimney", [(body, CORE, CE), (band, BR, BRE)], dims, pad=30)
+
+            # 2. bricks from the front
+            shapes = []
+            x_off = [0.0, -(bl + J) / 2.0]
+            for row in range(2):
+                y0 = row * (bh + Jb)
+                for k in range(-1, 3):
+                    x0 = k * (bl + J) + x_off[row]
+                    xa, xb = max(x0, -0.6 * bl), min(x0 + bl, 1.6 * bl + J)
+                    if xb - xa < 5:
+                        continue
+                    shapes.append(([(xa, y0), (xb, y0), (xb, y0 + bh), (xa, y0 + bh)], BR, BRE))
+                    if bev > 0:
+                        i_ = min(bev, bh * 0.3)
+                        shapes.append(([(xa + (i_ if xa == x0 else 0), y0 + i_), (xb - (i_ if xb == x0 + bl else 0), y0 + i_),
+                                        (xb - (i_ if xb == x0 + bl else 0), y0 + bh - i_),
+                                        (xa + (i_ if xa == x0 else 0), y0 + bh - i_)], None, BRE))
+            mort = [(-0.6 * bl, -Jb), (1.6 * bl + J, -Jb), (1.6 * bl + J, 2 * bh + Jb), (-0.6 * bl, 2 * bh + Jb)]
+            shapes.insert(0, (mort, CORE, CE))
+            dims = [('F', (0, 0), (bl, 0), (0, -1)), ('G', (-0.6 * bl, 0), (-0.6 * bl, bh), (-1, 0)),
+                    ('J', (bl, bh), (bl + J, bh), (0, 1))]
+            if Jb > 0:
+                dims.append(('J', (1.6 * bl + J, bh), (1.6 * bl + J, bh + Jb), (1, 0)))
+            i_ = min(bev, bh * 0.3)
+            xk = -0.3 * bl
+            dims.append(('K', (xk, 2 * bh + Jb - i_), (xk, 2 * bh + Jb), (0, 1)))
+            panel((hw, 0, hw, hh), "A brick, from the front", shapes, dims)
+
+            # 3. a cut through three courses (the chimney on the left)
+            shapes = [([(-0.35 * bd, -Jb), (0, -Jb), (0, 3 * bh + 2 * Jb), (-0.35 * bd, 3 * bh + 2 * Jb)], CORE, CE)]
+            for row in range(3):
+                y0 = row * (bh + Jb)
+                top_c = cc if row == 2 else 0.0
+                tc = min(max(top_c, bev), 0.45 * min(bh, bd))
+                bc = min(bev, 0.45 * min(bh, bd))
+                pts = [(0, y0), (bd - bc, y0), (bd, y0 + bc), (bd, y0 + bh - tc), (bd - tc, y0 + bh), (0, y0 + bh)]
+                shapes.append((pts, BR, BRE))
+            y2 = 2 * (bh + Jb)
+            c_ = min(max(cc, bev), 0.45 * min(bh, bd))
+            dims = [('H', (0, y2 + bh), (bd, y2 + bh), (0, 1)), ('L', (bd, y2 + bh - c_), (bd, y2 + bh), (1, 0))]
+            panel((0, hh, hw, hh), "Cut through (top: cant course)", shapes, dims)
+
+            # 4. a corner, from above: the chimney's corner at the origin, one brick running
+            # on past the corner (covering the end of the brick on the other side)
+            c_ = min(max(cm, bev), 0.45 * bd)
+            L2 = 0.9 * bl
+            shapes = [([(-1.4 * bl, -1.4 * bl), (0, -1.4 * bl), (0, 0), (-1.4 * bl, 0)], CORE, CE)]
+            if v.get('corner', 'bonded') == 'squint':
+                # a special corner brick: one leg along each face, round the corner in one piece
+                la, lb = bl, bl / 2.0
+                shapes.append(([(-la, 0), (0, 0), (0, -lb), (bd, -lb), (bd, bd - c_), (bd - c_, bd), (-la, bd)],
+                               BR, BRE))
+                shapes.append(([(-la - J - 0.6 * bl, 0), (-la - J, 0), (-la - J, bd), (-la - J - 0.6 * bl, bd)], BR, BRE))
+                shapes.append(([(0, -lb - J), (bd, -lb - J), (bd, -lb - J - L2), (0, -lb - J - L2)], BR, BRE))
+                dims = [('H', (0, -lb - J - L2), (bd, -lb - J - L2), (0, -1)), ('M', (bd - c_, bd), (bd, bd - c_), (1, 1))]
+                title = "Corner from above: special brick"
+            else:
+                run = [(bd - bl, 0), (bd, 0), (bd, bd - c_), (bd - c_, bd), (bd - bl, bd)]
+                shapes.append((run, BR, BRE))
+                shapes.append(([(0, -J), (bd, -J), (bd, -J - L2), (0, -J - L2)], BR, BRE))
+                dims = [('H', (0, -J - L2), (bd, -J - L2), (0, -1)), ('M', (bd - c_, bd), (bd, bd - c_), (1, 1))]
+                title = "Corner, from above"
+            panel((hw, hh, hw, hh), title, shapes, dims)
+            if off:
+                p.setFont(small)
+                p.setPen(QColor(120, 120, 120))
+                p.drawText(QRectF(4, H - 14, W - 8, 12), Qt.AlignRight,
+                           "%s: off (0) - drawn at a sample size" % ", ".join(off))
+            p.setPen(QPen(QColor(220, 220, 220), 1))
+            p.drawLine(QPointF(hw, 4), QPointF(hw, H - 4))
+            p.drawLine(QPointF(4, hh), QPointF(W - 4, hh))
+        finally:
+            p.end()
+
+
 
 
 class WrapDialog(QDialog):
@@ -1461,13 +2672,33 @@ class WrapDialog(QDialog):
                          "to size, or select a solid you've drawn and click 'Use as target'.\n3. Click 'Wrap'.")
         lay.addWidget(intro)
         top = QFormLayout()
+        self.cb_preset = QComboBox()
+        _narrow(self.cb_preset, 16)
+        self.cb_preset.setToolTip("Your saved setups. Pick one and the window is filled in. A 'Bricks only' "
+                                  "preset changes just the Bricks tab. The one marked (default) is filled in "
+                                  "each time 3D Wrap opens.")
+        top.addRow("Preset", self.cb_preset)
+        brow_p = QHBoxLayout()
+        self.b_psave = QPushButton("Save")
+        self.b_psave.setToolTip("Updates the preset you have open with what's in the window now (no typing).")
+        self.b_psaveas = QPushButton("Save as...")
+        self.b_psaveas.setToolTip("Saves a new preset under a name you type: everything in the window, or "
+                                  "the Bricks tab only.")
+        self.b_pdel = QPushButton("Delete")
+        self.b_pdel.setToolTip("Deletes the preset you have open.")
+        self.b_pdef = QPushButton("Set as default")
+        self.b_pdef.setToolTip("3D Wrap opens with the preset you have open filled in. Click it on "
+                               "'(no preset)' to go back to the built-in settings.")
+        for b_ in (self.b_psave, self.b_psaveas, self.b_pdel, self.b_pdef):
+            brow_p.addWidget(b_)
+        top.addRow(brow_p)
         self.cb_source = QComboBox()
         self.cb_source.addItem("New bricks", 'bricks')
         self.cb_source.addItem("My own pattern", 'pattern')
         self.cb_source.setToolTip("New bricks: laid course by course - every course has a whole number of "
                                   "bricks, never longer than a standard one, stepped half a brick each course, "
                                   "corners bonded - like a real chimney. My own pattern: bend any flat group "
-                                  "round (Flowify-style).")
+                                  "round the target, following its curve.")
         _narrow(self.cb_source, 14)
         self.cb_target = QComboBox()
         for k, t in TARGETS:
@@ -1504,7 +2735,15 @@ class WrapDialog(QDialog):
         tabs.setTabToolTip(0, "The chimney made to size, and where the bricks or pattern go up it.")
         tabs.setTabToolTip(1, "Brick size, mortar and header courses (New bricks).")
         tabs.setTabToolTip(2, "How your own pattern is fitted and bent round (My own pattern).")
-        lay.addWidget(tabs)
+        row = QHBoxLayout()
+        self.views = QTabWidget()
+        self.closeup = CloseupView()
+        self.sizes = SizesView()
+        self.views.addTab(self.closeup, "Close-up")
+        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        row.addWidget(self.views, 1)
+        row.addWidget(tabs, 1)
+        lay.addLayout(row)
         self.sp = {}
 
         def num(tab, key, label, lo, hi, dec, suf, tip=""):
@@ -1514,7 +2753,7 @@ class WrapDialog(QDialog):
             s.setSuffix(suf)
             s.setKeyboardTracking(False)
             s.setValue(float(cur.get(key, DEFAULTS[key])))
-            lab = QLabel(label)
+            lab = QLabel(("%s   %s" % (LETTERS[key], label)) if key in LETTERS else label)
             if tip:
                 s.setToolTip(tip)
                 lab.setToolTip(tip)
@@ -1534,6 +2773,13 @@ class WrapDialog(QDialog):
             "Leaves this much bare at the bottom before the first course.")
         num("Chimney", 'lay_h', "Go up to", 0.0, 100000.0, 0, " mm",
             "Stops at this height above the start. 0 = all the way to the top.")
+        self.cb_fith = QCheckBox("Fit the courses to the height")
+        self.cb_fith.setToolTip("New bricks: the bed joints (between courses) are evened out a little so a whole "
+                                "number of courses finishes right at the top (or at 'Go up to'). The joints "
+                                "between the bricks in a course stay as set. Not with 'No mortar between "
+                                "courses' (there's no bed joint to adjust).")
+        self.cb_fith.setChecked(bool(cur.get('fit_height', True)))
+        pages["Chimney"].addRow(self.cb_fith)
         num("Chimney", 'start', "Turn round by", -360.0, 360.0, 0, " deg",
             "Where the start of the courses (or the middle of the pattern) comes round the target.")
         num("Chimney", 'ignore', "Ignore rims under", 0.0, 2000.0, 0, " mm",
@@ -1558,19 +2804,79 @@ class WrapDialog(QDialog):
         lab = QLabel("Headers every")
         lab.setToolTip(self.sp_hdr.toolTip())
         pages["Bricks"].addRow(lab, self.sp_hdr)
-        self.cb_level = QCheckBox("Lay the courses level")
-        self.cb_level.setToolTip("Every course is laid level, like a real chimney: on a taper each course "
-                                 "is set in a little from the one below, so it steps in. Untick to tilt the "
-                                 "bricks back to follow the slope instead.")
-        self.cb_level.setChecked(bool(cur.get('level', True)))
-        pages["Bricks"].addRow(self.cb_level)
+        self.cb_level = QComboBox()
+        for k, t_ in COURSE_LAY:
+            self.cb_level.addItem(t_, k)
+        self.cb_level.setCurrentIndex(0 if bool(cur.get('level', True)) else 1)
+        self.cb_level.setToolTip("Level: every course is laid level, like a real chimney; on a taper each "
+                                 "course is set in a little from the one below, so it steps in. Lean back: "
+                                 "the bricks lie flat on the sloping face, leaning back onto the chimney, so a "
+                                 "tapered one (round especially) has a smooth face with no steps.")
+        _narrow(self.cb_level, 16)
+        lab = QLabel("Courses")
+        lab.setToolTip(self.cb_level.toolTip())
+        pages["Bricks"].addRow(lab, self.cb_level)
+        self.cb_nobed = QCheckBox("No mortar between courses")
+        self.cb_nobed.setToolTip("The courses sit straight on each other (no bed joint), but the joints "
+                                 "between the bricks in a course stay.")
+        self.cb_nobed.setChecked(bool(cur.get('no_bed', False)))
+        pages["Bricks"].addRow(self.cb_nobed)
+        num("Bricks", 'bevel', "Bevel brick edges", 0.0, 50.0, 1, " mm",
+            "A small slope on the front edges of every brick, so the joints show more clearly (good for "
+            "printing). 0 = sharp edges.")
+        num("Bricks", 'cant_corner', "Cant corners", 0.0, 500.0, 1, " mm",
+            "Square and many-sided chimneys: the corner bricks are cant bricks, their outside corner cut "
+            "back this much. 0 = square corners.")
+        self.cb_corner = QComboBox()
+        for k, t_ in CORNERS:
+            self.cb_corner.addItem(t_, k)
+        self.cb_corner.setToolTip("Square and many-sided chimneys. Bonded: one side's end brick runs on past "
+                                  "the corner, turn and turn about. Special corner bricks: a dog-leg brick made "
+                                  "to the corner's own angle (a squint brick), one leg along each face, mitred "
+                                  "so it fits exactly even where a taper leans the faces - no bricks sticking out "
+                                  "and no gaps. Its legs swap long and short each course, so the bond still steps.")
+        _narrow(self.cb_corner, 16)
+        lab = QLabel("Corners")
+        lab.setToolTip(self.cb_corner.toolTip())
+        pages["Bricks"].addRow(lab, self.cb_corner)
+        self.cb_faces = QComboBox()
+        for k, t_ in FACES:
+            self.cb_faces.addItem(t_, k)
+        self.cb_faces.setToolTip("A solid you've drawn that goes only part way round (a curved wall with two "
+                                 "ends): which of its faces get bricks.")
+        _narrow(self.cb_faces, 16)
+        lab = QLabel("Curved wall faces")
+        lab.setToolTip(self.cb_faces.toolTip())
+        pages["Bricks"].addRow(lab, self.cb_faces)
+        self.cb_ends = QComboBox()
+        for k, t_ in WALL_ENDS:
+            self.cb_ends.addItem(t_, k)
+        self.cb_ends.setToolTip("How the courses finish at the two ends of a curved wall. Stopped: a neat end, "
+                                "whole and half bricks in turn. Toothed: every other course stands out half a "
+                                "brick, ready to build on. Return round the end: bricks also cover the end of "
+                                "the wall, bonded with the faces.")
+        _narrow(self.cb_ends, 16)
+        lab = QLabel("Wall ends")
+        lab.setToolTip(self.cb_ends.toolTip())
+        pages["Bricks"].addRow(lab, self.cb_ends)
+        self.cb_cant = QComboBox()
+        for k, t_ in CANT_WHERE:
+            self.cb_cant.addItem(t_, k)
+        self.cb_cant.setToolTip("Cant courses: the top front edge of each brick in the course is sloped "
+                                "back (cant bricks), as on a weathered top or a plinth.")
+        _narrow(self.cb_cant, 14)
+        lab = QLabel("Cant course")
+        lab.setToolTip(self.cb_cant.toolTip())
+        pages["Bricks"].addRow(lab, self.cb_cant)
+        num("Bricks", 'cant_course', "Cant size", 0.0, 500.0, 1, " mm",
+            "How far the cant course's top front edge is cut back (down the face and back across the top).")
 
         self.cb_fit = QComboBox()
         for k, t in FITS:
             self.cb_fit.addItem(t, k)
         self.cb_fit.setToolTip("Repeat round: copies of the pattern side by side all the way round, eased a "
                                "little so they close up - the bricks stay their real size. Once round: the "
-                               "pattern's width is stretched to the girth (like Flowify). True width: one "
+                               "pattern's width is stretched to the girth. True width: one "
                                "copy at its real width.")
         _narrow(self.cb_fit, 14)
         self.cb_hfit = QComboBox()
@@ -1596,7 +2902,9 @@ class WrapDialog(QDialog):
                                  "staying the same.")
         self.cb_depth.setChecked(bool(cur.get('scale_depth', False)))
         pages["Pattern"].addRow(self.cb_depth)
-        for cb, key in ((self.cb_target, 'target'), (self.cb_fit, 'fit'), (self.cb_hfit, 'height_fit')):
+        for cb, key in ((self.cb_target, 'target'), (self.cb_fit, 'fit'), (self.cb_hfit, 'height_fit'),
+                        (self.cb_cant, 'cant_where'), (self.cb_corner, 'corner'), (self.cb_faces, 'faces'),
+                        (self.cb_ends, 'ends')):
             for i in range(cb.count()):
                 if cb.itemData(i) == cur.get(key, DEFAULTS[key]):
                     cb.setCurrentIndex(i)
@@ -1613,7 +2921,7 @@ class WrapDialog(QDialog):
         brow.addWidget(b_close)
         lay.addLayout(brow)
         try:
-            self.setMaximumWidth(400)
+            self.setMinimumWidth(700)
         except Exception:
             pass
         b_pat.clicked.connect(self.pick_pattern)
@@ -1625,7 +2933,32 @@ class WrapDialog(QDialog):
                 self.cb_source.setCurrentIndex(i)
         b_go.clicked.connect(lambda: self.tool.do_wrap(self))
         b_close.clicked.connect(self.close)
+        self.cb_cant.currentIndexChanged.connect(self.changed)
+        # the close-up and sizes follow every change (a moment after, so typing isn't slowed)
+        from PySide6.QtCore import QTimer
+        self._redraw = QTimer(self)
+        self._redraw.setSingleShot(True)
+        self._redraw.timeout.connect(self.redraw)
+        for s_ in list(self.sp.values()) + [self.sp_hdr]:
+            s_.valueChanged.connect(lambda *_: self._redraw.start(150))
+        for cb_ in (self.cb_target, self.cb_source, self.cb_level, self.cb_cant, self.cb_corner, self.cb_faces,
+                    self.cb_ends):
+            cb_.currentIndexChanged.connect(lambda *_: self._redraw.start(150))
+        for ck_ in (self.cb_nobed, self.cb_core, self.cb_fith):
+            ck_.toggled.connect(lambda *_: self._redraw.start(150))
+        self.cb_nobed.toggled.connect(self.changed)
+        self.views.currentChanged.connect(lambda *_: self._redraw.start(0))
+        self.fill_presets(cur.get('_preset'))
+        self.cb_preset.activated.connect(self.preset_picked)
+        self.b_psave.clicked.connect(self.preset_save)
+        self.b_psaveas.clicked.connect(self.preset_save_as)
+        self.b_pdel.clicked.connect(self.preset_delete)
+        self.b_pdef.clicked.connect(self.preset_default)
         self.changed()
+        self.redraw()
+        last = WrapTool._last_target
+        if last is not None and _in_scene(getattr(viewport, 'scene', None), last):
+            self._set_target(last)
         self.pick_pattern(quiet=True)
 
     def changed(self, *_):
@@ -1638,6 +2971,22 @@ class WrapDialog(QDialog):
             self.sp[k].setEnabled(bricks)
         self.sp_hdr.setEnabled(bricks)
         self.cb_level.setEnabled(bricks)
+        for k in ('bevel', 'cant_corner'):
+            self.sp[k].setEnabled(bricks)
+        self.cb_nobed.setEnabled(bricks)
+        self.cb_fith.setEnabled(bricks and not self.cb_nobed.isChecked())
+        self.cb_cant.setEnabled(bricks)
+        self.sp['cant_course'].setEnabled(bricks and self.cb_cant.currentData() != 'none')
+        self.sp['cant_corner'].setEnabled(bricks and self.cb_target.currentData() != 'round')
+        self.cb_corner.setEnabled(bricks and self.cb_target.currentData() != 'round')
+        self.cb_faces.setEnabled(bricks and self.cb_target.currentData() == 'mesh')
+        self.cb_ends.setEnabled(bricks and self.cb_target.currentData() == 'mesh')
+        try:
+            name = self.cb_preset.currentData()
+            self.b_psave.setEnabled(bool(name))
+            self.b_pdel.setEnabled(bool(name))
+        except Exception:
+            pass
         self.b_pat.setEnabled(not bricks)
         for k in ('detail', 'flat_max'):
             self.sp[k].setEnabled(not bricks)
@@ -1655,6 +3004,120 @@ class WrapDialog(QDialog):
         except Exception:
             pass
 
+    def redraw(self, *_):
+        """Brings the close-up (or the sizes drawing, whichever is showing) up to date."""
+        try:
+            v = self.values()
+            if self.views.currentIndex() == 0:
+                arc = self.arc_target() if (v.get('target') == 'mesh' and v.get('source') == 'bricks') else None
+                self.closeup.show_values(v, arc)
+            else:
+                self.sizes.show_values(v)
+        except Exception as e:
+            print("%s: preview (%s)" % (PLUGIN_NAME, e))
+
+    # --- presets ---
+    def fill_presets(self, pick=None):
+        dflt = default_preset()
+        self.cb_preset.blockSignals(True)
+        self.cb_preset.clear()
+        self.cb_preset.addItem("(no preset)", None)
+        for name, d in load_presets():
+            label = name + ("  [bricks only]" if d.get('_bricks_only') else "")
+            if name == dflt:
+                label += "  (default)"
+            self.cb_preset.addItem(label, name)
+        i = self.cb_preset.findData(pick) if pick else 0
+        self.cb_preset.setCurrentIndex(max(0, i))
+        self.cb_preset.blockSignals(False)
+
+    def set_values(self, cur):
+        for k, s in self.sp.items():
+            if k in cur:
+                try:
+                    s.setValue(float(cur[k]))
+                except Exception:
+                    pass
+        if 'header_every' in cur:
+            self.sp_hdr.setValue(int(cur['header_every']))
+        for cb, key in ((self.cb_target, 'target'), (self.cb_fit, 'fit'), (self.cb_hfit, 'height_fit'),
+                        (self.cb_cant, 'cant_where'), (self.cb_corner, 'corner'), (self.cb_faces, 'faces'),
+                        (self.cb_ends, 'ends'), (self.cb_source, 'source')):
+            if key in cur:
+                i = cb.findData(cur[key])
+                if i >= 0:
+                    cb.setCurrentIndex(i)
+        if 'level' in cur:
+            self.cb_level.setCurrentIndex(0 if cur['level'] else 1)
+        for cb, key in ((self.cb_core, 'add_core'), (self.cb_flip, 'flip'), (self.cb_depth, 'scale_depth'),
+                        (self.cb_nobed, 'no_bed'), (self.cb_fith, 'fit_height')):
+            if key in cur:
+                cb.setChecked(bool(cur[key]))
+        self.changed()
+
+    def _stored(self, bricks_only):
+        v = self.values()
+        v.pop('raise', None)
+        if bricks_only:
+            v = {k: v[k] for k in BRICK_KEYS if k in v}
+            v['_bricks_only'] = True
+        return v
+
+    def preset_picked(self, *_):
+        name = self.cb_preset.currentData()
+        if name:
+            self.set_values(preset_values(name))
+        self.changed()
+
+    def preset_save(self, *_):
+        name = self.cb_preset.currentData()
+        if not name:
+            return self.preset_save_as()
+        bricks_only = any(n == name and d.get('_bricks_only') for n, d in load_presets())
+        save_preset(name, self._stored(bricks_only))
+        self.lbl_report.setStyleSheet("color: #2e7d32;")
+        self.lbl_report.setText("Saved the preset '%s'." % name)
+
+    def preset_save_as(self, *_):
+        name, ok = QInputDialog.getText(self, PLUGIN_NAME, "Name for this preset:")
+        if not ok or not str(name).strip():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(PLUGIN_NAME)
+        box.setText("Save everything in the window, or the Bricks tab only?\n\n"
+                    "A 'Bricks only' preset changes just the bricks (size, mortar, cants...) and leaves "
+                    "the chimney and pattern settings as they are.")
+        b_all = box.addButton("Everything", QMessageBox.AcceptRole)
+        b_br = box.addButton("Bricks only", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() not in (b_all, b_br):
+            return
+        safe = save_preset(str(name), self._stored(box.clickedButton() is b_br))
+        self.fill_presets(safe)
+        self.changed()
+        self.lbl_report.setStyleSheet("color: #2e7d32;")
+        self.lbl_report.setText("Saved the preset '%s'." % safe)
+
+    def preset_delete(self, *_):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        if QMessageBox.question(self, PLUGIN_NAME, "Delete the preset '%s'?" % name) != QMessageBox.Yes:
+            return
+        delete_preset(name)
+        self.fill_presets()
+        self.changed()
+
+    def preset_default(self, *_):
+        name = self.cb_preset.currentData()
+        set_default_preset(name)
+        self.fill_presets(name)
+        self.changed()
+        self.lbl_report.setStyleSheet("color: #2e7d32;")
+        self.lbl_report.setText(("3D Wrap will open with '%s' filled in." % name) if name else
+                                "3D Wrap will open with its built-in settings.")
+
     def _selected(self):
         scene = getattr(self.viewport, 'scene', None)
         return selected_groups(scene) if scene is not None else []
@@ -1668,20 +3131,69 @@ class WrapDialog(QDialog):
         self.pattern = gs[0]
         self.lbl_pat.setText("Pattern: " + group_label(gs[0]))
 
+    def _target_choices(self):
+        # laying new bricks there is no pattern, so whatever is selected can be the target
+        pat = self.pattern if self.cb_source.currentData() == 'pattern' else None
+        return [g for g in self._selected() if g is not pat]
+
+    def _set_target(self, g):
+        self.target = g
+        WrapTool._last_target = g
+        self.lbl_tgt.setText("Target solid: " + group_label(g))
+
     def pick_target(self, *_):
-        gs = [g for g in self._selected() if g is not self.pattern]
+        gs = self._target_choices()
         if not gs:
-            QMessageBox.information(self, PLUGIN_NAME, "Select the solid to wrap round (not the pattern).")
+            QMessageBox.information(self, PLUGIN_NAME, "Select the solid to wrap round first"
+                                    + (" (not the pattern)." if self.cb_source.currentData() == 'pattern' else "."))
             return
-        self.target = gs[0]
-        self.lbl_tgt.setText("Target solid: " + group_label(gs[0]))
+        self._set_target(gs[0])
+
+    def arc_target(self):
+        """The picked solid as a curved wall (worked out once, then kept), or None if it isn't one."""
+        g = self.target
+        if g is None:
+            return None
+        cache = getattr(self, '_arc_cache', None)
+        if cache is not None and cache[0] is g:
+            return cache[1]
+        tg = None
+        try:
+            tf = group_faces(g)
+            if is_open_wall(tf):
+                tg = ArcTarget(tf)
+        except Exception:
+            tg = None
+        self._arc_cache = (g, tg)
+        return tg
+
+    def need_target(self):
+        """The solid to wrap round: the one picked (if it's still in the model), else the one
+        selected now, else the one used last time. None (and a note) if there's none."""
+        scene = getattr(self.viewport, 'scene', None)
+        if self.target is not None and _in_scene(scene, self.target):
+            return self.target
+        gs = self._target_choices()
+        if gs:
+            self._set_target(gs[0])
+            return self.target
+        last = WrapTool._last_target
+        if last is not None and _in_scene(scene, last):
+            self._set_target(last)
+            return self.target
+        QMessageBox.information(self, PLUGIN_NAME, "Select the solid to wrap round, then click Wrap again "
+                                                   "(or click 'Use as target').")
+        return None
 
     def values(self):
         v = dict(target=self.cb_target.currentData(), fit=self.cb_fit.currentData(),
                  source=self.cb_source.currentData(), header_every=int(self.sp_hdr.value()),
                  height_fit=self.cb_hfit.currentData(), add_core=self.cb_core.isChecked(),
                  flip=self.cb_flip.isChecked(), scale_depth=self.cb_depth.isChecked(),
-                 level=self.cb_level.isChecked())
+                 level=bool(self.cb_level.currentData()), no_bed=self.cb_nobed.isChecked(),
+                 cant_where=self.cb_cant.currentData(), corner=self.cb_corner.currentData(),
+                 faces=self.cb_faces.currentData(), ends=self.cb_ends.currentData(),
+                 fit_height=self.cb_fith.isChecked())
         for k, s in self.sp.items():
             v[k] = float(s.value())
         v['raise'] = v['raise_']
@@ -1699,9 +3211,10 @@ class VertexWrapper(QVector3D):
 class WrapTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+U"
-    description = "Bends a flat pattern (bricks, boards...) round a chimney or any upright solid, like Flowify."
+    description = "Bends a flat pattern (bricks, boards...) round a chimney or any upright solid."
     _dialog = None
     _saved = None
+    _last_target = None           # the solid wrapped round last, kept while it's in the model
 
     def on_activate(self, viewport):
         dlg = WrapTool._dialog
@@ -1713,7 +3226,13 @@ class WrapTool(Tool):
                     return
             except Exception:
                 pass
-        dlg = WrapDialog(viewport, self, dict(DEFAULTS, **(WrapTool._saved or {})))
+        start = dict(DEFAULTS)
+        dflt = default_preset()
+        if dflt:
+            start.update(preset_values(dflt))
+            start['_preset'] = dflt
+        start.update(WrapTool._saved or {})
+        dlg = WrapDialog(viewport, self, start)
         WrapTool._dialog = dlg
 
         def closed(*_):
@@ -1740,9 +3259,7 @@ class WrapTool(Tool):
             return
         try:
             if v['target'] == 'mesh':
-                if dlg.target is None:
-                    QMessageBox.information(dlg, PLUGIN_NAME, "Pick the target solid first "
-                                                              "('Use selected as target').")
+                if dlg.need_target() is None:
                     return
                 target = MeshTarget(group_faces(dlg.target), ignore=v['ignore'] * SCALE)
             else:
@@ -1802,12 +3319,16 @@ class WrapTool(Tool):
     def do_bricks(self, dlg, v):
         try:
             if v['target'] == 'mesh':
-                if dlg.target is None:
-                    QMessageBox.information(dlg, PLUGIN_NAME, "Pick the target solid first "
-                                                              "('Use selected as target').")
+                if dlg.need_target() is None:
                     return
-                target = MeshTarget(group_faces(dlg.target), ignore=v['ignore'] * SCALE)
+                tf = group_faces(dlg.target)
                 name = "Brickwork - " + group_label(dlg.target)
+                if is_open_wall(tf):
+                    # a wall that goes only part way round: along it, end to end
+                    target = dlg.arc_target() or ArcTarget(tf)
+                    faces, info = lay_arc_bricks(target, v)
+                    return self._bricks_done(dlg, v, name, faces, info, None)
+                target = MeshTarget(tf, ignore=v['ignore'] * SCALE)
             else:
                 # a chimney made to size: beside a picked pattern if there is one, else at the origin
                 cx = cy = 0.0
@@ -1826,19 +3347,37 @@ class WrapTool(Tool):
         except ValueError as e:
             QMessageBox.warning(dlg, PLUGIN_NAME, str(e))
             return
+        core = target.solid_faces() if (v['target'] != 'mesh' and v['add_core']) else None
+        return self._bricks_done(dlg, v, name, faces, info, core)
+
+    def _bricks_done(self, dlg, v, name, faces, info, core):
         if not faces:
             QMessageBox.warning(dlg, PLUGIN_NAME, "No bricks fitted: is the target tall enough for one course?")
             return
-        core = target.solid_faces() if (v['target'] != 'mesh' and v['add_core']) else None
         self._errors = (0, None)
         nf = self.add_to_scene(dlg.viewport, name, faces, core)
         if nf is None:
             return
-        msg = "Laid %d bricks in %d courses, %d faces. Every course is a whole number of bricks, so there's " \
-              "no seam." % (info['bricks'], info['courses'], nf)
+        if 'span' in info:
+            msg = ("Laid %d bricks in %d courses, %d faces, along a curved wall that goes %.0f degrees round "
+                   "(radius about %.0f mm), %s, ends %s." % (
+                       info['bricks'], info['courses'], nf, info['span'], info['radius'] / SCALE,
+                       dict(FACES)[v.get('faces', 'outside')].lower() + (" face" if v.get('faces') != 'both' else " faces"),
+                       dict(WALL_ENDS)[v.get('ends', 'stopped')].split(" (")[0].lower()))
+        else:
+            msg = "Laid %d bricks in %d courses, %d faces. Every course is a whole number of bricks, so there's " \
+                  "no seam." % (info['bricks'], info['courses'], nf)
+        if info.get('fit'):
+            msg += " Bed joints %.1f mm, so the courses finish at the top." % (info.get('bed', 0.0) / SCALE)
+        warn = bool(self._errors[0])
         if self._errors[0]:
             msg += "\n%d faces could not be made: %s" % self._errors
-        dlg.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if self._errors[0] else "#2e7d32"))
+        if info.get('corners') and not v.get('level', True) and v.get('corner') == 'bonded':
+            warn = True
+            msg += ("\nTip: leaning back on a tapered chimney, bonded corners can't line up (the two faces "
+                    "lean different ways), so the corner bricks step out. Choose Corners: Special corner "
+                    "bricks for a neat corner.")
+        dlg.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if warn else "#2e7d32"))
         dlg.lbl_report.setText(msg)
 
     def add_to_scene(self, viewport, name, tris, core=None):
@@ -1860,8 +3399,19 @@ class WrapTool(Tool):
                     mesh.add_face([vx(p) for p in t])
                     stats['faces'] += 1
                 except Exception as e:
-                    stats['errors'] += 1
-                    stats['err'] = e
+                    # a face it won't take whole (an L-shaped top of a corner brick, say): as triangles
+                    done = False
+                    if len(t) > 3:
+                        try:
+                            for tri in triangles(t):
+                                mesh.add_face([vx(p) for p in tri])
+                                stats['faces'] += 1
+                            done = True
+                        except Exception as e2:
+                            e = e2
+                    if not done:
+                        stats['errors'] += 1
+                        stats['err'] = e
             return mesh
 
         def make_group(Group, mesh, nm):

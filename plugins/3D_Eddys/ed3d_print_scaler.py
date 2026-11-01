@@ -336,7 +336,7 @@ def write_ply(path, tris, name="scaled"):
 
 
 def write_3mf(path, tris, name="scaled"):
-    """A 3MF (what PrusaSlicer, Bambu, Cura ... like best): one object, units millimetres."""
+    """A 3MF (what most slicers like best): one object, units millimetres."""
     import zipfile
     from xml.sax.saxutils import escape
     pts, faces = weld(tris)
@@ -2243,7 +2243,7 @@ INFO_TEXT = (
     "(a canopy: each column, bracket, beam, valance ...), laid out side by side on the bed, 'Gap "
     "between parts' apart. In a 3MF they're separate objects in one file, so the slicer shows them as "
     "separate items. Other file types save one file per part, in a new folder.<br>"
-    "<b>Open in the slicer</b>: with the slicer's program set (e.g. PrusaSlicer's prusa-slicer.exe) "
+    "<b>Open in the slicer</b>: with the slicer's program set (the .exe file that starts it) "
     "all the files open in it at once; otherwise the file opens in whatever program Windows uses for "
     "that type of file.<br>"
     "<b>Keep this window open</b>: select the next part in the model and press the button again - "
@@ -2260,8 +2260,8 @@ INFO_TEXT = (
 
 # file types offered when saving: (label shown in the save box, extension, writer)
 EXPORTS = [("STL - binary (*.stl)", ".stl", write_stl),
-           ("3MF - PrusaSlicer, Bambu, Cura (*.3mf)", ".3mf", write_3mf),
-           ("OBJ - Rhino, ZBrush, Blender (*.obj)", ".obj", write_obj),
+           ("3MF - for slicers (*.3mf)", ".3mf", write_3mf),
+           ("OBJ - for 3D programs (*.obj)", ".obj", write_obj),
            ("PLY (*.ply)", ".ply", write_ply),
            ("STL - text / ASCII (*.stl)", ".stl", write_stl_ascii)]
 
@@ -2435,8 +2435,8 @@ class ScaleDialog(QDialog):
                                 "that's empty) in whatever program Windows opens that type of file with.")
         self.ed_slicer = QLineEdit(self.scales.get('slicer', ''))
         self.ed_slicer.setPlaceholderText("(Windows' default program)")
-        self.ed_slicer.setToolTip("Your slicer's program, e.g. C:\\Program Files\\Prusa3D\\PrusaSlicer\\"
-                                  "prusa-slicer.exe. With it set, separate files all open in it at once. "
+        self.ed_slicer.setToolTip("Your slicer's program (the .exe file that starts it, usually somewhere in "
+                                  "C:\\Program Files). With it set, separate files all open in it at once. "
                                   "Empty = the file opens in Windows' default program for it.")
         b_browse = QPushButton("...")
         b_browse.setToolTip("Find your slicer's program.")
