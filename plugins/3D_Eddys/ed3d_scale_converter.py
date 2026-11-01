@@ -15,6 +15,8 @@
 A toolbar along the top of the window that converts between real-world sizes
 (feet and inches, or mm) and model sizes (mm or inches) at a chosen model scale.
 Type in any box and the others follow. Ctrl+Alt+K shows or hides the toolbar.
+The small unit lists pick what is shown: real sizes in ft & in, mm, or both, and
+model sizes in mm, inches, or both. Your choice is remembered.
 """
 
 import os
@@ -35,7 +37,15 @@ SCALES = [("OO 1:76.2", 76.2), ("N (UK) 1:148", 148.0), ("N 1:160", 160.0),
           ("G 1:22.5", 22.5), ("1:24", 24.0), ("1:12", 12.0),
           ("1:50", 50.0), ("1:100", 100.0), ("Custom", None)]
 
-DEFAULTS = {'scale': 76.2, 'real_mm': 112.0, 'visible': True}
+REAL_MAX_MM = 10000000.0                     # 10 km: the biggest real size the boxes take
+REAL_MAX_FT = int(REAL_MAX_MM / MM_PER_INCH // 12) - 1   # leaves room for the inches
+
+# (shown in the list, saved in settings)
+REAL_UNITS = [("ft in", "ftin"), ("mm", "mm"), ("Both", "both")]
+MODEL_UNITS = [("mm", "mm"), ("in", "in"), ("Both", "both")]
+
+DEFAULTS = {'scale': 76.2, 'real_mm': 112.0, 'visible': True,
+            'real_units': 'both', 'model_units': 'both'}
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +81,13 @@ def save_settings(s):
             json.dump(s, f)
     except Exception:
         pass
+
+
+def update_settings(**changes):
+    """Changes only the settings named, keeping all the others."""
+    s = load_settings()
+    s.update(changes)
+    save_settings(s)
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +266,9 @@ def eddy_window(dlg, key, tips=None, place=True):
             pass
 # --- Eddy's 3D plugins: hover help and remembered window places (end) ---
 
-EDDY_TIPS = {'@cb_scale': "The model scale to convert to. Pick 'Custom' to type your own."}
+EDDY_TIPS = {'@cb_scale': "The model scale to convert to. Pick 'Custom' to type your own.",
+             '@cb_real_units': "Which real-world units to show: feet and inches, mm, or both.",
+             '@cb_model_units': "Which model units to show: mm, inches, or both."}
 EDDY_TIPS_END = None
 
 
@@ -284,6 +303,15 @@ class ConverterStrip(QWidget):
             row.addWidget(s)
             return s
 
+        def unit_list(options, current):
+            cb = QComboBox()
+            for text, key in options:
+                cb.addItem(text, key)
+            i = cb.findData(current)
+            cb.setCurrentIndex(i if i >= 0 else len(options) - 1)
+            row.addWidget(cb)
+            return cb
+
         label("Scale:")
         self.cb_scale = QComboBox()
         for text, n in SCALES:
@@ -302,17 +330,18 @@ class ConverterStrip(QWidget):
 
         label("Real:")
         self.sp_ft = QSpinBox()
-        self.sp_ft.setRange(0, 100000)
+        self.sp_ft.setRange(0, REAL_MAX_FT)          # matches the mm box's limit
         self.sp_ft.setSuffix(" ft")
         self.sp_ft.setKeyboardTracking(False)
         self.sp_ft.setButtonSymbols(QSpinBox.NoButtons)
         self.sp_ft.setMinimumWidth(55)
         row.addWidget(self.sp_ft)
         self.sp_in = dspin(0.0, 3, 11.999, " in", 70)
-        self.sp_real = dspin(cur['real_mm'], 1, 10000000.0, " mm", 90)
+        self.sp_real = dspin(cur['real_mm'], 1, REAL_MAX_MM, " mm", 90)
         self.sp_ft.setToolTip("Real-world size: feet")
         self.sp_in.setToolTip("Real-world size: inches")
         self.sp_real.setToolTip("Real-world size in millimetres")
+        self.cb_real_units = unit_list(REAL_UNITS, cur.get('real_units'))
         sep()
 
         label("Model:")
@@ -320,7 +349,11 @@ class ConverterStrip(QWidget):
         self.sp_model_in = dspin(0.0, 4, 10000.0, " in", 80)
         self.sp_model.setToolTip("Size on the model in millimetres")
         self.sp_model_in.setToolTip("Size on the model in inches")
+        self.cb_model_units = unit_list(MODEL_UNITS, cur.get('model_units'))
 
+        self.cb_real_units.currentIndexChanged.connect(self.units_changed)
+        self.cb_model_units.currentIndexChanged.connect(self.units_changed)
+        self.units_changed()
         self.cb_scale.currentIndexChanged.connect(self.scale_changed)
         self.sp_custom.valueChanged.connect(lambda *_: self.edited('real'))
         self.sp_ft.valueChanged.connect(lambda *_: self.edited('ftin'))
@@ -329,6 +362,18 @@ class ConverterStrip(QWidget):
         self.sp_model.valueChanged.connect(lambda *_: self.edited('model'))
         self.sp_model_in.valueChanged.connect(lambda *_: self.edited('model_in'))
         self.scale_changed()
+
+    def units_changed(self, *_):
+        """Shows only the boxes for the units picked. Hidden boxes still keep up,
+        so switching back shows the right numbers straight away."""
+        r = self.cb_real_units.currentData()
+        m = self.cb_model_units.currentData()
+        self.sp_ft.setVisible(r in ('ftin', 'both'))
+        self.sp_in.setVisible(r in ('ftin', 'both'))
+        self.sp_real.setVisible(r in ('mm', 'both'))
+        self.sp_model.setVisible(m in ('mm', 'both'))
+        self.sp_model_in.setVisible(m in ('in', 'both'))
+        update_settings(real_units=r, model_units=m)
 
     def scale(self):
         n = self.cb_scale.currentData()
@@ -369,8 +414,7 @@ class ConverterStrip(QWidget):
                 self.sp_model_in.setValue(real / n / MM_PER_INCH)
         finally:
             self._busy = False
-        save_settings({'scale': self.scale(), 'real_mm': self.sp_real.value(),
-                       'visible': load_settings().get('visible', True)})
+        update_settings(scale=self.scale(), real_mm=self.sp_real.value())
 
 
 # ---------------------------------------------------------------------------
@@ -413,9 +457,7 @@ def install_toolbar(win=None):
     win.addToolBar(Qt.TopToolBarArea, tb)
 
     def vis_changed(on):
-        s = load_settings()
-        s['visible'] = bool(on)
-        save_settings(s)
+        update_settings(visible=bool(on))
     tb.visibilityChanged.connect(vis_changed)
     tb.setVisible(bool(cur.get('visible', True)))
     return tb
@@ -447,7 +489,8 @@ except Exception:
 class ScaleConverterTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+K"
-    description = "Shows or hides the scale converter toolbar: real sizes (ft / in / mm) to model sizes."
+    description = ("Shows or hides the scale converter toolbar: real sizes (ft / in / mm) to "
+                   "model sizes, showing the units you pick.")
 
     def on_activate(self, viewport):
         win = None
