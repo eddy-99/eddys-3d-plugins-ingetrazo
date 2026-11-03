@@ -14,7 +14,7 @@
 3D Plugins Toolbar - one-click icons for your IngeTrazo plugins
 A toolbar along the top of the IngeTrazo window with a button for each of the
 3D plugins (Print Scaler, Brick & Block Studio, Loft, Gutters & Downpipes,
-Soil & Waste Pipes, Scale Converter, Period Windows, Roof Tiles, Notepad). Click a button to start
+Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
 that plugin. Right-click the toolbar to pick which buttons it shows, and whether
 they have labels. Ctrl+Alt+B shows or hides the toolbar.
 """
@@ -36,7 +36,7 @@ PLUGINS = [
     ("3D Soil & Waste Pipes", "Ctrl+Alt+W", "Soil pipes", "soil"),
     ("3D Loft", "Ctrl+Alt+L", "Loft", "loft"),
     ("3D Print Scaler", "Ctrl+Alt+P", "Scaler", "scaler"),
-    ("3D Scale Converter", "Ctrl+Alt+K", "Scale bar", "ruler"),
+    ("3D Scale Studio", "Ctrl+Alt+K", "Scale studio", "ruler"),
     ("3D Roof Tiles", "Ctrl+Alt+R", "Roof", "roof"),
     ("3D Notepad", "Ctrl+Alt+J", "Notes", "note"),
     ("3D Wood Planking", "Ctrl+Alt+O", "Planks", "planks"),
@@ -50,6 +50,10 @@ PLUGINS = [
 ]
 
 
+# plugins that have been renamed: (old name, new name), so saved button layouts still fit
+RENAMED = {"3D Scale Converter": "3D Scale Studio"}
+
+
 def load_settings():
     s = {'visible': True, 'hidden': [], 'labels': True}
     try:
@@ -57,6 +61,9 @@ def load_settings():
             s.update(json.load(f))
     except Exception:
         pass
+    for k in ('layout', 'hidden'):
+        if isinstance(s.get(k), list):
+            s[k] = [RENAMED.get(x, x) for x in s[k]]
     return s
 
 
@@ -450,32 +457,130 @@ def find_toolbar(win=None):
 
 DIVIDER = "|"          # in the saved layout: a divider between groups of buttons
 
+# The plugins sorted by what they're for: the Extensions menu's sub-menus, and the
+# ready-made 'one small toolbar for each kind' layout.
+GROUPS = [
+    ("Walls", ["3D Brick & Block Studio", "3D Wrap", "3D Wood Planking"]),
+    ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
+    ("Doors & windows", ["3D Period Doors", "3D Period Windows"]),
+    ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
+    ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
+    ("Shaping tools", ["3D Loft", "3D Centre Finder"]),
+    ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
+    ("Notes & set-up", ["3D Notepad", "3D Better Icons", "3D Plugins Toolbar"]),
+]
+MAIN_ID = "main"
 
-def current_layout():
-    """The saved order of the buttons (plugin names, with DIVIDER between groups).
-    Plugins that aren't in it yet (newly added ones) go on the end."""
+
+def _new_id(bars):
+    used = {b.get('id') for b in bars}
+    n = 1
+    while "bar%d" % n in used:
+        n += 1
+    return "bar%d" % n
+
+
+def current_bars():
+    """The saved toolbars: [{'id', 'name', 'items': [plugin names and DIVIDER], 'visible'}]. The
+    first is always the main one. Every plugin is on exactly one toolbar; new plugins go on the
+    end of the main one. An old single-toolbar layout becomes the main toolbar."""
     st = load_settings()
     known = [p[0] for p in PLUGINS]
-    lay = [x for x in (st.get('layout') or []) if x == DIVIDER or x in known]
+    bars = st.get('bars')
+    if not isinstance(bars, list) or not bars:
+        bars = [{'id': MAIN_ID, 'name': "3D Plugins", 'items': list(st.get('layout') or []),
+                 'visible': bool(st.get('visible', True))}]
+    out, seen = [], set()
+    for b in bars:
+        if not isinstance(b, dict):
+            continue
+        items = []
+        for x in b.get('items') or []:
+            x = RENAMED.get(x, x)
+            if x == DIVIDER:
+                if items and items[-1] != DIVIDER:
+                    items.append(x)
+            elif x in known and x not in seen:
+                seen.add(x)
+                items.append(x)
+        while items and items[-1] == DIVIDER:
+            items.pop()
+        out.append({'id': str(b.get('id') or _new_id(out)), 'name': str(b.get('name') or "Toolbar"),
+                    'items': items, 'visible': bool(b.get('visible', True))})
+    if not out or out[0]['id'] != MAIN_ID:
+        out.insert(0, {'id': MAIN_ID, 'name': "3D Plugins", 'items': [], 'visible': True})
     for name in known:
-        if name not in lay:
-            lay.append(name)
-    return lay
+        if name not in seen:
+            out[0]['items'].append(name)
+    return out
 
 
-def build_buttons(tb, win):
-    """(Re)makes the toolbar's buttons in the saved order, with dividers."""
+def current_layout():
+    """The main toolbar's buttons (kept for anything that still asks for the old single list)."""
+    return current_bars()[0]['items']
+
+
+def save_bars(bars):
+    s = load_settings()
+    s['bars'] = bars
+    s['layout'] = bars[0]['items']           # older copies of this plugin still find their buttons
+    save_settings(s)
+
+
+def grouped_bars():
+    """The ready-made layout: a small toolbar for each kind of plugin."""
+    known = [p[0] for p in PLUGINS]
+    bars, used = [], set()
+    for i, (title, names) in enumerate(GROUPS):
+        items = [n for n in names if n in known]
+        used.update(items)
+        if items:
+            bars.append({'id': MAIN_ID if not bars else "bar%d" % (i + 1), 'name': title, 'items': items,
+                         'visible': True})
+    rest = [n for n in known if n not in used]
+    if rest:
+        bars[0]['items'] += [DIVIDER] + rest
+    return bars
+
+
+def bar_object_name(bar_id):
+    return TOOLBAR_NAME if bar_id == MAIN_ID else "%s_%s" % (TOOLBAR_NAME, bar_id)
+
+
+def all_toolbars(win=None):
+    """Every one of these toolbars on the window: [(bar id, QToolBar)]."""
+    from PySide6.QtWidgets import QToolBar
+    win = win or _main_window()
+    if win is None:
+        return []
+    out = []
+    for tb in win.findChildren(QToolBar):
+        nm = tb.objectName() or ""
+        if nm == TOOLBAR_NAME:
+            out.append((MAIN_ID, tb))
+        elif nm.startswith(TOOLBAR_NAME + "_bar"):
+            out.append((nm[len(TOOLBAR_NAME) + 1:], tb))
+    return out
+
+
+def build_buttons(tb, win, items=None):
+    """(Re)makes a toolbar's buttons in the saved order, with dividers."""
     from PySide6.QtGui import QAction
+    if items is None:
+        bid = getattr(tb, '_bar_id', MAIN_ID)
+        items = next((b['items'] for b in current_bars() if b['id'] == bid), [])
     for a in list(tb.actions()):
         tb.removeAction(a)
         if getattr(a, '_plugin', None) or a.isSeparator():
             a.deleteLater()
     hidden = set(load_settings().get('hidden') or [])
     info = {p[0]: p for p in PLUGINS}
-    for entry in current_layout():
+    for entry in items:
         if entry == DIVIDER:
             sep = tb.addSeparator()
             sep.setObjectName(TOOLBAR_NAME + "_divider")
+            continue
+        if entry not in info:
             continue
         name, shortcut, label, icon = info[entry]
         act = QAction(make_icon(icon), label, tb)
@@ -487,142 +592,398 @@ def build_buttons(tb, win):
         act.setVisible(name not in hidden)
 
 
-def arrange_buttons(tb):
-    """A window to tick which buttons show, put them in order and group them with dividers."""
-    from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-                                   QPushButton, QLabel, QDialogButtonBox)
+def _make_bar(win, bar):
+    from PySide6.QtWidgets import QToolBar
+    from PySide6.QtCore import Qt, QSize
+    tb = QToolBar(bar['name'] if bar['id'] == MAIN_ID else "3D Plugins - " + bar['name'], win)
+    tb.setObjectName(bar_object_name(bar['id']))
+    tb._bar_id = bar['id']
+    tb.setIconSize(QSize(28, 28))
+    tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if load_settings().get('labels', True)
+                          else Qt.ToolButtonIconOnly)
+    win.addToolBar(Qt.TopToolBarArea, tb)
+    tb.setContextMenuPolicy(Qt.CustomContextMenu)
+    tb.customContextMenuRequested.connect(lambda pos, tb=tb: choose_buttons(tb, tb.mapToGlobal(pos)))
+
+    def vis_changed(on, bid=bar['id']):
+        if getattr(tb, '_quiet', False):
+            return
+        bars = current_bars()
+        for b in bars:
+            if b['id'] == bid:
+                b['visible'] = bool(on)
+        save_bars(bars)
+        if bid == MAIN_ID:
+            s = load_settings()
+            s['visible'] = bool(on)
+            save_settings(s)
+    tb.visibilityChanged.connect(vis_changed)
+    return tb
+
+
+def sync_toolbars(win=None):
+    """Makes the window's toolbars match the saved layout: new ones made, gone ones taken away,
+    every one's buttons and name brought up to date."""
+    win = win or _main_window()
+    if win is None:
+        return None
+    bars = current_bars()
+    have = dict(all_toolbars(win))
+    want = {b['id'] for b in bars}
+    for bid, tb in have.items():
+        if bid not in want:
+            tb._quiet = True
+            win.removeToolBar(tb)
+            tb.deleteLater()
+    main = None
+    broke = False
+    for b in bars:
+        tb = have.get(b['id'])
+        if tb is None:
+            if b['id'] != MAIN_ID and not broke:
+                # new small toolbars start on a row of their own (not squeezed beside the others);
+                # drag them by their handles to wherever you like
+                try:
+                    from PySide6.QtCore import Qt
+                    win.addToolBarBreak(Qt.TopToolBarArea)
+                except Exception:
+                    pass
+                broke = True
+            tb = _make_bar(win, b)
+        tb.setWindowTitle(b['name'] if b['id'] == MAIN_ID else "3D Plugins - " + b['name'])
+        build_buttons(tb, win, b['items'])
+        tb._quiet = True
+        tb.setVisible(bool(b.get('visible', True)) and bool(b['items']))
+        tb._quiet = False
+        if b['id'] == MAIN_ID:
+            main = tb
+    for _bid, tb in all_toolbars(win):
+        refresh_buttons(tb)
+    return main
+
+
+def arrange_buttons(tb=None):
+    """Arrange toolbars: every toolbar with its buttons in one list. Move buttons up and down
+    (and from one toolbar to the next), tick the ones to show, add dividers, make new small
+    toolbars, rename or delete them - or pick the ready-made layout."""
+    from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
+                                   QPushButton, QLabel, QDialogButtonBox, QComboBox, QInputDialog,
+                                   QLineEdit, QMessageBox)
     from PySide6.QtCore import Qt
-    win = tb.parent()
-    dlg = QDialog(tb)
+    win = (tb.parent() if tb is not None else None) or _main_window()
+    dlg = QDialog(win)
     dlg.setObjectName(TOOLBAR_NAME + "_arrange")
-    dlg.setWindowTitle("Arrange the 3D Plugins toolbar")
+    dlg.setWindowTitle("Arrange the 3D Plugins toolbars")
     lay = QVBoxLayout(dlg)
-    lay.addWidget(QLabel("Tick the buttons you want. Use Move up / Move down to put them in order, "
-                         "and Add divider to split them into groups."))
+    note = QLabel("Every toolbar and its buttons. Pick a button and move it up or down - past the top or "
+                  "bottom of a toolbar it goes onto the next one - or send it straight to another toolbar. "
+                  "Tick the buttons you want to see. Each toolbar can be dragged anywhere on the window by "
+                  "its handle.")
+    note.setWordWrap(True)
+    lay.addWidget(note)
     row = QHBoxLayout()
-    lst = QListWidget()
-    lst.setMinimumSize(300, 300)
-    row.addWidget(lst, 1)
+    tree = QTreeWidget()
+    tree.setHeaderHidden(True)
+    tree.setMinimumSize(340, 420)
+    try:
+        from PySide6.QtCore import QSize
+        tree.setIconSize(QSize(22, 22))
+    except Exception:
+        pass
+    row.addWidget(tree, 1)
     col = QVBoxLayout()
     b_up, b_down = QPushButton("Move up"), QPushButton("Move down")
-    b_div, b_rem, b_reset = QPushButton("Add divider"), QPushButton("Remove divider"), QPushButton("Reset")
-    for b in (b_up, b_down, b_div, b_rem, b_reset):
-        col.addWidget(b)
+    cb_to = QComboBox()
+    b_to = QPushButton("Move to toolbar")
+    b_div, b_rem = QPushButton("Add divider"), QPushButton("Remove divider")
+    b_new, b_ren, b_del = QPushButton("New toolbar..."), QPushButton("Rename toolbar..."), QPushButton("Delete toolbar")
+    b_bar_up, b_bar_down = QPushButton("Toolbar up"), QPushButton("Toolbar down")
+    b_one, b_grp = QPushButton("All on one toolbar"), QPushButton("A toolbar for each kind")
+    for w in (b_up, b_down, QLabel(""), cb_to, b_to, QLabel(""), b_div, b_rem, QLabel(""), b_new, b_ren, b_del,
+              b_bar_up, b_bar_down, QLabel("Ready-made:"), b_one, b_grp):
+        col.addWidget(w)
     col.addStretch(1)
     row.addLayout(col)
     lay.addLayout(row)
     bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
     lay.addWidget(bb)
     info = {p[0]: p for p in PLUGINS}
+    ROLE = Qt.UserRole
 
-    def add_item(entry, shown=True, at=None):
+    def bar_item(bar):
+        top = QTreeWidgetItem([bar['name'] + ("   (main toolbar)" if bar['id'] == MAIN_ID else "")])
+        top.setData(0, ROLE, ('bar', bar['id'], bar['name']))
+        f = top.font(0)
+        f.setBold(True)
+        top.setFont(0, f)
+        top.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        return top
+
+    def button_item(entry, shown=True):
         if entry == DIVIDER:
-            it = QListWidgetItem("-------------  divider  -------------")
+            it = QTreeWidgetItem(["-----------  divider  -----------"])
             it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         else:
-            it = QListWidgetItem(make_icon(info[entry][3]), entry)
+            it = QTreeWidgetItem([entry])
+            it.setIcon(0, make_icon(info[entry][3]))
             it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Checked if shown else Qt.Unchecked)
-        it.setData(Qt.UserRole, entry)
-        if at is None:
-            lst.addItem(it)
-        else:
-            lst.insertItem(at, it)
+            it.setCheckState(0, Qt.Checked if shown else Qt.Unchecked)
+        it.setData(0, ROLE, ('item', entry))
         return it
 
-    def fill(layout, hidden):
-        lst.clear()
-        for e in layout:
-            add_item(e, e not in hidden)
+    def fill(bars, hidden):
+        tree.clear()
+        for b in bars:
+            top = bar_item(b)
+            tree.addTopLevelItem(top)
+            for e in b['items']:
+                top.addChild(button_item(e, e not in hidden))
+            top.setExpanded(True)
+        fill_targets()
 
-    fill(current_layout(), set(load_settings().get('hidden') or []))
+    def fill_targets():
+        cb_to.clear()
+        for i in range(tree.topLevelItemCount()):
+            d = tree.topLevelItem(i).data(0, ROLE)
+            cb_to.addItem(d[2], i)
+
+    def picked():
+        it = tree.currentItem()
+        if it is None:
+            return None, None, None
+        par = it.parent()
+        if par is None:
+            return it, None, None
+        return it, par, par.indexOfChild(it)
 
     def move(d):
-        r = lst.currentRow()
-        if r < 0 or not (0 <= r + d < lst.count()):
+        it, par, i = picked()
+        if par is None:
             return
-        it = lst.takeItem(r)
-        lst.insertItem(r + d, it)
-        lst.setCurrentRow(r + d)
+        n = tree.indexOfTopLevelItem(par)
+        if 0 <= i + d < par.childCount():
+            par.takeChild(i)
+            par.insertChild(i + d, it)
+        elif d < 0 and n > 0:                      # off the top: onto the end of the toolbar before
+            par.takeChild(i)
+            tree.topLevelItem(n - 1).addChild(it)
+        elif d > 0 and n < tree.topLevelItemCount() - 1:   # off the bottom: onto the start of the next
+            par.takeChild(i)
+            tree.topLevelItem(n + 1).insertChild(0, it)
+        else:
+            return
+        tree.setCurrentItem(it)
+
+    def move_to():
+        it, par, i = picked()
+        n = cb_to.currentData()
+        if par is None or n is None:
+            return
+        dest = tree.topLevelItem(int(n))
+        if dest is par:
+            return
+        par.takeChild(i)
+        dest.addChild(it)
+        dest.setExpanded(True)
+        tree.setCurrentItem(it)
 
     def add_div():
-        r = lst.currentRow()
-        lst.setCurrentItem(add_item(DIVIDER, at=(r + 1) if r >= 0 else lst.count()))
+        it, par, i = picked()
+        if par is None and it is not None:          # a toolbar picked: divider at its end
+            it.addChild(button_item(DIVIDER))
+            return
+        if par is not None:
+            d = button_item(DIVIDER)
+            par.insertChild(i + 1, d)
+            tree.setCurrentItem(d)
 
     def rem_div():
-        r = lst.currentRow()
-        if r >= 0 and lst.item(r).data(Qt.UserRole) == DIVIDER:
-            lst.takeItem(r)
+        it, par, i = picked()
+        if par is not None and it.data(0, ROLE)[1] == DIVIDER:
+            par.takeChild(i)
 
+    def new_bar():
+        normal = QLineEdit.EchoMode.Normal if hasattr(QLineEdit, 'EchoMode') else QLineEdit.Normal
+        res = QInputDialog.getText(dlg, "New toolbar", "A name for the new toolbar (e.g. Walls):", normal, "")
+        name, ok = (res[0], res[1]) if isinstance(res, (tuple, list)) else (res, bool(res))
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        ids = [tree.topLevelItem(i).data(0, ROLE)[1] for i in range(tree.topLevelItemCount())]
+        top = bar_item({'id': _new_id([{'id': x} for x in ids]), 'name': name})
+        tree.addTopLevelItem(top)
+        top.setExpanded(True)
+        tree.setCurrentItem(top)
+        fill_targets()
+        cb_to.setCurrentIndex(cb_to.count() - 1)
+
+    def ren_bar():
+        it, par, _i = picked()
+        top = par or it
+        if top is None:
+            return
+        kind, bid, name = top.data(0, ROLE)
+        normal = QLineEdit.EchoMode.Normal if hasattr(QLineEdit, 'EchoMode') else QLineEdit.Normal
+        res = QInputDialog.getText(dlg, "Rename toolbar", "New name:", normal, name)
+        new, ok = (res[0], res[1]) if isinstance(res, (tuple, list)) else (res, bool(res))
+        new = (new or "").strip()
+        if ok and new:
+            top.setData(0, ROLE, (kind, bid, new))
+            top.setText(0, new + ("   (main toolbar)" if bid == MAIN_ID else ""))
+            fill_targets()
+
+    def del_bar():
+        it, par, _i = picked()
+        top = par or it
+        if top is None:
+            return
+        if top.data(0, ROLE)[1] == MAIN_ID:
+            QMessageBox.information(dlg, PLUGIN_NAME, "The main toolbar stays - its buttons can be moved to "
+                                                      "other toolbars, or hidden.")
+            return
+        main = tree.topLevelItem(0)
+        while top.childCount():
+            main.addChild(top.takeChild(0))       # its buttons go back to the main toolbar
+        tree.takeTopLevelItem(tree.indexOfTopLevelItem(top))
+        fill_targets()
+
+    def move_bar(d):
+        it, par, _i = picked()
+        top = par or it
+        if top is None:
+            return
+        n = tree.indexOfTopLevelItem(top)
+        if n == 0 or not (1 <= n + d < tree.topLevelItemCount()):
+            return                                  # the main toolbar stays first
+        exp = top.isExpanded()
+        tree.takeTopLevelItem(n)
+        tree.insertTopLevelItem(n + d, top)
+        top.setExpanded(exp)
+        tree.setCurrentItem(top)
+        fill_targets()
+
+    fill(current_bars(), set(load_settings().get('hidden') or []))
     b_up.clicked.connect(lambda: move(-1))
     b_down.clicked.connect(lambda: move(1))
+    b_to.clicked.connect(move_to)
     b_div.clicked.connect(add_div)
     b_rem.clicked.connect(rem_div)
-    b_reset.clicked.connect(lambda: fill([p[0] for p in PLUGINS], set()))
+    b_new.clicked.connect(new_bar)
+    b_ren.clicked.connect(ren_bar)
+    b_del.clicked.connect(del_bar)
+    b_bar_up.clicked.connect(lambda: move_bar(-1))
+    b_bar_down.clicked.connect(lambda: move_bar(1))
+    b_one.clicked.connect(lambda: fill([{'id': MAIN_ID, 'name': "3D Plugins", 'visible': True,
+                                         'items': [p[0] for p in PLUGINS]}], set()))
+    b_grp.clicked.connect(lambda: fill(grouped_bars(), set()))
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     eddy_window(dlg, PLUGIN_NAME + ' - arrange', EDDY_TIPS, place=True)  # eddy-window
     if dlg.exec() != QDialog.Accepted:
         return
-    layout, hidden = [], []
-    for i in range(lst.count()):
-        it = lst.item(i)
-        e = it.data(Qt.UserRole)
-        if layout and layout[-1] == DIVIDER and e == DIVIDER:
-            continue                         # two dividers together count as one
-        layout.append(e)
-        if e != DIVIDER and it.checkState() != Qt.Checked:
-            hidden.append(e)
+    old = {b['id']: b for b in current_bars()}
+    bars, hidden = [], []
+    for i in range(tree.topLevelItemCount()):
+        top = tree.topLevelItem(i)
+        _k, bid, name = top.data(0, ROLE)
+        items = []
+        for j in range(top.childCount()):
+            it = top.child(j)
+            e = it.data(0, ROLE)[1]
+            if e == DIVIDER and (not items or items[-1] == DIVIDER):
+                continue                         # two dividers together count as one
+            items.append(e)
+            if e != DIVIDER and it.checkState(0) != Qt.Checked:
+                hidden.append(e)
+        while items and items[-1] == DIVIDER:
+            items.pop()
+        bars.append({'id': bid, 'name': name, 'items': items,
+                     'visible': old.get(bid, {}).get('visible', True)})
+    if bars[0]['id'] != MAIN_ID:                 # (the main one can't be moved, but be sure)
+        bars.sort(key=lambda b: b['id'] != MAIN_ID)
+    save_bars(bars)
     s = load_settings()
-    s['layout'] = layout
     s['hidden'] = hidden
     save_settings(s)
-    build_buttons(tb, win)
-    refresh_buttons(tb)
+    sync_toolbars(win)
 
 
 def install_toolbar(win=None):
-    from PySide6.QtWidgets import QToolBar
-    from PySide6.QtGui import QAction
-    from PySide6.QtCore import Qt, QSize, QTimer
+    """Puts up the main toolbar and any small ones you've made (once). Returns the main one."""
     win = win or _main_window()
     if win is None:
         return None
     tb = find_toolbar(win)
     if tb is not None:
         return tb
-    tb = QToolBar("3D Plugins", win)
-    tb.setObjectName(TOOLBAR_NAME)
-    tb.setIconSize(QSize(28, 28))
     st = load_settings()
     if st.get('version') != 2:
         # buttons hidden by the old bug (a click unticked them) all come back once
         st['hidden'] = []
         st['version'] = 2
         save_settings(st)
-    tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if st.get('labels', True) else Qt.ToolButtonIconOnly)
-    build_buttons(tb, win)
-    win.addToolBar(Qt.TopToolBarArea, tb)
-    # right-click the toolbar to choose its buttons
-    tb.setContextMenuPolicy(Qt.CustomContextMenu)
-    tb.customContextMenuRequested.connect(lambda pos: choose_buttons(tb, tb.mapToGlobal(pos)))
-
-    def vis_changed(on):
-        s = load_settings()
-        s['visible'] = bool(on)
-        save_settings(s)
-    tb.visibilityChanged.connect(vis_changed)
-    tb.setVisible(bool(load_settings().get('visible', True)))
+    tb = sync_toolbars(win)
+    # where you left the toolbars: put back, and kept when IngeTrazo closes
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: restore_places(win))
+    try:
+        from PySide6.QtWidgets import QApplication
+        if not getattr(win, '_eddy_bars_hooked', False):
+            QApplication.instance().aboutToQuit.connect(lambda: keep_places(win))
+            win._eddy_bars_hooked = True
+    except Exception:
+        pass
     # the other plugins may still be loading: check which ones are there a little later
-    QTimer.singleShot(3000, lambda: refresh_buttons(tb))
+    QTimer.singleShot(3000, lambda: [refresh_buttons(t) for _b, t in all_toolbars(win)])
     return tb
 
 
+def keep_places(win):
+    """Notes where every toolbar is (IngeTrazo puts its own back; these come after it)."""
+    try:
+        s = load_settings()
+        s['places'] = bytes(win.saveState(7).toHex()).decode('ascii')
+        save_settings(s)
+    except Exception:
+        pass
+
+
+def restore_places(win):
+    """Puts the toolbars back where they were left - only when there are small toolbars of
+    your own (one toolbar needs nothing: IngeTrazo looks after it)."""
+    try:
+        if len(current_bars()) < 2:
+            return
+        hx = load_settings().get('places')
+        if hx:
+            from PySide6.QtCore import QByteArray
+            win.restoreState(QByteArray.fromHex(hx.encode('ascii')), 7)
+            for b in current_bars():          # restoring must not show a toolbar you've hidden
+                for bid, t in all_toolbars(win):
+                    if bid == b['id']:
+                        t._quiet = True
+                        t.setVisible(bool(b.get('visible', True)) and bool(b['items']))
+                        t._quiet = False
+    except Exception:
+        pass
+
+
+def set_all_visible(on, win=None):
+    bars = current_bars()
+    for b in bars:
+        b['visible'] = bool(on)
+    save_bars(bars)
+    for _bid, t in all_toolbars(win):
+        t._quiet = True
+        t.setVisible(bool(on) and bool(t.actions()))
+        t._quiet = False
+
+
 def choose_buttons(tb, where=None):
-    """A menu of all the plugins with a tick for each button shown, plus labels on/off."""
+    """Right-click on a toolbar: tick its buttons, labels on/off, arrange all the toolbars."""
     from PySide6.QtWidgets import QMenu
     from PySide6.QtGui import QCursor
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import Qt, QTimer
     menu = QMenu(tb)
     menu.setObjectName(TOOLBAR_NAME + "_menu")
     menu.addSection("Buttons on this toolbar")
@@ -652,28 +1013,30 @@ def choose_buttons(tb, where=None):
     labels.setChecked(tb.toolButtonStyle() != Qt.ToolButtonIconOnly)
 
     def all_on():
-        for act in tb.actions():
-            if getattr(act, '_plugin', None):
-                act.setVisible(True)
         s = load_settings()
         s['hidden'] = []
         save_settings(s)
+        for _b, t in all_toolbars(tb.parent()):
+            for act in t.actions():
+                if getattr(act, '_plugin', None):
+                    act.setVisible(True)
 
     def set_labels(on):
-        tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if on else Qt.ToolButtonIconOnly)
+        for _b, t in all_toolbars(tb.parent()):
+            t.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if on else Qt.ToolButtonIconOnly)
         s = load_settings()
         s['labels'] = bool(on)
         save_settings(s)
     show_all.triggered.connect(all_on)
     labels.toggled.connect(set_labels)
     menu.addSeparator()
-    arrange = menu.addAction("Arrange buttons...")
-    from PySide6.QtCore import QTimer
-    # opened once the menu has closed
+    arrange = menu.addAction("Arrange toolbars... (move buttons, make small toolbars)")
     arrange.triggered.connect(lambda: QTimer.singleShot(0, lambda: arrange_buttons(tb)))
     menu.addSeparator()
-    hide = menu.addAction("Hide this toolbar (Ctrl+Alt+B brings it back)")
+    hide = menu.addAction("Hide this toolbar")
     hide.triggered.connect(lambda: tb.setVisible(False))
+    hide_all = menu.addAction("Hide all the 3D Plugins toolbars (Ctrl+Alt+B brings them back)")
+    hide_all.triggered.connect(lambda: set_all_visible(False, tb.parent()))
     menu.exec(where or QCursor.pos())
     menu.deleteLater()            # don't leave it lying about once it's closed
 
@@ -706,6 +1069,58 @@ EDDY_EXTRA_NAMES = ()
 
 def _eddy_menu_key(a):
     return _clean(a.text()).replace("3d ", "", 1)
+
+
+def _eddy_leaf_actions(sub):
+    """Every plugin entry in the submenu, including those already in its kind sub-menus."""
+    out = []
+    kinds = set(id(m) for m in (getattr(sub, '_eddy_kinds', None) or {}).values())
+    for a in sub.actions():
+        if a.isSeparator():
+            continue
+        m = a.menu()
+        if m is not None and id(m) in kinds:
+            out += [x for x in m.actions() if not x.isSeparator()]
+        elif m is None:
+            out.append(a)
+    return out
+
+
+def _fill_eddy_groups(sub, acts):
+    """'3D Plugins by Eddy' > Walls, Roofs, Doors & windows ... each with its plugins in A-Z order;
+    a plugin not in any kind goes under 'More'."""
+    from PySide6.QtWidgets import QMenu
+    kinds = getattr(sub, '_eddy_kinds', None)
+    if kinds is None:
+        kinds = sub._eddy_kinds = {}
+    for a in list(sub.actions()):
+        sub.removeAction(a)
+    by = {}
+    for title, names in GROUPS:
+        for n in names:
+            by[_clean(n)] = title
+    sorted_in = {}
+    for a in acts:
+        sorted_in.setdefault(by.get(_clean(a.text()), "More"), []).append(a)
+    for title in [g[0] for g in GROUPS] + ["More"]:
+        lst = sorted_in.get(title)
+        if not lst:
+            continue
+        m = kinds.get(title)
+        if m is None:
+            m = kinds[title] = QMenu(title, sub)
+            m.setObjectName("EddyPluginsMenu_" + title)
+            m.setToolTipsVisible(True)
+        for x in list(m.actions()):
+            m.removeAction(x)
+        for a in sorted(lst, key=_eddy_menu_key):
+            m.addAction(a)
+            try:
+                if a.statusTip():
+                    a.setToolTip(a.statusTip())     # the pop-up note says what the plugin does
+            except Exception:
+                pass
+        sub.addMenu(m)
 
 
 def group_eddy_menu(win=None):
@@ -770,28 +1185,14 @@ def group_eddy_menu(win=None):
         m.removeAction(a)
         if m is not menu:
             left.add(m)
-    # tidy: one alphabetical list, the toolbar's own entry last
-    acts = [a for a in sub.actions() if not a.isSeparator()] + [a for _, a in found]
+    # tidy: the plugins sorted into sub-menus by kind (Walls, Roofs, Doors & windows ...)
+    acts = _eddy_leaf_actions(sub) + [a for _, a in found]
     seen, uniq = set(), []
     for a in acts:
         if id(a) not in seen:
             seen.add(id(a))
             uniq.append(a)
-    for a in sub.actions():
-        sub.removeAction(a)
-    tool = [a for a in uniq if _clean(a.text()) == _clean(PLUGIN_NAME)]
-    rest = sorted([a for a in uniq if a not in tool], key=_eddy_menu_key)
-    for a in rest:
-        sub.addAction(a)
-        try:
-            if a.statusTip():
-                a.setToolTip(a.statusTip())     # the pop-up note says what the plugin does
-        except Exception:
-            pass
-    if tool:
-        sub.addSeparator()
-        for a in tool:
-            sub.addAction(a)
+    _fill_eddy_groups(sub, uniq)
     # a category submenu that's now empty is hidden
     for m in left:
         try:
@@ -1009,12 +1410,20 @@ def eddy_window(dlg, key, tips=None, place=True):
             pass
 # --- Eddy's 3D plugins: hover help and remembered window places (end) ---
 
-EDDY_TIPS = {'OK': 'Keeps the new order of the buttons.',
+EDDY_TIPS = {'OK': 'Keeps the new layout of the toolbars.',
+ 'Move to toolbar': 'Sends the picked button to the toolbar chosen above.',
+ 'New toolbar...': 'Makes a new small toolbar (Walls, Roofs ...). Then move buttons onto it.',
+ 'Rename toolbar...': 'Gives the picked toolbar a new name.',
+ 'Delete toolbar': 'Takes the picked toolbar away; its buttons go back onto the main toolbar.',
+ 'Toolbar up': 'Moves the picked toolbar up the list.',
+ 'Toolbar down': 'Moves the picked toolbar down the list.',
+ 'All on one toolbar': 'Every button on the main toolbar again, in the first order.',
+ 'A toolbar for each kind': 'Ready-made: a small toolbar each for walls, roofs, doors and windows, pipes, '
+                            'railway and outside, shaping tools, scale and print, notes.',
  'Move up': 'Moves the picked button up the list (left along the toolbar).',
  'Move down': 'Moves the picked button down the list (right along the toolbar).',
  'Add divider': 'Puts a divider line on the toolbar after the picked button.',
  'Remove divider': 'Takes away the picked divider.',
- 'Reset': 'Puts the buttons back in their first order, with no dividers.',
  'Cancel': 'Leaves the buttons as they were.'}
 EDDY_TIPS_END = None
 
@@ -1022,7 +1431,8 @@ EDDY_TIPS_END = None
 class PluginsToolbarTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+B"
-    description = "Shows or hides the toolbar with a button for each 3D plugin."
+    description = ("Shows or hides the 3D Plugins toolbars: a button for each plugin, on one toolbar or on "
+                   "small toolbars of your own (right-click a toolbar to arrange them).")
 
     def on_activate(self, viewport):
         win = None
@@ -1032,13 +1442,15 @@ class PluginsToolbarTool(Tool):
             pass
         tb = find_toolbar(win) or find_toolbar()
         if tb is None:
-            tb = install_toolbar(win)
-            if tb is not None:
-                tb.setVisible(True)
+            install_toolbar(win)
+            set_all_visible(True, win)
             return
-        tb.setVisible(not tb.isVisible())
-        if tb.isVisible():
-            refresh_buttons(tb)
+        bars = all_toolbars(win)
+        on = not any(t.isVisible() for _b, t in bars)
+        set_all_visible(on, win)
+        if on:
+            for _b, t in bars:
+                refresh_buttons(t)
 
     def on_deactivate(self, viewport):
         pass
@@ -1049,3 +1461,4 @@ def run(viewport=None):
     tb = find_toolbar() or install_toolbar()
     if tb is not None:
         tb.setVisible(True)
+

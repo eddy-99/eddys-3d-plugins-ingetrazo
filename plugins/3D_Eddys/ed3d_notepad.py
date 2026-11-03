@@ -14,7 +14,9 @@
 3D Notepad - a jotting pad that stays on screen in IngeTrazo
 A small note window that floats over IngeTrazo and saves itself as you type.
 Keep several notes (one text file each), and use the converter along the bottom
-to turn real sizes into model sizes at any scale and add them to the note.
+to turn real sizes into model sizes (or model sizes back into real ones) at any
+scale and add them to the note where your cursor is. Highlight text in colours to
+pick out groups of notes.
 Ctrl+Alt+J shows or hides it.
 """
 
@@ -66,9 +68,14 @@ def _old_starter():
     return "\n".join(lines)
 
 
+HIGHLIGHT_DIR = os.path.join(NOTES_DIR, "Highlights")
+HIGHLIGHTS = [("Yellow", "#fff176"), ("Green", "#a5d6a7"), ("Blue", "#90caf9"),
+              ("Pink", "#f48fb1"), ("Orange", "#ffcc80"), ("Purple", "#ce93d8")]
+
+
 def load_settings():
     s = {'note': FIRST_NOTE, 'geometry': None, 'scale_name': "1:80", 'custom': MY_SCALE,
-         'font': 10, 'visible': False}
+         'font': 10, 'visible': False, 'highlight': HIGHLIGHTS[0][1]}
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             s.update(json.load(f))
@@ -114,14 +121,44 @@ def write_note(name, text):
         f.write(text)
 
 
+# Highlights are kept beside the notes (in a Highlights folder), so the notes themselves
+# stay plain text files you can open anywhere.
+def highlight_path(name):
+    return os.path.join(HIGHLIGHT_DIR, _safe(name) + ".json")
+
+
+def read_highlights(name):
+    try:
+        with open(highlight_path(name), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return [(int(a), int(b), str(c)) for a, b, c in d.get('marks', [])]
+    except Exception:
+        return []
+
+
+def write_highlights(name, marks):
+    p = highlight_path(name)
+    try:
+        if not marks:
+            if os.path.exists(p):
+                os.remove(p)
+            return
+        os.makedirs(HIGHLIGHT_DIR, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({'marks': [list(m) for m in marks]}, f)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # The notepad window
 # ---------------------------------------------------------------------------
 def make_window(parent):
     from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QComboBox,
                                    QPushButton, QLabel, QLineEdit, QDoubleSpinBox, QSpinBox,
-                                   QInputDialog, QMessageBox)
-    from PySide6.QtGui import QFontDatabase, QTextCursor
+                                   QInputDialog, QMessageBox, QToolButton, QMenu)
+    from PySide6.QtGui import (QFontDatabase, QTextCursor, QTextCharFormat, QColor, QPixmap,
+                               QIcon, QAction)
     from PySide6.QtCore import Qt, QTimer
 
     class NotepadWindow(QDialog):
@@ -147,6 +184,24 @@ def make_window(parent):
             b_dir = QPushButton("Folder")
             for b in (b_new, b_ren, b_del, b_dir):
                 top.addWidget(b)
+            # highlighter: pick some text, then click to colour it
+            self.b_hl = QToolButton()
+            self.b_hl.setText("Highlight")
+            self.b_hl.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self.b_hl.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            menu = QMenu(self.b_hl)
+            for text, col in HIGHLIGHTS:
+                act = QAction(self.swatch(col), text, menu)
+                act.triggered.connect(lambda _=False, c=col: self.pick_highlight(c))
+                menu.addAction(act)
+            menu.addSeparator()
+            act = QAction("Clear highlight", menu)
+            act.triggered.connect(self.clear_highlight)
+            menu.addAction(act)
+            self.b_hl.setMenu(menu)
+            self.hl_colour = self.st.get('highlight') or HIGHLIGHTS[0][1]
+            self.b_hl.setIcon(self.swatch(self.hl_colour))
+            top.addWidget(self.b_hl)
             top.addWidget(QLabel("Text size:"))
             self.sp_font = QSpinBox()
             self.sp_font.setRange(7, 24)
@@ -164,6 +219,7 @@ def make_window(parent):
             self.le_label = QLineEdit()
             self.le_label.setPlaceholderText("What is it? e.g. Real wall thickness")
             conv.addWidget(self.le_label, 2)
+            # type in either box: the real size or the model size; the other one follows
             self.sp_real = QDoubleSpinBox()
             self.sp_real.setDecimals(1)
             self.sp_real.setRange(0.0, 1000000.0)
@@ -184,9 +240,12 @@ def make_window(parent):
             self.sp_custom.setValue(float(self.st.get('custom', MY_SCALE) or MY_SCALE))
             self.sp_custom.setToolTip("Your own scale: pick 'Custom' in the list, then type it here.")
             conv.addWidget(self.sp_custom)
-            self.lbl_model = QLabel()
-            self.lbl_model.setMinimumWidth(90)
-            conv.addWidget(self.lbl_model)
+            self.sp_model = QDoubleSpinBox()
+            self.sp_model.setDecimals(2)
+            self.sp_model.setRange(0.0, 1000000.0)
+            self.sp_model.setSuffix(" mm model")
+            conv.addWidget(self.sp_model)
+            self._typed_model = False          # which box was typed in last
             b_add = QPushButton("Add to note")
             conv.addWidget(b_add)
             lay.addLayout(conv)
@@ -207,7 +266,10 @@ def make_window(parent):
             b_del.clicked.connect(self.delete_note)
             b_dir.clicked.connect(self.open_folder)
             b_add.clicked.connect(self.add_line)
-            self.sp_real.valueChanged.connect(self.update_model)
+            self.b_hl.clicked.connect(self.highlight)
+            self.ed.cursorPositionChanged.connect(self.tidy_typing_format)
+            self.sp_real.valueChanged.connect(self.real_typed)
+            self.sp_model.valueChanged.connect(self.model_typed)
             self.cb_scale.currentIndexChanged.connect(self.update_model)
             self.sp_custom.valueChanged.connect(self.update_model)
             self.sp_font.valueChanged.connect(self.set_font)
@@ -248,6 +310,7 @@ def make_window(parent):
             self.current = name
             self._loading = True
             self.ed.setPlainText(read_note(name) or "")
+            self.apply_highlights(read_highlights(name))
             self._loading = False
             self.ed.moveCursor(QTextCursor.End)
             self.st['note'] = name
@@ -265,6 +328,7 @@ def make_window(parent):
                 return
             try:
                 write_note(self.current, self.ed.toPlainText())
+                write_highlights(self.current, self.get_highlights())
                 self.lbl_status.setText("Saved in: %s" % note_path(self.current))
             except Exception as e:
                 self.lbl_status.setText("Could not save: %s" % e)
@@ -296,6 +360,11 @@ def make_window(parent):
             self.save_now()
             try:
                 os.replace(note_path(old), note_path(name))
+                if os.path.exists(highlight_path(old)):
+                    try:
+                        os.replace(highlight_path(old), highlight_path(name))
+                    except Exception:
+                        pass
             except Exception as e:
                 QMessageBox.warning(self, PLUGIN_NAME, "Could not rename it:\n%s" % e)
                 return
@@ -313,6 +382,7 @@ def make_window(parent):
                 os.remove(note_path(name))
             except Exception:
                 pass
+            write_highlights(name, [])
             self.current = None
             self.refresh_notes()
 
@@ -335,26 +405,136 @@ def make_window(parent):
             text = self.cb_scale.currentText()
             return n, (text if text.startswith("1:") else text.split(" ")[0])
 
+        def real_mm(self):
+            """The real size in mm (worked out from the model size if that was typed in)."""
+            if self._typed_model:
+                return self.sp_model.value() * self.scale()[0]
+            return self.sp_real.value()
+
+        def real_typed(self, *_):
+            self._typed_model = False
+            self.update_model()
+
+        def model_typed(self, *_):
+            self._typed_model = True
+            self.update_model()
+
         def update_model(self, *_):
+            """Fills in the other box: the model size from the real one, or the other way."""
             custom = self.cb_scale.currentData() is None
-            self.sp_custom.setEnabled(custom)
+            self.sp_custom.setVisible(custom)
             n, _ = self.scale()
-            self.lbl_model.setText("= %.2f mm model" % (self.sp_real.value() / n))
+            if self._typed_model:
+                self.sp_real.blockSignals(True)
+                self.sp_real.setValue(self.sp_model.value() * n)
+                self.sp_real.blockSignals(False)
+            else:
+                self.sp_model.blockSignals(True)
+                self.sp_model.setValue(self.sp_real.value() / n)
+                self.sp_model.blockSignals(False)
             self.st['scale_name'] = self.cb_scale.currentText()
             self.st['custom'] = self.sp_custom.value()
             save_settings(self.st)
 
         def add_line(self):
+            """Puts the line in the note where the cursor is (on a line of its own)."""
             label = self.le_label.text().strip() or "Size"
             n, name = self.scale()
-            line = note_line(label, self.sp_real.value(), name, n)
-            text = self.ed.toPlainText()
-            if text and not text.endswith("\n"):
+            line = note_line(label, self.real_mm(), name, n)
+            cur = self.ed.textCursor()
+            cur.clearSelection()
+            if cur.positionInBlock() > 0:
+                # part way along a line: the new line goes after that line
+                cur.movePosition(QTextCursor.MoveOperation.EndOfBlock)
                 line = "\n" + line
-            self.ed.moveCursor(QTextCursor.End)
-            self.ed.insertPlainText(line + "\n")
+            elif cur.block().length() > 1:
+                # at the start of a line with writing on it: the new line goes above it
+                line = line + "\n"
+            cur.insertText(line, QTextCharFormat())     # not highlighted
+            self.ed.setTextCursor(cur)
+            self.ed.setFocus()
             self.le_label.clear()
             self.save_now()
+
+        # ---- highlighter ----
+        @staticmethod
+        def swatch(col):
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(col))
+            return QIcon(pm)
+
+        def pick_highlight(self, col):
+            self.hl_colour = col
+            self.b_hl.setIcon(self.swatch(col))
+            self.st['highlight'] = col
+            save_settings(self.st)
+            self.highlight()
+
+        def highlight(self):
+            cur = self.ed.textCursor()
+            if not cur.hasSelection():
+                self.lbl_status.setText("Select some text first, then click Highlight.")
+                return
+            f = QTextCharFormat()
+            f.setBackground(QColor(self.hl_colour))
+            f.setForeground(QColor("#000000"))           # readable on a dark theme too
+            cur.mergeCharFormat(f)
+            self.typed()
+
+        def clear_highlight(self):
+            cur = self.ed.textCursor()
+            if not cur.hasSelection():
+                self.lbl_status.setText("Select the highlighted text first, then Clear highlight.")
+                return
+            cur.setCharFormat(QTextCharFormat())
+            self.typed()
+
+        def tidy_typing_format(self):
+            """Typing straight after a highlight isn't highlighted (only typing inside one)."""
+            cur = self.ed.textCursor()
+            if cur.hasSelection() or not self._has_bg(cur.charFormat()):
+                return
+            nxt = QTextCursor(cur)
+            if cur.atBlockEnd() or not nxt.movePosition(QTextCursor.MoveOperation.NextCharacter) \
+                    or not self._has_bg(nxt.charFormat()):
+                self.ed.setCurrentCharFormat(QTextCharFormat())
+
+        @staticmethod
+        def _has_bg(fmt):
+            return fmt.background().style() != Qt.BrushStyle.NoBrush
+
+        def get_highlights(self):
+            """[(start, length, colour)] for every highlighted run in the note."""
+            marks = []
+            b = self.ed.document().begin()
+            while b.isValid():
+                for r in b.textFormats():
+                    br = r.format.background()
+                    if br.style() != Qt.BrushStyle.NoBrush and r.length > 0:
+                        col = br.color().name()
+                        start = b.position() + r.start
+                        if marks and marks[-1][2] == col and marks[-1][0] + marks[-1][1] == start:
+                            marks[-1] = (marks[-1][0], marks[-1][1] + r.length, col)
+                        else:
+                            marks.append((start, r.length, col))
+                b = b.next()
+            return marks
+
+        def apply_highlights(self, marks):
+            end = max(0, self.ed.document().characterCount() - 1)
+            for start, length, col in marks:
+                a, z = min(start, end), min(start + length, end)
+                if z <= a:
+                    continue
+                cur = QTextCursor(self.ed.document())
+                cur.setPosition(a)
+                cur.setPosition(z, QTextCursor.MoveMode.KeepAnchor)
+                f = QTextCharFormat()
+                f.setBackground(QColor(col))
+                f.setForeground(QColor("#000000"))
+                cur.mergeCharFormat(f)
+            # undoing shouldn't take the saved highlights off
+            self.ed.document().clearUndoRedoStacks()
 
         def set_font(self, size):
             f = QFontDatabase.systemFont(QFontDatabase.FixedFont)   # columns line up
@@ -584,17 +764,21 @@ EDDY_TIPS = {'@cb_note': "The note you're looking at. Pick another note to open 
  '@ed': 'Jot your notes here - they save themselves as you type.',
  '@le_label': "What the size is, e.g. 'Real wall thickness'. It goes in the note with the "
               'size.',
- '@sp_real': 'A real, full-size measurement in mm.',
+ '@sp_real': 'A real, full-size measurement in mm. Type it here and the model size '
+             'is worked out, or type the model size and this fills in.',
  '@cb_scale': 'The scale to turn it into.',
- '@lbl_model': 'The model size at that scale.',
- 'Add to note': 'Adds the real size and the model size to the note.'}
+ '@sp_model': 'The model size in mm at that scale. Type it here and the real size '
+              'is worked out, or type the real size and this fills in.',
+ '@b_hl': 'Select some text, then click to highlight it, to show groups of notes. '
+          'The arrow picks the colour, or clears a highlight.',
+ 'Add to note': 'Puts the real size and the model size in the note where your cursor is.'}
 EDDY_TIPS_END = None
 
 
 class NotepadTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+J"
-    description = "A note pad that stays on screen and saves itself, with a real-to-model size converter."
+    description = "A note pad that stays on screen and saves itself, with a real/model size converter and a highlighter."
 
     _window = None
 

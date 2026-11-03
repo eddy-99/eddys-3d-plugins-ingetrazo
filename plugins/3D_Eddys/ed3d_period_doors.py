@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "1"             # shown in the window title, so you can tell which file is loaded
+VERSION = "2"             # shown in the window title, so you can tell which file is loaded
 PRESET_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Doors")
 SCALE = 0.001            # sizes are in mm; IngeTrazo stores geometry in metres
 
@@ -460,6 +460,40 @@ def fit_shape(poly, top, rise):
     return {'kind': 'poly', 'arcs': [], 'ys': None, 'cx': (x0 + x1) / 2, 'poly': poly,
             'box': (x0, x1, y0, y1),
             'flat_bottom': sum(1 for p in poly if abs(p[1] - y0) < tol) >= 2}
+
+
+def fit_door(poly, v):
+    """The outline of the whole door. With a fanlight, the face you drew is the door
+    itself and the fanlight is an extra piece on top of it (square, or round, segmental or
+    pointed if that top shape is chosen). If you drew the arch yourself (a round-topped
+    face with 'Follow the face shape'), the fanlight fills that arch as before."""
+    if v['fanlight'] == 'none' or v['style'] == 'sliding':
+        return fit_shape(poly, v['top'], v['rise'])
+    drawn = fit_shape(poly, 'face', v['rise'])
+    if drawn['kind'] not in ('flat',):
+        if v['top'] == 'face' or drawn['kind'] in ('poly', 'circle'):
+            return drawn
+    x0, x1, y0, y1 = drawn['box']
+    w = x1 - x0
+    fw = v['frame_w']
+    tw = max(5.0, v['transom_w'])
+    kind = 'flat' if v['top'] == 'face' else v['top']
+    yt = y1 - fw + tw / 2              # transom where the door's frame head would be
+    r = v['rise']
+    if kind == 'semi':
+        top = yt + w / 2
+    elif kind == 'segment':
+        r = max(1.0, min(v['rise'], w / 2))
+        top = yt + r
+    elif kind == 'gothic':
+        top = yt + w * math.sin(math.pi / 3)
+    else:
+        kind = 'flat'
+        top = y1 + tw + max(50.0, v['fan_h'])
+    sh = make_shape(kind, x0, x1, y0, top, r)
+    sh['fan_yt'] = yt
+    sh['door_top'] = y1
+    return sh
 
 
 # ---------------------------------------------------------------------------
@@ -975,7 +1009,9 @@ def build_door(sh, v):
     yt = None
     if v['fanlight'] != 'none':
         tw = max(5.0, v['transom_w'])
-        if sh.get('ys') is not None and oy0 + 400 < sh['ys'] < oy1:
+        if sh.get('fan_yt') is not None:
+            yt = sh['fan_yt']                  # the fanlight sits on top of the door
+        elif sh.get('ys') is not None and oy0 + 400 < sh['ys'] < oy1:
             yt = sh['ys']
         else:
             yt = oy1 - max(50.0, v['fan_h']) - tw / 2
@@ -1498,6 +1534,12 @@ def find_back(mesh, pts, n, exclude=None):
         if depth <= 1e-7 or depth > WALL_MAX or (best is not None and depth >= best[1]):
             continue
         back = [v_sub(p, v_mul(n, depth)) for p in pts]
+        # test points a hair inside the outline, so a door standing on the bottom edge of
+        # the wall (its corners right on the edge of the back face) still counts as on it
+        c = v_mul(back[0], 0.0)
+        for p in back:
+            c = v_add(c, v_mul(p, 1.0 / len(back)))
+        back = [v_add(p, v_mul(v_sub(c, p), 0.002)) for p in back]
         if not all(_pip3(p, fp, U, V) for p in back):
             continue
         holes = [[p for p in (_pos(v) for v in _items(h)) if p is not None]
@@ -1597,6 +1639,362 @@ def cut_through(scene, mesh, info, host=None, outline=None):
             pass
     mesh.add_hole(info['back'], [QVector3D(*p) for p in reversed(inner)])
     return outline is not None
+
+
+# ---------------------------------------------------------------------------
+# Cutting a door through the wall when the door reaches the edge of the wall face
+# (a door standing on the bottom of the wall, or a head that goes above the top):
+# every wall face the opening passes through has the opening taken out of it.
+# ---------------------------------------------------------------------------
+def _in_loop(q, loop):
+    inside = False
+    j = len(loop) - 1
+    for i in range(len(loop)):
+        (xi, yi), (xj, yj) = loop[i], loop[j]
+        if (yi > q[1]) != (yj > q[1]) and q[0] < (xj - xi) * (q[1] - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _in_region(q, region):
+    """region = (outer, [holes])."""
+    outer, holes = region
+    return _in_loop(q, outer) and not any(_in_loop(q, h) for h in holes)
+
+
+def _split_edge(a, b, others, tol):
+    """The edge a-b cut at the points where it meets the edges of `others`: [(p, q)...]."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    if L2 < tol * tol:
+        return []
+    ts = [0.0, 1.0]
+    for op in others:
+        m = len(op)
+        for j in range(m):
+            c, d = op[j], op[(j + 1) % m]
+            ex, ey = d[0] - c[0], d[1] - c[1]
+            # the other edge's ends lying on this edge
+            for pt in (c, d):
+                t = ((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy) / L2
+                if 0.0 < t < 1.0:
+                    px, py = a[0] + dx * t, a[1] + dy * t
+                    if (px - pt[0]) ** 2 + (py - pt[1]) ** 2 < tol * tol:
+                        ts.append(t)
+            den = dx * ey - dy * ex
+            if abs(den) < 1e-12:
+                continue
+            t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / den
+            u = ((c[0] - a[0]) * dy - (c[1] - a[1]) * dx) / den
+            if 0.0 < t < 1.0 and -1e-9 <= u <= 1.0 + 1e-9:
+                ts.append(t)
+    ts.sort()
+    out = []
+    for t0, t1 in zip(ts[:-1], ts[1:]):
+        if (t1 - t0) * math.sqrt(L2) > tol:
+            out.append(((a[0] + dx * t0, a[1] + dy * t0), (a[0] + dx * t1, a[1] + dy * t1)))
+    return out
+
+
+def _split_segments(loops, others, tol):
+    """Every edge of `loops`, cut at the points where it meets the edges of `others`."""
+    segs = []
+    for lp in loops:
+        n = len(lp)
+        for i in range(n):
+            segs += _split_edge(lp[i], lp[(i + 1) % n], others, tol)
+    return segs
+
+
+def poly_minus(region, cut, tol=1e-3):
+    """2D: region (outer, [holes]) take away the polygon `cut`. Returns a list of
+    (outer, [holes]) pieces, counter-clockwise outers and clockwise holes; [] if nothing
+    is left. Copes with edges that lie along each other (a door on the bottom edge)."""
+    outer, holes = region
+    sub_loops = [outer] + list(holes)
+    segs = _split_segments(sub_loops, [cut], tol) + _split_segments([cut], sub_loops, tol)
+    eps = tol * 5.0
+
+    def inside(q):
+        return _in_region(q, region) and not _in_loop(q, cut)
+
+    def key(p):
+        return (round(p[0] / tol), round(p[1] / tol))
+
+    pts = {}
+    out_edges = {}
+    seen = set()
+    for a, b in segs:
+        ka, kb = key(a), key(b)
+        if ka == kb or (ka, kb) in seen or (kb, ka) in seen:
+            continue
+        seen.add((ka, kb))
+        mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy)
+        nx, ny = -dy / L * eps, dx / L * eps
+        left, right = inside((mx + nx, my + ny)), inside((mx - nx, my - ny))
+        if left == right:
+            continue
+        if right:
+            a, b, ka, kb = b, a, kb, ka
+        pts.setdefault(ka, a)
+        pts.setdefault(kb, b)
+        out_edges.setdefault(ka, []).append(kb)
+    loops = []
+    while any(out_edges.values()):
+        start = next(k for k, v in out_edges.items() if v)
+        loop, prev, cur = [start], None, start
+        for _guard in range(100000):
+            nxt = out_edges.get(cur) or []
+            if not nxt:
+                break
+            if len(nxt) > 1 and prev is not None:
+                # where two pieces touch at a corner: take the sharpest right turn
+                pa, pc = pts[prev], pts[cur]
+                ang_in = math.atan2(pc[1] - pa[1], pc[0] - pa[0])
+
+                def turn(k):
+                    q = pts[k]
+                    a = math.atan2(q[1] - pc[1], q[0] - pc[0]) - ang_in
+                    while a <= -math.pi:
+                        a += 2 * math.pi
+                    while a > math.pi:
+                        a -= 2 * math.pi
+                    return a
+                k2 = min(nxt, key=turn)
+            else:
+                k2 = nxt[0]
+            nxt.remove(k2)
+            prev, cur = cur, k2
+            if cur == start:
+                break
+            loop.append(cur)
+        if len(loop) >= 3:
+            loops.append([pts[k] for k in loop])
+    outs, hls = [], []
+    for lp in loops:
+        c = clean(lp, tol * 0.1)
+        if c is None:
+            continue
+        if area2(lp) > 0:
+            outs.append(c)
+        else:
+            hls.append(c[::-1])                     # clockwise
+    pieces = [(o, []) for o in outs]
+    for h in hls:
+        q = h[0]
+        best = None
+        for k, (o, _) in enumerate(pieces):
+            # a point just inside the hole edge, outside the hole itself
+            if _in_loop(((h[0][0] + h[1][0]) / 2, (h[0][1] + h[1][1]) / 2), o) or _in_loop(q, o):
+                if best is None or abs(area2(o)) < abs(area2(pieces[best][0])):
+                    best = k
+        if best is not None:
+            pieces[best][1].append(h)
+    return pieces
+
+
+def _region_area(region):
+    outer, holes = region
+    return abs(area2(outer)) - sum(abs(area2(h)) for h in holes)
+
+
+def _line_ranges(cut, a, b, c, tol):
+    """Where the line a*u + b*v = c crosses the polygon `cut` (counting an edge lying
+    along the line): [(s0, s1)] along the line direction (-b, a), from the foot point."""
+    L = math.hypot(a, b)
+    a, b, c = a / L, b / L, c / L
+    ranges = []
+    for off in (tol * 4, -tol * 4):
+        cc = c + off
+        ss = []
+        n = len(cut)
+        for i in range(n):
+            p, q = cut[i], cut[(i + 1) % n]
+            fp, fq = a * p[0] + b * p[1] - cc, a * q[0] + b * q[1] - cc
+            if (fp > 0) != (fq > 0):
+                t = fp / (fp - fq)
+                x, y = p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t
+                ss.append(-b * x + a * y)
+        ss.sort()
+        ranges += [(ss[i], ss[i + 1]) for i in range(0, len(ss) - 1, 2)]
+    ranges.sort()
+    merged = []
+    for r in ranges:
+        if merged and r[0] <= merged[-1][1] + tol:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], r[1]))
+        else:
+            merged.append(r)
+    return [r for r in merged if r[1] - r[0] > tol]
+
+
+def _face_loops(f):
+    outer = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+    holes = []
+    for h in _items(getattr(f, 'holes', None)):
+        hp = [p for p in (_pos(v) for v in _items(h)) if p is not None]
+        if len(hp) >= 3:
+            holes.append(hp)
+    return outer, holes
+
+
+def cut_through_all(scene, mesh, info, outline):
+    """Cuts the opening (outline: world points on the front of the wall) right through
+    the wall, taking it out of the front and back faces and out of any face of the wall
+    it passes through (the bottom of the wall under a door, the top over a tall head).
+    Then lines the opening with sides where there is wall beside it."""
+    n, depth = info['n'], info['depth']
+    P0 = outline[0]
+    U = v_norm(v_sub(outline[1], outline[0]))
+    V = v_cross(n, U)
+    D = depth / SCALE
+    tol = 1e-3                                     # mm
+
+    def uv(p):
+        d = v_sub(p, P0)
+        return (v_dot(d, U) / SCALE, v_dot(d, V) / SCALE)
+
+    def dn(p):
+        return v_dot(v_sub(p, P0), n) / SCALE
+
+    cut = clean([uv(p) for p in outline], 1e-6)
+    if cut is None:
+        raise ValueError("The opening has no area.")
+    cx0, cx1, cy0, cy1 = bbox(cut)
+    front_regions = []
+    jobs = []                    # (face, to_world, region, cut polygons in the face's 2D)
+    for f in list(_items(getattr(mesh, 'faces', None))):
+        outer, holes = _face_loops(f)
+        if len(outer) < 3:
+            continue
+        nf = _newell(outer)
+        k = v_dot(nf, n)
+        ds = [dn(p) for p in outer]
+        if abs(k) > 0.999:
+            d0 = ds[0]
+            on_front = k > 0 and abs(d0) < 0.01
+            on_back = k < 0 and abs(d0 + D) < 0.01
+            if not (on_front or on_back):
+                continue
+            sgn = 1.0 if k > 0 else -1.0           # keep the face counter-clockwise in 2D
+            o2 = [(x, sgn * y) for x, y in (uv(p) for p in outer)]
+            h2 = [[(x, sgn * y) for x, y in (uv(p) for p in h)] for h in holes]
+            region = (o2, h2)
+            if on_front:
+                front_regions.append(([(x, y) for x, y in (uv(p) for p in outer)],
+                                      [[uv(p) for p in h] for h in holes]))
+            fx0, fx1, fy0, fy1 = bbox(o2)
+            c2 = clean([(x, sgn * y) for x, y in cut], 1e-6)
+            bx0, bx1, by0, by1 = bbox(c2)
+            if bx1 < fx0 or bx0 > fx1 or by1 < fy0 or by0 > fy1:
+                continue
+
+            def tw(q, sgn=sgn, d0=d0):
+                return v_add(P0, v_add(v_mul(U, q[0] * SCALE),
+                                       v_add(v_mul(V, sgn * q[1] * SCALE), v_mul(n, d0 * SCALE))))
+            jobs.append((f, tw, region, [c2]))
+        elif abs(k) < 0.001:
+            # a face across the wall (its bottom, top or end): must lie within the wall
+            if min(ds) < -D - 0.01 or max(ds) > 0.01:
+                continue
+            a, b = v_dot(nf, U), v_dot(nf, V)
+            L = math.hypot(a, b)
+            if L < 0.5:
+                continue
+            a, b = a / L, b / L
+            c = (a * uv(outer[0])[0] + b * uv(outer[0])[1])
+            rngs = _line_ranges(cut, a, b, c, tol)
+            if not rngs:
+                continue
+            T = v_add(v_mul(U, -b), v_mul(V, a))     # along the face, across the wall front
+            F0 = v_add(P0, v_add(v_mul(U, a * c * SCALE), v_mul(V, b * c * SCALE)))
+
+            def st(p, F0=F0, T=T):
+                d = v_sub(p, F0)
+                return (v_dot(d, T) / SCALE, v_dot(d, n) / SCALE)
+            o2 = [st(p) for p in outer]
+            sgn = 1.0 if area2(o2) > 0 else -1.0
+            o2 = [(x, sgn * y) for x, y in o2]
+            h2 = [[(x, sgn * y) for x, y in (st(p) for p in h)] for h in holes]
+            cuts2 = []
+            for s0, s1 in rngs:
+                r = clean([(s0, sgn * (-D - 1.0)), (s1, sgn * (-D - 1.0)), (s1, sgn * 1.0),
+                           (s0, sgn * 1.0)], 1e-6)
+                if r:
+                    cuts2.append(r)
+
+            def tw(q, sgn=sgn, F0=F0, T=T):
+                return v_add(F0, v_add(v_mul(T, q[0] * SCALE), v_mul(n, sgn * q[1] * SCALE)))
+            jobs.append((f, tw, (o2, h2), cuts2))
+    # work out what's left of each face first, so nothing changes if that fails
+    todo = []
+    for f, tw, region, cuts in jobs:
+        pieces = [region]
+        for c2 in cuts:
+            nxt = []
+            for pc in pieces:
+                nxt += poly_minus(pc, c2, tol)
+            pieces = nxt
+        before = _region_area(region)
+        after = sum(_region_area(pc) for pc in pieces)
+        if abs(before - after) < 1e-3:
+            continue
+        if after > before + 1.0:
+            raise ValueError("The cut through the wall came out wrong, so it was left alone.")
+        todo.append((f, tw, pieces))
+    if not todo:
+        raise ValueError("The opening didn't meet any face of the wall.")
+    # then replace each face with what's left of it
+    for f, tw, pieces in todo:
+        attrs = dict(getattr(f, 'attrs', None) or {})
+        remove_face(scene, mesh, f)
+        for o2, h2 in pieces:
+            nf = mesh.add_face([QVector3D(*tw(q)) for q in o2])
+            try:
+                if attrs:
+                    nf.attrs = dict(attrs)
+            except Exception:
+                pass
+            for h in h2:
+                mesh.add_hole(nf, [QVector3D(*tw(q)) for q in reversed(h)])
+    # the sides of the opening, wherever there's wall beside it
+    shift = v_mul(n, -depth)
+    loops = [lp for r in front_regions for lp in [r[0]] + list(r[1])]
+    spans = []
+    for i in range(len(cut)):
+        # the parts of this edge with wall beside it (in one piece where they run on)
+        run = None
+        for a2, b2 in _split_edge(cut[i], cut[(i + 1) % len(cut)], loops, tol):
+            ex, ey = b2[0] - a2[0], b2[1] - a2[1]
+            L = math.hypot(ex, ey)
+            probe = ((a2[0] + b2[0]) / 2 + ey / L * 0.5, (a2[1] + b2[1]) / 2 - ex / L * 0.5)
+            if any(_in_region(probe, r) for r in front_regions):
+                run = (run[0], b2) if run else (a2, b2)
+            elif run:
+                spans.append(run)
+                run = None
+        if run:
+            spans.append(run)
+    for a2, b2 in spans:
+        a = v_add(P0, v_add(v_mul(U, a2[0] * SCALE), v_mul(V, a2[1] * SCALE)))
+        b = v_add(P0, v_add(v_mul(U, b2[0] * SCALE), v_mul(V, b2[1] * SCALE)))
+        q = [a, b, v_add(b, shift), v_add(a, shift)]
+        into = v_cross(n, v_sub(b, a))
+        if v_dot(_newell(q), into) < 0:
+            q.reverse()
+        f = mesh.add_face([QVector3D(*p) for p in q])
+        try:
+            if info['attrs']:
+                f.attrs = dict(info['attrs'])
+        except Exception:
+            pass
+    try:
+        mesh.prune_orphan_vertices()
+    except Exception:
+        pass
+    return True
 
 
 def make_command(mutate, meshes):
@@ -2395,9 +2793,12 @@ FIELDS = {
     'knob': ("Door knob", ""),
     'knob_d': ("Knob size", 5.0, 300.0, 0, " mm", ""),
     'knob_p': ("Knob sticks out", 1.0, 300.0, 0, " mm", ""),
-    'fanlight': ("Fanlight", "A light over the door, above a transom. On a round, segmental or pointed "
-                             "door it fills the arch."),
-    'fan_h': ("Fanlight height", 50.0, 3000.0, 0, " mm", "Square-topped doors: the height of the fanlight."),
+    'fanlight': ("Fanlight", "A light on top of the door, above a transom. The face you drew is the "
+                             "door; the fanlight is added on top of it (with a round, segmental or "
+                             "pointed top shape it's an arched fanlight). If you drew a round-topped "
+                             "face yourself, the fanlight fills its arch."),
+    'fan_h': ("Fanlight height", 50.0, 3000.0, 0, " mm", "Square fanlights: the height of the glass "
+                                                          "above the transom."),
     'transom_w': ("Transom", 5.0, 500.0, 0, " mm", "The bar between the door and the fanlight."),
     'fan_cols': ("Fanlight bars", 2, 16, None, "", "How many lights the fanlight is split into."),
     'slide_over': ("Door overlaps the opening", 0.0, 1000.0, 0, " mm",
@@ -2658,7 +3059,7 @@ class DoorsDialog(QDialog):
                 poly = self.sel_shape
             else:
                 poly = [(0, 0), (900, 0), (900, 2100), (0, 2100)]
-            sh = fit_shape(poly, v['top'], v['rise'])
+            sh = fit_door(poly, v)
         except Exception as e:
             self.preview.items, self.preview.msg = [], str(e)
             self.preview.update()
@@ -2926,7 +3327,7 @@ class PeriodDoorsTool(Tool):
                 def tw(p, tw0=tw0, zl=zlift):
                     return tw0((p[0], p[1], p[2] + zl))
                 try:
-                    sh = fit_shape(poly, v['top'], v['rise'])
+                    sh = fit_door(poly, v)
                     built = build_door(sh, vv)
                 except ValueError as e:
                     problems.append("Opening %d: %s" % (n, e))
@@ -3106,7 +3507,11 @@ class PeriodDoorsTool(Tool):
                 stats['removed'] += 1
                 if info is not None:
                     try:
-                        if not cut_through(scene, m, info, host, cuts.get(f)):
+                        if host is None and cuts.get(f):
+                            # the door reaches the edge of the wall face (it stands on the
+                            # bottom of the wall): cut every face of the wall it goes through
+                            cut_through_all(scene, m, info, cuts.get(f))
+                        elif not cut_through(scene, m, info, host, cuts.get(f)):
                             stats['small_cut'] += 1
                         stats['cut'] += 1
                     except Exception as e:
