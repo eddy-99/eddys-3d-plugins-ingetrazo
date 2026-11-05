@@ -49,6 +49,7 @@ PLUGINS = [
     ("3D Station Canopies", "Ctrl+Alt+C", "Canopy", "canopy"),
     ("3D Centre Finder", "Ctrl+Alt+M", "Centre", "centre"),
     ("3D Timeline", "Ctrl+Alt+T", "Timeline", "timeline"),
+    ("3D Find & Replace", "Ctrl+Alt+X", "Swap parts", "swap"),
 ]
 
 
@@ -330,6 +331,29 @@ def make_icon(kind):
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(8, 15, 10, 6), 3, 3)
         p.drawRoundedRect(QRectF(14, 15, 10, 6), 3, 3)
+    elif kind == "swap":
+        import math as _m
+        p.setPen(dark)
+        p.setBrush(QColor(200, 205, 212))                      # a flat hex marker
+        hexp = QPolygonF([QPointF(9 + 6 * _m.cos(_m.radians(a)), 10 + 6 * _m.sin(_m.radians(a)))
+                          for a in range(0, 360, 60)])
+        p.drawPolygon(hexp)
+        grad_c = QColor(150, 110, 70)                          # becomes a domed rivet
+        p.setBrush(grad_c)
+        p.drawEllipse(QRectF(17, 16, 12, 12))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(235, 215, 185))
+        p.drawEllipse(QRectF(20, 18.5, 4, 3))                  # its shine
+        p.setPen(QPen(QColor(40, 120, 70), 2.0))               # the swap arrows
+        p.setBrush(Qt.NoBrush)
+        p.drawLine(QPointF(14, 6), QPointF(24, 6))
+        p.drawLine(QPointF(24, 6), QPointF(24, 12))
+        p.drawLine(QPointF(21, 9.5), QPointF(24, 12.5))
+        p.drawLine(QPointF(27, 9.5), QPointF(24, 12.5))
+        p.drawLine(QPointF(15, 26), QPointF(6, 26))
+        p.drawLine(QPointF(6, 26), QPointF(6, 19))
+        p.drawLine(QPointF(3, 22), QPointF(6, 18.5))
+        p.drawLine(QPointF(9, 22), QPointF(6, 18.5))
     p.end()
     return QIcon(pm)
 
@@ -492,9 +516,9 @@ GROUPS = [
     ("Doors & windows", ["3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
-    ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Timeline"]),
+    ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Find & Replace"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
-    ("Notes & set-up", ["3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
+    ("Notes & set-up", ["3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
 MAIN_ID = "main"
 
@@ -1090,7 +1114,7 @@ EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
               "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
-              "station_canopies", "centre_finder", "timeline", "plugins_toolbar")
+              "station_canopies", "centre_finder", "timeline", "find_replace", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 

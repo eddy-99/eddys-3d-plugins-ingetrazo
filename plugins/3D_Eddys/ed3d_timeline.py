@@ -860,19 +860,23 @@ def make_dock(win):
             "steps after it are thrown away, just as with Undo.\n\n"
             + ("A checkpoint saves the model as it is now, so you can always get back to it."
                if saved else "Save the model once to be able to make a checkpoint first."))
+        choice = []
         b_cp = box.addButton("Checkpoint, then roll back", QMessageBox.AcceptRole) if saved else None
         b_go = box.addButton("Roll back", QMessageBox.DestructiveRole)
         box.addButton(QMessageBox.Cancel)
+        if b_cp is not None:
+            b_cp.clicked.connect(lambda: choice.append('cp'))
+        b_go.clicked.connect(lambda: choice.append('go'))
         box.setDefaultButton(b_cp or b_go)
         never = QCheckBox("Don't ask me again")
         box.setCheckBox(never)
         box.exec()
-        pressed = box.clickedButton()
-        if pressed is None or pressed not in (b_cp, b_go):
+        pressed = choice[-1] if choice else None
+        if pressed is None:
             return False
         if never.isChecked():
             setting('warn_rollback', False)
-        if pressed is b_cp:
+        if pressed == 'cp':
             text, ok = QInputDialog.getText(dock, PLUGIN_NAME, "Name for this checkpoint:",
                                             text="before going back")
             if not ok:
@@ -1002,17 +1006,19 @@ def make_dock(win):
             "Restore it here: the model on screen becomes that version. The model as it is now "
             "is saved first, and one Undo brings it back.\n\n"
             "Open on its own: it opens as a separate model and this one is left alone.")
+        choice = []
         b_here = box.addButton("Restore it here", QMessageBox.AcceptRole)
         b_open = box.addButton("Open on its own", QMessageBox.ActionRole)
         box.addButton(QMessageBox.Cancel)
+        b_here.clicked.connect(lambda: choice.append('here'))
+        b_open.clicked.connect(lambda: choice.append('open'))
         box.setDefaultButton(b_here)
         box.exec()
-        pressed = box.clickedButton()
-        if pressed is b_open:
-            if not open_model(win, full):
-                QMessageBox.information(dock, PLUGIN_NAME, "The checkpoint couldn't be opened. You can open it "
-                                        "with File > Open from this folder:\n\n%s" % os.path.dirname(full))
-        elif pressed is b_here:
+        pressed = choice[-1] if choice else None
+        if pressed == 'open':
+            # once the menu and this box have closed, as File > Open would be
+            QTimer.singleShot(50, lambda: _try(dock, lambda: open_or_say(full)))
+        elif pressed == 'here':
             why = restore_checkpoint(win, state['vp'], full, on_change=reload_past)
             if why:
                 QMessageBox.information(dock, PLUGIN_NAME, why)
@@ -1021,6 +1027,12 @@ def make_dock(win):
                 _flash(state['vp'], "Restored %s - Undo (Ctrl+Z) puts back what you had." % name, 6000)
             state['since_cp'] = 0
             rebuild(force=True)
+
+    def open_or_say(full):
+        from PySide6.QtWidgets import QMessageBox
+        if not open_model(win, full):
+            QMessageBox.information(dock, PLUGIN_NAME, "The checkpoint couldn't be opened. You can open it "
+                                    "with File > Open from this folder:\n\n%s" % os.path.dirname(full))
 
     def checkpoint_for(past, i):
         """The checkpoint saved at past step i, or the nearest one before it: (entry, full, steps short)."""
@@ -1070,7 +1082,7 @@ def make_dock(win):
                 if e.get('step') is not None:
                     text += "   (step %s)" % e['step']
                 full = os.path.join(folder, e['file'])
-                cp_menu.addAction(text, lambda f=full, e=e: _safe(lambda: offer_checkpoint(f, e)))
+                cp_menu.addAction(text, lambda f=full, e=e: _try(dock, lambda: offer_checkpoint(f, e)))
             cp_menu.addSeparator()
             cp_menu.addAction("Open the checkpoints folder", lambda: (os.makedirs(folder, exist_ok=True), open_folder(folder)))
         s = state['settings']
@@ -1174,7 +1186,7 @@ def make_dock(win):
         tip += "\nClick to bring back the checkpoint saved at (or just before) this step."
         b.setToolTip(tip)
         if past is not None:
-            b.clicked.connect(lambda _=False: _safe(lambda: past_clicked(past, i)))
+            b.clicked.connect(lambda _=False: _try(dock, lambda: past_clicked(past, i)))
         return b
 
     def strip_menu(pos=None):
@@ -1370,6 +1382,29 @@ def _remember_visible(win, on):
         save_settings(s)
 
 
+LOG_FILE = os.path.join(os.path.expanduser("~"), "ingetrazo_timeline_log.txt")
+
+
+def _try(parent, fn):
+    """For things you click: if it goes wrong, say so (and keep the details in a log)."""
+    try:
+        fn()
+    except Exception as e:
+        import traceback
+        detail = traceback.format_exc()
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write("%s\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), detail))
+        except Exception:
+            pass
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(parent, PLUGIN_NAME, "That didn't work: %s\n\nThe details are in %s"
+                                % (e, LOG_FILE))
+        except Exception:
+            print(detail)
+
+
 def _safe(fn):
     try:
         fn()
@@ -1395,6 +1430,26 @@ def show_timeline(win, show=None):
     return dock
 
 
+def add_to_view_menu(win, dock):
+    """A tick-box 'Timeline' in IngeTrazo's View menu, to show or hide the strip."""
+    try:
+        act = dock.toggleViewAction()
+        act.setText("3D Timeline")
+        act.setShortcut("")                 # Ctrl+Alt+T belongs to the tool already
+        act.setToolTip("Show or hide the timeline strip (Ctrl+Alt+T)")
+        for a in win.menuBar().actions():
+            m = a.menu()
+            t = (a.text() or "").replace("&", "").strip().lower()
+            if m is not None and t in ("view", "window", "ver", "vista", "ventana", "affichage", "ansicht", "visualizza"):
+                if act not in m.actions():
+                    m.addSeparator()
+                    m.addAction(act)
+                return True
+    except Exception as e:
+        print("%s: could not add to the View menu (%s)" % (PLUGIN_NAME, e))
+    return False
+
+
 def _install_when_ready(tries=0):
     """IngeTrazo loads plugins before its window is up, so wait for the window."""
     try:
@@ -1407,6 +1462,7 @@ def _install_when_ready(tries=0):
         if find_dock(win) is None:
             dock = make_dock(win)
             dock.setVisible(bool(load_settings().get('visible', True)))
+            add_to_view_menu(win, dock)
     except Exception as e:
         print("%s: could not add the timeline (%s). Press Ctrl+Alt+T to try again." % (PLUGIN_NAME, e))
 
@@ -1427,6 +1483,10 @@ class TimelineTool(Tool):
         if win is None:
             return
         show_timeline(win)
+
+    def on_deactivate(self, viewport):
+        # IngeTrazo needs every tool to have this, or it leaves the tool out of its menus
+        pass
 
 
 try:
