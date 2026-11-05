@@ -39,6 +39,7 @@ PLUGINS = [
     ("3D Scale Studio", "Ctrl+Alt+K", "Scale studio", "ruler"),
     ("3D Roof Tiles", "Ctrl+Alt+R", "Roof", "roof"),
     ("3D Notepad", "Ctrl+Alt+J", "Notes", "note"),
+    ("3D Quick Links", "Ctrl+Alt+A", "Links", "links"),
     ("3D Wood Planking", "Ctrl+Alt+O", "Planks", "planks"),
     ("3D Period Doors", "Ctrl+Alt+D", "Doors", "door"),
     ("3D Fences & Gates", "Ctrl+Alt+F", "Fences", "fence"),
@@ -303,6 +304,21 @@ def make_icon(kind):
         p.drawLine(QPointF(19, 22), QPointF(29, 12))
         p.setPen(QPen(QColor(50, 50, 50), 1.0))
         p.drawLine(QPointF(17, 25), QPointF(19, 22))
+    elif kind == "links":
+        p.setPen(dark)
+        p.setBrush(QColor(240, 200, 90))
+        tab = QPainterPath()                                   # a folder
+        tab.moveTo(3, 9)
+        tab.lineTo(3, 6)
+        tab.lineTo(12, 6)
+        tab.lineTo(14, 9)
+        tab.closeSubpath()
+        p.drawPath(tab)
+        p.drawRect(QRectF(3, 9, 26, 18))
+        p.setPen(QPen(QColor(40, 90, 160), 2.2))               # a chain link on it
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(8, 15, 10, 6), 3, 3)
+        p.drawRoundedRect(QRectF(14, 15, 10, 6), 3, 3)
     p.end()
     return QIcon(pm)
 
@@ -467,7 +483,7 @@ GROUPS = [
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
     ("Shaping tools", ["3D Loft", "3D Centre Finder"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
-    ("Notes & set-up", ["3D Notepad", "3D Better Icons", "3D Plugins Toolbar"]),
+    ("Notes & set-up", ["3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
 MAIN_ID = "main"
 
@@ -1061,7 +1077,7 @@ def _install_when_ready(tries=0):
 # ---------------------------------------------------------------------------
 EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
-              "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "wood_planking",
+              "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()

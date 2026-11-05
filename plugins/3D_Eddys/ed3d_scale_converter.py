@@ -99,7 +99,7 @@ STUDIO_DEFAULTS = {
     'from_scale': 76.2, 'to_scale': 148.0, 'lock': True, 'pivot': 'bottom',
     'split': -1, 'gap': 5.0, 'lay_flat': True,
     'bed': True, 'bed_x': 220.0, 'bed_y': 220.0, 'bed_z': 250.0, 'nozzle': 0.4, 'warn_thin': True,
-    'slicer': '', 'open_after': False,
+    'slicer': '', 'slicers': [], 'open_after': False,
     'fix_clean': True, 'fix_cracks': True, 'fix_holes': True, 'hole_edges': 60, 'fix_winding': True,
     'purpose': 'print', 'format': '3mf', 'file_unit': 'mm', 'y_up': False, 'use_scale': True,
     'per_piece': True, 'layout': 'bed', 'colours': True, 'apply_fixes': True, 'view': 'top',
@@ -3807,8 +3807,9 @@ class StudioDialog(QDialog):
             self.page_buttons.setdefault(page, []).append(b)
             return b
         btn(2, "Plan the pieces...", "Pick parts and put them into pieces of your own.", self.plan_pieces)
-        btn(3, "Send to slicer", "Saves it at the new size (no save box) and opens it in this printer's slicer. "
-            "Your model isn't changed.", self.send_to_slicer)
+        self.b_send3 = btn(3, "Send to slicer", "Saves it at the new size (no save box) and opens it in this "
+                           "printer's slicer - with more than one, you pick which suits this model. Your model "
+                           "isn't changed.", lambda: self.send_to_slicer_pick(self.b_send3))
         btn(3, "Export for printing...", "Saves it for printing: at the new size, in mm, repaired, the pieces laid "
             "out on the bed - you pick where. Your model isn't changed.", self.export_print, True)
         btn(4, "Check", "Checks what's selected at the new size, without saving anything. Gaps left after the "
@@ -4071,7 +4072,8 @@ class StudioDialog(QDialog):
         for text, tip, fn in (
                 ("Send to slicer", "Leaves your model as it is: saves it at the new size as a print file (no "
                  "save box - into the folder set on the 3D print page) and opens it in your printer's slicer. "
-                 "The preview shows it as it goes on the bed.", self.send_to_slicer),
+                 "The preview shows it as it goes on the bed. With more than one slicer for this printer, "
+                 "you pick which suits this model.", 'send'),
                 ("Scale a copy", "Leaves the object as it is and puts a scaled copy beside it.",
                  lambda: self.scale_model('copy')),
                 ("Scale in place", "Changes the selected object itself (moved beside where it was, if that's "
@@ -4081,7 +4083,10 @@ class StudioDialog(QDialog):
                  self.scale_and_next)):
             b = QPushButton(text)
             b.setToolTip(tip)
-            b.clicked.connect(lambda *_a, fn=fn: fn())
+            if fn == 'send':
+                b.clicked.connect(lambda *_a, b=b: self.send_to_slicer_pick(b))
+            else:
+                b.clicked.connect(lambda *_a, fn=fn: fn())
             srow.addWidget(b)
         srow.addStretch(1)
         v.addLayout(srow)
@@ -4235,23 +4240,37 @@ class StudioDialog(QDialog):
         form.addRow("Print file:", self.cb_pfmt)
         v.addLayout(form)
         # ---- the slicer for this printer
-        v.addWidget(QLabel("<b>Slicer for this printer</b>"))
-        self.ed_slicer = QLineEdit(st.get('slicer', ''))
+        v.addWidget(QLabel("<b>Slicers for this printer</b>"))
+        self.cb_slicer = QComboBox()
+        self.cb_slicer.setEditable(True)
+        self.cb_slicer.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # don't grow to fit long program paths (that pushed the buttons off the right edge)
+        self.cb_slicer.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_slicer.setMinimumContentsLength(12)
+        self.cb_slicer.setMinimumWidth(80)
+        self.ed_slicer = self.cb_slicer.lineEdit()
         self.ed_slicer.setPlaceholderText("(the computer's usual program for the file)")
-        self.ed_slicer.setToolTip("The slicer program for this printer (the file that starts it) - an FDM slicer, a "
-                                  "resin slicer or any other program. Each of your printers keeps its own. Empty: "
+        self.cb_slicer.setToolTip("The slicers for this printer (the files that start them) - FDM slicers, resin "
+                                  "slicers or any other program. Add as many as you like with Browse... or Find "
+                                  "slicers; the one showing is the one used. With more than one, 'Send to slicer' "
+                                  "asks which suits this model. Each of your printers keeps its own list. Empty: "
                                   "files open in the computer's usual program for that type of file.")
+        self.set_slicers(st.get('slicers') or [], st.get('slicer', ''))
+        v.addWidget(self.cb_slicer)          # the path on its own line, the buttons under it
         srow = QHBoxLayout()
-        srow.addWidget(self.ed_slicer, 1)
         b_browse = QPushButton("Browse...")
-        b_browse.setToolTip("Find the slicer's program yourself.")
+        b_browse.setToolTip("Find a slicer's program yourself and add it to this printer's list.")
         b_browse.clicked.connect(self.browse_slicer)
         b_find = QPushButton("Find slicers")
         b_find.setToolTip("Looks in the usual program folders for slicers on this computer and lists them to pick "
-                          "from.")
+                          "from (picked ones are added to this printer's list).")
         b_find.clicked.connect(lambda *_: self.find_slicers(b_find))
-        srow.addWidget(b_browse)
-        srow.addWidget(b_find)
+        b_rem = QPushButton("Remove")
+        b_rem.setToolTip("Takes the slicer showing off this printer's list (the program itself isn't touched).")
+        b_rem.clicked.connect(self.remove_slicer)
+        for b in (b_browse, b_find, b_rem):
+            srow.addWidget(b)
+        srow.addStretch(1)
         v.addLayout(srow)
         self.cb_open = QCheckBox("Open it in the slicer straight after saving")
         self.cb_open.setChecked(bool(st['open_after']))
@@ -4259,16 +4278,18 @@ class StudioDialog(QDialog):
                                 "this printer's slicer, others in the computer's usual program for them.")
         v.addWidget(self.cb_open)
         frow2 = QHBoxLayout()
-        frow2.addWidget(QLabel("Print files go in:"))
+        v.addWidget(QLabel("Print files go in:"))
         self.lbl_pfolder = QLabel(self.st.get('print_folder') or os.path.join(os.path.expanduser("~"), "Downloads",
                                                                              "3D Scale Studio"))
         self.lbl_pfolder.setWordWrap(True)
+        self.lbl_pfolder.setMinimumWidth(80)
         self.lbl_pfolder.setToolTip("Where 'Send to slicer' saves the print files (no save box each time).")
-        frow2.addWidget(self.lbl_pfolder, 1)
+        v.addWidget(self.lbl_pfolder)
         b_pf = QPushButton("Change...")
         b_pf.setToolTip("Pick the folder 'Send to slicer' saves into.")
         b_pf.clicked.connect(self.browse_print_folder)
         frow2.addWidget(b_pf)
+        frow2.addStretch(1)
         v.addLayout(frow2)
         self.lbl_printer = QLabel()
         self.lbl_printer.setWordWrap(True)
@@ -4444,7 +4465,8 @@ class StudioDialog(QDialog):
             'split': self.cb_split.currentData(), 'gap': self.sp_gap.value(), 'lay_flat': self.cb_flat.isChecked(),
             'bed': self.cb_bed.isChecked(), 'bed_x': self.bed[0].value(), 'bed_y': self.bed[1].value(),
             'bed_z': self.bed[2].value(), 'nozzle': self.sp_nozzle.value(), 'warn_thin': self.cb_thin.isChecked(),
-            'slicer': self.ed_slicer.text().strip(), 'open_after': self.cb_open.isChecked(),
+            'slicer': self.ed_slicer.text().strip(), 'slicers': self.slicers(),
+            'open_after': self.cb_open.isChecked(),
             'printers': self.printers(), 'printer': self.cb_bedp.currentData() or '',
             'kind': self.cb_kind.currentData(), 'print_format': self.cb_pfmt.currentData(),
             'fix_clean': self.cb_fclean.isChecked(), 'fix_cracks': self.cb_fcracks.isChecked(),
@@ -4575,7 +4597,7 @@ class StudioDialog(QDialog):
                 self.sp_nozzle.setValue(float(p.get('nozzle', 0.4)))
                 self.cb_thin.setChecked(bool(p.get('warn_thin', True)))
                 self.cb_pfmt.setCurrentIndex(max(0, self.cb_pfmt.findData(p.get('format', '3mf'))))
-                self.ed_slicer.setText(str(p.get('slicer', '')))
+                self.set_slicers(p.get('slicers') or [], str(p.get('slicer', '')))
                 if p.get('gap'):
                     self.sp_gap.setValue(float(p['gap']))
                 self.cb_open.setChecked(bool(p.get('open_after', False)))
@@ -4603,7 +4625,8 @@ class StudioDialog(QDialog):
         return {'name': name, 'kind': self.cb_kind.currentData(), 'gap': self.sp_gap.value(),
                 'bed': [s_.value() for s_ in self.bed], 'nozzle': self.sp_nozzle.value(),
                 'warn_thin': self.cb_thin.isChecked(), 'format': self.cb_pfmt.currentData(),
-                'slicer': self.ed_slicer.text().strip(), 'open_after': self.cb_open.isChecked()}
+                'slicer': self.ed_slicer.text().strip(), 'slicers': self.slicers(),
+                'open_after': self.cb_open.isChecked()}
 
     def printer_save_as(self):
         from PySide6.QtWidgets import QInputDialog
@@ -4674,7 +4697,7 @@ class StudioDialog(QDialog):
         menu = QMenu(self)
         for path in found:
             act = menu.addAction(path)
-            act.triggered.connect(lambda *_a, p=path: self.ed_slicer.setText(p))
+            act.triggered.connect(lambda *_a, p=path: self.add_slicer(p))
         try:
             menu.exec(button.mapToGlobal(button.rect().bottomLeft()) if button is not None else None)
         except Exception:
@@ -4698,7 +4721,90 @@ class StudioDialog(QDialog):
         res = QFileDialog.getOpenFileName(self, "Your slicer's program", start, "Programs (*.exe);;All files (*)")
         path = res[0] if isinstance(res, (tuple, list)) else res
         if path:
-            self.ed_slicer.setText(path)
+            self.add_slicer(os.path.normpath(path))
+
+    # ------------------------------------------------------------------ this printer's slicers
+    def slicers(self):
+        """This printer's slicers (full paths), the one showing included."""
+        out = []
+        for i in range(self.cb_slicer.count()):
+            out.append(self.cb_slicer.itemData(i) or self.cb_slicer.itemText(i))
+        now = self.ed_slicer.text().strip()
+        if now:
+            out.append(now)
+        seen, keep = set(), []
+        for x in out:
+            x = str(x or "").strip()
+            if x and os.path.normcase(x) not in seen:
+                seen.add(os.path.normcase(x))
+                keep.append(x)
+        return keep
+
+    def set_slicers(self, paths, current=""):
+        """Fills the slicer list (a printer's old single slicer counts as a list of one)."""
+        from PySide6.QtCore import Qt
+        paths = [str(x).strip() for x in (paths or []) if str(x or "").strip()]
+        current = str(current or "").strip()
+        if current and os.path.normcase(current) not in [os.path.normcase(x) for x in paths]:
+            paths.insert(0, current)
+        cb = self.cb_slicer
+        cb.blockSignals(True)
+        cb.clear()
+        for x in paths:
+            cb.addItem(x, x)
+            cb.setItemData(cb.count() - 1, x, Qt.ItemDataRole.ToolTipRole)
+        cb.blockSignals(False)
+        self.ed_slicer.setText(current or (paths[0] if paths else ""))
+
+    def add_slicer(self, path):
+        path = str(path or "").strip()
+        if not path:
+            return
+        self.set_slicers(self.slicers() + [path], path)
+        self.report("Added %s to this printer's slicers (%d now). Save the printer to keep it." %
+                    (os.path.basename(path), len(self.slicers())))
+
+    def remove_slicer(self, *_):
+        now = self.ed_slicer.text().strip()
+        if not now:
+            return
+        rest = [x for x in self.slicers() if os.path.normcase(x) != os.path.normcase(now)]
+        self.set_slicers(rest, rest[0] if rest else "")
+        self.report("Took %s off this printer's slicers." % os.path.basename(now))
+
+    def pick_slicer(self, button=None):
+        """With more than one slicer: a menu to pick the one that suits this model. True to carry on."""
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QCursor
+        many = self.slicers()
+        if len(many) < 2:
+            return True
+        now = os.path.normcase(self.ed_slicer.text().strip())
+        menu = QMenu(self)
+        menu.addSection("Send it to which slicer?")
+        for path in many:
+            name = os.path.splitext(os.path.basename(path))[0] or path
+            act = menu.addAction(name)
+            act.setToolTip(path)
+            act.setCheckable(True)
+            act.setChecked(os.path.normcase(path) == now)
+            act.setData(path)
+        try:
+            menu.setToolTipsVisible(True)
+        except Exception:
+            pass
+        at = button.mapToGlobal(button.rect().bottomLeft()) if button is not None else QCursor.pos()
+        chosen = menu.exec(at)
+        if chosen is None or not chosen.data():
+            return False
+        self.ed_slicer.setText(str(chosen.data()))
+        return True
+
+    def send_to_slicer_pick(self, button=None):
+        """'Send to slicer' button: asks which slicer first when this printer has more than one."""
+        if not self.pick_slicer(button):
+            return False
+        return self.send_to_slicer()
 
     # ------------------------------------------------------------------ the selection
     def selection(self):
