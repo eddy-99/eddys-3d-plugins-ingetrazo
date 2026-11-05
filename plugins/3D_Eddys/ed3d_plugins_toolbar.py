@@ -48,6 +48,7 @@ PLUGINS = [
     ("3D Corrugated Iron", "Ctrl+Alt+I", "Tin sheet", "corrugated"),
     ("3D Station Canopies", "Ctrl+Alt+C", "Canopy", "canopy"),
     ("3D Centre Finder", "Ctrl+Alt+M", "Centre", "centre"),
+    ("3D Timeline", "Ctrl+Alt+T", "Timeline", "timeline"),
 ]
 
 
@@ -292,6 +293,16 @@ def make_icon(kind):
         p.drawEllipse(QPointF(16, 16), 4.5, 4.5)              # the centre mark
         p.drawLine(QPointF(16, 9.5), QPointF(16, 22.5))
         p.drawLine(QPointF(9.5, 16), QPointF(22.5, 16))
+    elif kind == "timeline":
+        p.setPen(dark)
+        p.setBrush(QColor(235, 238, 242))
+        p.drawRoundedRect(QRectF(2, 9, 28, 14), 3, 3)          # the strip
+        for i, col in enumerate(((60, 120, 210), (230, 140, 30), (50, 150, 80), (190, 190, 190))):
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(*col))
+            p.drawRoundedRect(QRectF(4 + i * 6.5, 12, 5, 8), 1.5, 1.5)  # the steps
+        p.setPen(QPen(QColor(210, 40, 40), 2.0))
+        p.drawLine(QPointF(23.5, 6), QPointF(23.5, 26))          # where the model is now
     elif kind == "note":
         p.setPen(dark)
         p.setBrush(QColor(255, 244, 160))
@@ -481,7 +492,7 @@ GROUPS = [
     ("Doors & windows", ["3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
-    ("Shaping tools", ["3D Loft", "3D Centre Finder"]),
+    ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Timeline"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
     ("Notes & set-up", ["3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
@@ -1079,7 +1090,7 @@ EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
               "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
-              "station_canopies", "centre_finder", "plugins_toolbar")
+              "station_canopies", "centre_finder", "timeline", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 
