@@ -50,6 +50,7 @@ PLUGINS = [
     ("3D Centre Finder", "Ctrl+Alt+M", "Centre", "centre"),
     ("3D Timeline", "Ctrl+Alt+T", "Timeline", "timeline"),
     ("3D Find & Replace", "Ctrl+Alt+X", "Swap parts", "swap"),
+    ("3D Place Along Line", "Ctrl+Alt+S", "Along line", "along"),
 ]
 
 
@@ -354,6 +355,19 @@ def make_icon(kind):
         p.drawLine(QPointF(6, 26), QPointF(6, 19))
         p.drawLine(QPointF(3, 22), QPointF(6, 18.5))
         p.drawLine(QPointF(9, 22), QPointF(6, 18.5))
+    elif kind == "along":
+        p.setPen(dark)
+        p.setBrush(QColor(200, 205, 212))
+        p.drawChord(QRectF(3, 9, 26, 40), 0, 180 * 16)            # a boiler's curve
+        p.setPen(QPen(QColor(235, 120, 30), 1.4, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(5.5, 11.5, 21, 35), 15 * 16, 150 * 16)     # the line over it
+        p.setPen(QPen(QColor(90, 60, 30), 0.8))
+        p.setBrush(QColor(150, 110, 70))
+        import math as _m
+        for a in (25, 57, 90, 123, 155):                            # rivets along it
+            r = _m.radians(a)
+            p.drawEllipse(QPointF(16 + 10.5 * _m.cos(r), 29 - 17.5 * _m.sin(r)), 2.2, 2.2)
     p.end()
     return QIcon(pm)
 
@@ -516,7 +530,7 @@ GROUPS = [
     ("Doors & windows", ["3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
-    ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Find & Replace"]),
+    ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
     ("Notes & set-up", ["3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
@@ -1114,7 +1128,8 @@ EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
               "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
-              "station_canopies", "centre_finder", "timeline", "find_replace", "plugins_toolbar")
+              "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
+              "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 
