@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "print_scaler"
+source = "plugins/3D_Eddys/ed3d_print_scaler.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["fabrication"]
+
+[name]
+es = "Escalador para impresión 3D"
+en = "3D Print Scaler"
+pt = "Escalador para impressão 3D"
+
+[summary]
+es = "Escala el objeto elegido a una escala (1:50, 1:100...) para imprimir en 3D y comprueba que cabe en la cama."
+en = "Scales the selected object to a chosen scale (1:50, 1:100 ...) for 3D printing and checks it fits your print bed."
+pt = "Escala o objeto escolhido para uma escala (1:50, 1:100...) para impressão 3D e verifica se cabe na mesa."

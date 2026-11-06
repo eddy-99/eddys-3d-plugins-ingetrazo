@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "scale_converter"
+source = "plugins/3D_Eddys/ed3d_scale_converter.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Conversor de escala 3D"
+en = "3D Scale Converter"
+pt = "Conversor de escala 3D"
+
+[summary]
+es = "Una barra que convierte medidas reales (pies, pulgadas, mm) en medidas de maqueta a cualquier escala."
+en = "A toolbar that turns real sizes (ft / in / mm) into model sizes at any scale."
+pt = "Uma barra que converte medidas reais (pés, polegadas, mm) em medidas de maqueta a qualquer escala."

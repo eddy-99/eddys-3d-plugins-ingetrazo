@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "period_windows"
+source = "plugins/3D_Eddys/ed3d_period_windows.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Ventanas de época 3D"
+en = "3D Period Windows"
+pt = "Janelas de época 3D"
+
+[summary]
+es = "Ventanas de guillotina, abatibles e industriales que se ajustan a la cara elegida, con arcos, cristales, alféizares, dinteles y claves."
+en = "Sash, casement and industrial windows that fit the selected face, with round tops, panes, sills, heads and keystones."
+pt = "Janelas de guilhotina, de batente e industriais que se ajustam à face escolhida, com arcos, vidros, peitoris, vergas e fechos."

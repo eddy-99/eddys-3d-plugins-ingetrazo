@@ -1,0 +1,24 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "timeline"
+pr_note = "No network. It writes checkpoint copies of your model in a folder beside your file, and deletes only its own oldest automatic checkpoints once there are more than you chose to keep (named ones are never deleted). It can open that folder in the file manager."
+source = "plugins/3D_Eddys/ed3d_timeline.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Línea de tiempo 3D"
+en = "3D Timeline"
+pt = "Linha do tempo 3D"
+
+[summary]
+en = "A strip of every step along the bottom of the window: click a step to roll back, or a greyed one to go forward again. Checkpoints saved beside the file, and the step list kept in the .igz."
+es = "Una tira con cada paso al pie de la ventana: clic en un paso para volver atrás, o en uno gris para avanzar otra vez. Puntos de control junto al archivo y la lista de pasos guardada en el .igz."
+pt = "Uma faixa com cada passo no fundo da janela: clique num passo para voltar atrás, ou num cinzento para avançar de novo. Pontos de controlo junto ao ficheiro e a lista de passos guardada no .igz."

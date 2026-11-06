@@ -1,0 +1,24 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "quick_links"
+pr_note = "No network of its own. Clicking a link asks the system to open it (a folder, a file or a web page in your browser). It only writes its own list of links."
+source = "plugins/3D_Eddys/ed3d_quick_links.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Enlaces rápidos 3D"
+en = "3D Quick Links"
+pt = "Links rápidos 3D"
+
+[summary]
+en = "A small window over the work area with your folders, files and web pages: one click opens them. Keep a set of links for each job, add them with the buttons or by dragging them on."
+es = "Una ventana pequeña sobre el área de trabajo con tus carpetas, archivos y páginas web: un clic los abre. Un juego de enlaces para cada trabajo; añádelos con los botones o arrastrándolos."
+pt = "Uma pequena janela sobre a área de trabalho com as suas pastas, ficheiros e páginas web: um clique abre-os. Um conjunto de links para cada trabalho; adicione-os com os botões ou arrastando."

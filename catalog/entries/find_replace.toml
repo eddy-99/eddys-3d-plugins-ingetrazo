@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "find_replace"
+source = "plugins/3D_Eddys/ed3d_find_replace.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity", "fabrication"]
+
+[name]
+es = "Buscar y reemplazar 3D"
+en = "3D Find & Replace"
+pt = "Localizar e substituir 3D"
+
+[summary]
+en = "Swaps every copy of one part for another in one go: model with light markers, then swap in full rivets or bolts and back. Parts library of markers, rivets, bolts and nuts."
+es = "Cambia todas las copias de una pieza por otra de una vez: modela con marcadores ligeros y cámbialos por remaches o pernos completos, y al revés. Biblioteca de marcadores, remaches, pernos y tuercas."
+pt = "Troca todas as cópias de uma peça por outra de uma só vez: modele com marcadores leves e troque por rebites ou parafusos completos, e de volta. Biblioteca de marcadores, rebites, parafusos e porcas."

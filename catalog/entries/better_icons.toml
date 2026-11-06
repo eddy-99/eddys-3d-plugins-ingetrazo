@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "better_icons"
+source = "plugins/3D_Eddys/ed3d_better_icons.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Iconos mejores 3D"
+en = "3D Better Icons"
+pt = "Ícones melhores 3D"
+
+[summary]
+es = "Iconos más claros y en color para la barra de herramientas de IngeTrazo, con tamaño ajustable y nombres bajo los iconos."
+en = "Clearer colour icons for IngeTrazo's own toolbar buttons, with adjustable icon size and optional names under the icons."
+pt = "Ícones mais claros e a cores para a barra de ferramentas do IngeTrazo, com tamanho ajustável e nomes sob os ícones."

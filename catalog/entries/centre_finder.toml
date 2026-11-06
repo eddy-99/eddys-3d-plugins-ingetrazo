@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "centre_finder"
+source = "plugins/3D_Eddys/ed3d_centre_finder.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["drawing", "productivity"]
+
+[name]
+es = "Buscador de centros 3D"
+en = "3D Centre Finder"
+pt = "Localizador de centros 3D"
+
+[summary]
+es = "Encuentra el centro de una cara, una arista o un objeto: lo marca con un punto o líneas guía, muestra su tamaño y centra otro objeto sobre él."
+en = "Finds the centre of a face, an edge or an object: marks it with a guide point or centre lines, shows its size, and moves another object onto it."
+pt = "Encontra o centro de uma face, aresta ou objeto: marca-o com um ponto ou linhas guia, mostra o tamanho e centra outro objeto sobre ele."

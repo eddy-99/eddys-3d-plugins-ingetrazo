@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "chimneys"
+source = "plugins/3D_Eddys/ed3d_chimneys.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture", "fabrication"]
+
+[name]
+es = "Chimeneas 3D"
+en = "3D Chimneys"
+pt = "Chaminés 3D"
+
+[summary]
+es = "Chimeneas de ladrillo cortadas a la pendiente del tejado, con remate, cumbrera de mortero y sombreretes; chimeneas industriales; ventiladores y veletas."
+en = "Brick chimney stacks cut to the roof slope, with oversailing courses, flaunching and pots; industrial chimneys; chimney pots; roof ventilators and weather vanes."
+pt = "Chaminés de tijolo cortadas à inclinação do telhado, com cornija, argamassa e potes; chaminés industriais; ventiladores e cata-ventos."

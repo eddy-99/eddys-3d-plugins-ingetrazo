@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "corrugated_iron"
+source = "plugins/3D_Eddys/ed3d_corrugated_iron.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture", "fabrication"]
+
+[name]
+es = "Chapa ondulada 3D"
+en = "3D Corrugated Iron"
+pt = "Chapa ondulada 3D"
+
+[summary]
+es = "Cubre una cara con chapa ondulada, grecada o lisa, para imprimir o en láminas reales solapadas, con óxido y chapas sueltas, alrededor de los huecos."
+en = "Covers a face with corrugated, box-profile or flat sheets, flat-backed for printing or real lapped sheets, with rust, missing and skew sheets, round any openings."
+pt = "Cobre uma face com chapa ondulada, trapezoidal ou lisa, para impressão ou em folhas reais sobrepostas, com ferrugem e folhas soltas, à volta das aberturas."

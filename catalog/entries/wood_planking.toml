@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "wood_planking"
+source = "plugins/3D_Eddys/ed3d_wood_planking.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture", "fabrication"]
+
+[name]
+es = "Tablas de madera 3D"
+en = "3D Wood Planking"
+pt = "Tábuas de madeira 3D"
+
+[summary]
+es = "Cubre una cara con tablas: lisas, machihembradas, solapadas, de tingladillo, con tapajuntas o troncos, con remates y efectos de abandono (podridas, agujeros, torcidas)."
+en = "Covers a face with timber boards: plain, V-jointed, shiplap, weatherboard, board and batten or logs, with trims and derelict effects (rot, holes, missing, skewed)."
+pt = "Cobre uma face com tábuas: lisas, macho-fêmea, sobrepostas, com mata-juntas ou troncos, com remates e efeitos de abandono (podres, furos, tortas)."

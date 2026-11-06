@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "notepad"
+source = "plugins/3D_Eddys/ed3d_notepad.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Bloc de notas 3D"
+en = "3D Notepad"
+pt = "Bloco de notas 3D"
+
+[summary]
+es = "Un bloc de notas que queda en pantalla y se guarda solo, con un conversor de medidas reales a maqueta."
+en = "A note pad that stays on screen and saves itself, with a real-to-model size converter."
+pt = "Um bloco de notas que fica no ecrã e se guarda sozinho, com um conversor de medidas reais para maqueta."

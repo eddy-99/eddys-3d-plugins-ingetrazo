@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "roof_tiles"
+source = "plugins/3D_Eddys/ed3d_roof_tiles.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture", "fabrication"]
+
+[name]
+es = "Tejas 3D"
+en = "3D Roof Tiles"
+pt = "Telhas 3D"
+
+[summary]
+es = "Cubre un faldón con tejas planas, pizarras o tejas con forma, solapadas o planas para imprimir, con cumbrera y remates. Cada faldón en su propio grupo."
+en = "Covers a roof face with plain tiles, slates, shaped or profiled tiles, overlapping or flat for printing, with ridge tiles and finials. Each slope in its own group."
+pt = "Cobre uma água do telhado com telhas planas, ardósias ou telhas perfiladas, sobrepostas ou planas para impressão, com cumeeira e remates."

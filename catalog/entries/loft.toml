@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "loft"
+source = "plugins/3D_Eddys/ed3d_loft.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["drawing"]
+
+[name]
+es = "Transición 3D"
+en = "3D Loft"
+pt = "Transição 3D"
+
+[summary]
+es = "Crea un sólido entre dos o más perfiles, por ejemplo de un cuadrado a un círculo."
+en = "Makes a solid between two or more profile faces, such as a square into a circle."
+pt = "Cria um sólido entre dois ou mais perfis, por exemplo de um quadrado para um círculo."

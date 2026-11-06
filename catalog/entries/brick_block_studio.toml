@@ -1,0 +1,24 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "brick_block_studio"
+version = "2.0"
+source = "plugins/3D_Eddys/ed3d_brick_block_studio.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture", "fabrication"]
+
+[name]
+es = "Estudio de ladrillos y bloques 3D"
+en = "3D Brick & Block Studio"
+pt = "Estúdio de tijolos e blocos 3D"
+
+[summary]
+en = "Brick, block and stone walling on a wall face: bonds, coursed ashlar, random rubble, dry-stone, Welsh slate; quoins, copings, heads and sills; bomb-site damage and rubble piles. Closed solids ready to print."
+es = "Muros de ladrillo, bloque y piedra sobre una cara: aparejos, sillería, mampostería, piedra seca, pizarra; esquinales, albardillas, dinteles y alféizares; daños de bombardeo y montones de escombros. Listo para imprimir."
+pt = "Alvenaria de tijolo, bloco e pedra numa face: aparelhos, cantaria, alvenaria irregular, pedra seca, ardósia; cunhais, capeamentos, padieiras e peitoris; danos de bombardeio e montes de entulho. Pronto a imprimir."

@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "gutters_downpipes"
+source = "plugins/3D_Eddys/ed3d_gutters_downpipes.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Canalones y bajantes 3D"
+en = "3D Gutters & Downpipes"
+pt = "Caleiras e tubos de queda 3D"
+
+[summary]
+es = "Canalones, bajantes y piezas que encajan entre sí, con preajustes."
+en = "Gutters, downpipes and fittings that join onto each other, with presets."
+pt = "Caleiras, tubos de queda e acessórios que encaixam entre si, com predefinições."

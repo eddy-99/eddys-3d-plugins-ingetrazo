@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "plugins_toolbar"
+source = "plugins/3D_Eddys/ed3d_plugins_toolbar.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Barra de complementos 3D"
+en = "3D Plugins Toolbar"
+pt = "Barra de extensões 3D"
+
+[summary]
+es = "Una barra con un botón para cada complemento 3D de Eddy, y un submenú «3D Plugins by Eddy» en Extensiones."
+en = "A toolbar with a button for each of Eddy's 3D plugins, and a '3D Plugins by Eddy' submenu under Extensions."
+pt = "Uma barra com um botão para cada extensão 3D do Eddy, e um submenu «3D Plugins by Eddy» em Extensões."
