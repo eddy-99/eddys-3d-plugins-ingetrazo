@@ -1,0 +1,65 @@
+# Sends new and changed plugins to the IngeTrazo extensions catalog
+# (https://ingetrazo.com/extensiones), with their pictures.
+#
+# Every push to main that changes a plugin, a catalog entry or a catalog picture:
+# for each plugin that is new or different from what the catalog lists, a pull
+# request goes to the catalog from your fork, one per plugin. Updates to plugins
+# already listed are merged by the catalog by themselves; a brand-new plugin waits
+# for a maintainer to approve it once.
+#
+# One-time setup: see catalog/README.md (a token saved as the CATALOG_TOKEN secret).
+name: Send to IngeTrazo catalog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - "catalog/**"
+      - ".github/workflows/send-to-ingetrazo-catalog.yml"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Only these plugins (ids, e.g. brick_block_studio wrap). Empty = all."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run: show what would be sent, send nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ingetrazo-catalog
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    env:
+      # a dry run needs no token
+      HAS_TOKEN: ${{ secrets.CATALOG_TOKEN != '' || github.event.inputs.dry_run == 'true' }}
+    steps:
+      - name: Waiting for the CATALOG_TOKEN secret
+        if: env.HAS_TOKEN != 'true'
+        run: |
+          echo "::warning title=Nothing sent::The CATALOG_TOKEN secret isn't set up yet, so nothing was sent to the catalog. See catalog/README.md (one-time setup)."
+      - uses: actions/checkout@v5
+        if: env.HAS_TOKEN == 'true'
+      - uses: actions/setup-python@v6
+        if: env.HAS_TOKEN == 'true'
+        with:
+          python-version: "3.12"
+      - name: Send new and changed plugins
+        if: env.HAS_TOKEN == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CATALOG_TOKEN }}
+          CATALOG_REPO: ingelibre/ingetrazo-extensions
+          FORK_REPO: eddy-99/ingetrazo-extensions
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          ONLY: ${{ github.event.inputs.only }}
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
+        run: python catalog/tools/send_to_catalog.py

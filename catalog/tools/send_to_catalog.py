@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
@@ -110,7 +111,10 @@ def main() -> int:
     fork = os.environ.get("FORK_REPO", "eddy-99/ingetrazo-extensions")
     source_repo = os.environ["SOURCE_REPO"]
     sha_commit = os.environ["SOURCE_SHA"]
-    token = os.environ.get("GH_TOKEN", "")
+    # a token pasted into the secret often carries a stray space or line break
+    token = "".join(os.environ.get("GH_TOKEN", "").split())
+    if token:
+        os.environ["GH_TOKEN"] = token          # gh reads it from here too
     dry = os.environ.get("DRY_RUN") == "1"
     only = {x for x in re.split(r"[,\s]+", os.environ.get("ONLY", "")) if x}
     if not token and not dry:
@@ -260,12 +264,17 @@ def main() -> int:
                 check=False, capture=True)
         number = (r.stdout or "").strip()
         if number:
-            run("gh", "pr", "edit", number, "-R", catalog, "--title", title, "--body", body)
+            # (the REST call: "gh pr edit" wants an extra token scope, read:org)
+            run("gh", "api", "-X", "PATCH", f"repos/{catalog}/pulls/{number}",
+                "-f", f"title={title}", "-f", f"body={body}", check=False, capture=True)
             print(f"{ident}: updated the open pull request #{number}")
         else:
             run("gh", "pr", "create", "-R", catalog, "--base", "main",
                 "--head", f"{fork_owner}:{branch}", "--title", title, "--body", body)
         sent.append(ident)
+        # the catalog merges updates one at a time: two merging at once makes the second
+        # fail ("base branch was modified"), so give each a minute to go in
+        time.sleep(int(os.environ.get("PR_GAP", "60")))
 
     print("\n------------------------------------------------------------")
     print(f"Sent to the catalog: {', '.join(sent) or 'nothing'}")
