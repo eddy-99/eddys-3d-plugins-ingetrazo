@@ -264,7 +264,9 @@ def main() -> int:
                 check=False, capture=True)
         number = (r.stdout or "").strip()
         if number:
-            run("gh", "pr", "edit", number, "-R", catalog, "--title", title, "--body", body)
+            # (the REST call: "gh pr edit" wants an extra token scope, read:org)
+            run("gh", "api", "-X", "PATCH", f"repos/{catalog}/pulls/{number}",
+                "-f", f"title={title}", "-f", f"body={body}", check=False, capture=True)
             print(f"{ident}: updated the open pull request #{number}")
         else:
             run("gh", "pr", "create", "-R", catalog, "--base", "main",
