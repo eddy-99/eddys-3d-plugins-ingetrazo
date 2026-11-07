@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
@@ -269,6 +270,9 @@ def main() -> int:
             run("gh", "pr", "create", "-R", catalog, "--base", "main",
                 "--head", f"{fork_owner}:{branch}", "--title", title, "--body", body)
         sent.append(ident)
+        # the catalog merges updates one at a time: two merging at once makes the second
+        # fail ("base branch was modified"), so give each a minute to go in
+        time.sleep(int(os.environ.get("PR_GAP", "60")))
 
     print("\n------------------------------------------------------------")
     print(f"Sent to the catalog: {', '.join(sent) or 'nothing'}")
