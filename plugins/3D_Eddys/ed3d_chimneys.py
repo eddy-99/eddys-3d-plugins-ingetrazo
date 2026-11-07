@@ -36,6 +36,20 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
 
 PLUGIN_NAME = "3D Chimneys"
 VERSION = "1"
+
+
+def _ed3d_organise(scene, group):
+    """Hands a new group to 3D Layers & Colours, if it's there, to put on its layer and colour
+    its parts. Never stops a build: if anything goes wrong the group is simply left as it is."""
+    import sys as _sys
+    try:
+        for _nm, _mod in list(_sys.modules.items()):
+            if _nm.endswith("ed3d_layers_colours") and hasattr(_mod, "organise"):
+                _mod.organise(scene, group, PLUGIN_NAME)
+                return
+    except Exception as _e:
+        print("%s: layers & colours skipped: %s" % (PLUGIN_NAME, _e))
+
 SCALE = 0.001
 
 # ---------------------------------------------------------------------------
@@ -2514,6 +2528,7 @@ class ChimneysTool(Tool):
             except Exception:
                 top = None
             for g in ([top] if top is not None else kids):
+                _ed3d_organise(scene, g)
                 if hasattr(scene, 'add_group') and top is None:
                     scene.add_group(g)
                 else:

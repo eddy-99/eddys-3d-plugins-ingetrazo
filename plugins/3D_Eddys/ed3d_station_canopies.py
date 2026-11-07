@@ -40,6 +40,20 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
 
 PLUGIN_NAME = "3D Station Canopies"
 VERSION = "1"
+
+
+def _ed3d_organise(scene, group):
+    """Hands a new group to 3D Layers & Colours, if it's there, to put on its layer and colour
+    its parts. Never stops a build: if anything goes wrong the group is simply left as it is."""
+    import sys as _sys
+    try:
+        for _nm, _mod in list(_sys.modules.items()):
+            if _nm.endswith("ed3d_layers_colours") and hasattr(_mod, "organise"):
+                _mod.organise(scene, group, PLUGIN_NAME)
+                return
+    except Exception as _e:
+        print("%s: layers & colours skipped: %s" % (PLUGIN_NAME, _e))
+
 SCALE = 0.001
 Z = (0.0, 0.0, 1.0)
 
@@ -2512,6 +2526,7 @@ class StationCanopiesTool(Tool):
             if stats['faces'] == 0:
                 raise RuntimeError("No faces could be made (%s)." % stats['err'])
             top = holder(Group, name, cats)
+            _ed3d_organise(scene, top)
             scene.groups.append(top)
         try:
             viewport.history.execute(SnapshotImport(mutate))

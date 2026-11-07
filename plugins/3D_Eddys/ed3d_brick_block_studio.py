@@ -36,6 +36,20 @@ from PySide6.QtWidgets import (
 PLUGIN_NAME = "3D Brick & Block Studio"
 VERSION = "2"             # shown in the window title, so you can tell which file is loaded
 
+
+def _ed3d_organise(scene, group):
+    """Hands a new group to 3D Layers & Colours, if it's there, to put on its layer and colour
+    its parts. Never stops a build: if anything goes wrong the group is simply left as it is."""
+    import sys as _sys
+    try:
+        for _nm, _mod in list(_sys.modules.items()):
+            if _nm.endswith("ed3d_layers_colours") and hasattr(_mod, "organise"):
+                _mod.organise(scene, group, PLUGIN_NAME)
+                return
+    except Exception as _e:
+        print("%s: layers & colours skipped: %s" % (PLUGIN_NAME, _e))
+
+
 MERGE_PIECES = True
 TRIANGULATE_FRONT = False   # True if Mesh.add_face rejects polygons with >4 points
 
@@ -3780,6 +3794,7 @@ class BrickBlockStudioTool(Tool):
                 except Exception:
                     pass
             for g in ([parent] if parent is not None else kids):
+                _ed3d_organise(scene, g)
                 if hasattr(scene, 'add_group') and parent is None:
                     scene.add_group(g)
                 else:

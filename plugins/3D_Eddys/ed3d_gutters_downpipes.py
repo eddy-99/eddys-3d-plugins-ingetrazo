@@ -31,6 +31,20 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Gutters & Downpipes"
+
+
+def _ed3d_organise(scene, group):
+    """Hands a new group to 3D Layers & Colours, if it's there, to put on its layer and colour
+    its parts. Never stops a build: if anything goes wrong the group is simply left as it is."""
+    import sys as _sys
+    try:
+        for _nm, _mod in list(_sys.modules.items()):
+            if _nm.endswith("ed3d_layers_colours") and hasattr(_mod, "organise"):
+                _mod.organise(scene, group, PLUGIN_NAME)
+                return
+    except Exception as _e:
+        print("%s: layers & colours skipped: %s" % (PLUGIN_NAME, _e))
+
 PORT_KEY = "drain_port"          # face attribute that marks a connectable open end
 
 PRESET_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets",
@@ -1858,6 +1872,7 @@ class GuttersDownpipesTool(Tool):
                     raise RuntimeError("No faces could be created (%s)." % stats['err'])
                 g = Group(name)
                 g.mesh = mesh
+                _ed3d_organise(scene, g)
                 if hasattr(scene, 'add_group'):
                     scene.add_group(g)
                 elif hasattr(scene, 'groups') and isinstance(scene.groups, list):

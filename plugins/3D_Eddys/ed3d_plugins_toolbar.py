@@ -51,6 +51,7 @@ PLUGINS = [
     ("3D Timeline", "Ctrl+Alt+T", "Timeline", "timeline"),
     ("3D Find & Replace", "Ctrl+Alt+X", "Swap parts", "swap"),
     ("3D Place Along Line", "Ctrl+Alt+S", "Along line", "along"),
+    ("3D Layers & Colours", "Ctrl+Alt+V", "Layers", "layers"),
 ]
 
 
@@ -368,6 +369,13 @@ def make_icon(kind):
         for a in (25, 57, 90, 123, 155):                            # rivets along it
             r = _m.radians(a)
             p.drawEllipse(QPointF(16 + 10.5 * _m.cos(r), 29 - 17.5 * _m.sin(r)), 2.2, 2.2)
+    elif kind == "layers":
+        p.setPen(dark)
+        for i, col in enumerate(((168, 80, 56), (84, 90, 102), (46, 92, 68))):   # brick, slate, ironwork
+            y = 18 - i * 6
+            p.setBrush(QColor(*col))
+            p.drawPolygon(QPolygonF([QPointF(4, y + 4), QPointF(16, y - 2), QPointF(28, y + 4),
+                                     QPointF(16, y + 10)]))
     p.end()
     return QIcon(pm)
 
@@ -532,7 +540,7 @@ GROUPS = [
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
     ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
-    ("Notes & set-up", ["3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
+    ("Notes & set-up", ["3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
 MAIN_ID = "main"
 
