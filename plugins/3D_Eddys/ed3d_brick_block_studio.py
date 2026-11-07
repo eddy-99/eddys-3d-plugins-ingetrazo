@@ -1693,6 +1693,7 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     placed = []                  # convex shapes that later pieces must keep out of
     cop_units, quo_units, dress_units = [], [], []
     excl_all = []
+    cop_excl = []                # under the coping and the gap over it: quoins stop there too
     if p.get('copings'):
         cu, ce = coping_layout(outline, p, random.Random(rng.random()))
         done = []
@@ -1711,6 +1712,7 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
         for q in ce:
             for part in _convex_parts(_ccw(q)):
                 excl_all.append((part, _bbox(part), True))
+                cop_excl.append((part, _bbox(part), True))
     q_left, q_right = p.get('quoins_l'), p.get('quoins_r')
     qp = dict(p)
     if p.get('q_courses') and mat == 'brick':
@@ -1721,7 +1723,7 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
         qu, qe = quoin_layout(outline, H, qp, q_left, q_right)
         for poly in qu:
             for pc in to_outline(poly):
-                for piece in trim_poly(pc, placed, subdiv, min_frag):
+                for piece in trim_poly(pc, placed + cop_excl, subdiv, min_frag):
                     quo_units.append((piece, th + p['q_proud'], 'quoin', rng.random()))
         for q in qe:
             excl_all.append((q, _bbox(q), True))
