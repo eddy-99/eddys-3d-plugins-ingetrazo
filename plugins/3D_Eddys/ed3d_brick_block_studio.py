@@ -14,9 +14,11 @@
 3D Brick & Block Studio - brick, block and stone walling for IngeTrazo
 Bricks and blocks in bonds (header and soldier courses, row offsets), stone walling in
 coursed ashlar, random rubble, dry-stone and Welsh slate, quoins up the corners and round
-openings, stone heads and sills, copings (slabs, saddleback, bricks on edge, cock and hen,
-upright slates), weathering and bomb-site damage (a broken-down top, blast holes, broken
-and missing units, rubble at the foot), and rubble piles. Sizes in real-world mm.
+openings (doorways too), stone heads and sills, copings (slabs, rounded or stepped saddleback,
+bricks on edge, cock and hen, upright slates), weathering and bomb-site damage (worn, kicked-out
+and sunk units, a broken-down top, blast holes and missing units that can go right through,
+hanging units taken out, rubble at the foot), and rubble piles with planks, barrels, crates and
+your own objects. Sizes in real-world mm.
 """
 
 import os
@@ -34,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "2"             # shown in the window title, so you can tell which file is loaded
+VERSION = "3"             # shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -974,12 +976,67 @@ def _extent(face):
         return 0.0
 
 
+# A doorway drawn up from the bottom of the wall isn't a hole in the face: it's a notch in the
+# face's own outline. These are found here and given ids from NOTCH_BASE up.
+NOTCH_BASE = 1000
+
+
+def _clean_loop(poly, eps):
+    out = []
+    for q in poly:
+        if not out or abs(q[0] - out[-1][0]) > eps or abs(q[1] - out[-1][1]) > eps:
+            out.append(q)
+    if len(out) > 1 and abs(out[0][0] - out[-1][0]) <= eps and abs(out[0][1] - out[-1][1]) <= eps:
+        out.pop()
+    return out
+
+
+def outline_notches(outline):
+    """Doorways: notches cut up into the bottom edge of the outline (the face's own shape, any
+    winding). Returns their polygons (anticlockwise), left to right."""
+    if len(outline) < 5:
+        return []
+    bx0, bx1, by0, by1 = _bbox(outline)
+    size = max(bx1 - bx0, by1 - by0) or 1.0
+    eps = size * 1e-6
+    ol = _clean_loop(_ccw(list(outline)), eps)
+    n = len(ol)
+    tol = size * 1e-4
+    on = [abs(q[1] - by0) <= tol for q in ol]
+    if all(on) or not any(on):
+        return []
+    out = []
+    start = on.index(False)                     # walk round from a corner off the bottom line
+    i = 0
+    while i < n:
+        k = (start + i) % n
+        if on[k]:
+            i += 1
+            continue
+        run = []
+        while i < n and not on[(start + i) % n]:
+            run.append(ol[(start + i) % n])
+            i += 1
+        a = ol[(start + i - len(run) - 1) % n]     # the bottom corners either side of the run
+        b = ol[(start + i) % n]
+        # anticlockwise, the bottom edge runs left to right: a notch climbs up and comes back
+        # down further to the right; the rest of the wall goes round the other way
+        if b[0] - a[0] > tol and len(run) >= 2:
+            poly = _ccw([a] + run + [b])
+            x0, x1, y0, y1 = _bbox(poly)
+            if y1 - by0 > tol * 10 and x1 - x0 < 0.95 * (bx1 - bx0) and abs(_area(poly)) > tol * tol:
+                out.append(poly)
+    out.sort(key=lambda p: _bbox(p)[0])
+    return out
+
+
 def find_openings(wall, others, unit_label, k=1.0):
     """Returns (list of (hole_index, label), preselected set or None).
-    k turns the wall's own units into the ones shown (1000 for a wall drawn in metres)."""
+    k turns the wall's own units into the ones shown (1000 for a wall drawn in metres).
+    Doorways cut up into the bottom edge are listed too (ids from NOTCH_BASE)."""
     fr = _face_frame(wall)
     holes = getattr(wall, 'holes', None) or []
-    if fr is None or not holes:
+    if fr is None:
         return [], None
     pts, normal, origin, u, v = fr
     us = [QVector3D.dotProduct(p - origin, u) for p in pts]
@@ -994,6 +1051,11 @@ def find_openings(wall, others, unit_label, k=1.0):
             poly.append((QVector3D.dotProduct(q - origin, u), QVector3D.dotProduct(q - origin, v)))
         if len(poly) >= 3:
             polys.append((hi, poly))
+    n_holes = len(polys)
+    for j, poly in enumerate(outline_notches(list(zip(us, vs)))):
+        polys.append((NOTCH_BASE + j, poly))
+    if not polys:
+        return [], None
     sel = set()
     for f in others:
         try:
@@ -1013,8 +1075,12 @@ def find_openings(wall, others, unit_label, k=1.0):
     info = []
     for n, (hi, poly) in enumerate(polys):
         x0, x1, y0, y1 = _bbox(poly)
-        info.append((hi, "Opening %d: %.0f x %.0f %s, at (%.0f, %.0f)"
-                     % (n + 1, (x1 - x0) * k, (y1 - y0) * k, unit_label, (x0 - min_u) * k,
+        if hi >= NOTCH_BASE:
+            name = "Doorway %d" % (hi - NOTCH_BASE + 1)
+        else:
+            name = "Opening %d" % (n + 1)
+        info.append((hi, "%s: %.0f x %.0f %s, at (%.0f, %.0f)"
+                     % (name, (x1 - x0) * k, (y1 - y0) * k, unit_label, (x0 - min_u) * k,
                         (y0 - min_v) * k)))
     return info, (sel if sel else None)
 
@@ -1048,6 +1114,7 @@ MATERIAL_SIZES = {
 COPINGS = [
     ('slab', "Stone slabs"),
     ('saddle', "Saddleback stones (rounded top)"),
+    ('stepped', "Saddleback stones (stepped top)"),
     ('brick_edge', "Bricks on edge"),
     ('cock_hen', "Cock and hen (upright stones)"),
     ('slate_up', "Upright slates"),
@@ -1063,7 +1130,8 @@ PILE_SHAPES = [
 LENGTH_KEYS = ('length', 'height', 'depth', 'joint', 'min_frag', 'header_len', 'soldier_len',
                'relief', 'round', 'q_long', 'q_short', 'q_h', 'q_proud', 'c_h', 'c_len', 'c_over',
                'ruin_depth', 'hole_size', 'foot_w', 'backing', 'pile_len', 'pile_wid', 'pile_h',
-               'kick_mm', 'spall_mm', 'hole_gap')
+               'kick_mm', 'spall_mm', 'hole_gap', 'worn_mm', 'plank_len', 'plank_w', 'plank_t',
+               'barrel_d', 'barrel_h', 'crate_size')
 
 
 def _ccw(poly):
@@ -1304,13 +1372,18 @@ def opening_dressings(hole, p):
 
 def coping_layout(outline, p, rng):
     """Copings along every edge of the outline that faces upwards (the top of the wall,
-    and both slopes of a gable). Returns (units [(poly, depth factor)], exclusions)."""
+    and both slopes of a gable). Returns (units [(poly, depth factor)], exclusions). A rounded
+    saddleback stone is (footprint, 'round', (a, e, i, t1, t2, ch)): it's built as a curved solid.
+    Bricks: on a level top the coping sits on the last whole course, so any odd bit of
+    height left over is a gap at the top of the face, not a gap of cut bricks under it."""
     J = p['joint']
     style = p.get('c_style', 'slab')
     ch = p['c_h']
     if style == 'brick_edge':
         ch = p['header_len']
     units, excl = [], []
+    step = p['height'] + J
+    on_course = p.get('material', 'brick') == 'brick' and p.get('c_course', True) and step > 0
     n = len(outline)
     for i in range(n):
         a, b = outline[i], outline[(i + 1) % n]
@@ -1323,14 +1396,25 @@ def coping_layout(outline, p, rng):
         if oy < 0.3:
             continue
         ix, iy = -ox, -oy
+        drop = 0.0
+        if on_course and oy > 0.999:
+            # a level top: drop the coping onto the last whole course below it
+            base = a[1] - ch
+            k = math.floor(base / step + 1e-6)
+            drop = base - k * step
+            if drop < 1e-6 * step or drop > step:
+                drop = 0.0
+        a0 = a
+        a = (a[0] + ix * drop, a[1] + iy * drop)
 
-        def quad(t1, t2, d1, d2, lean=0.0):
+        def quad(t1, t2, d1, d2, lean=0.0, a=a):
             p1 = (a[0] + ex * t1, a[1] + ey * t1)
             p2 = (a[0] + ex * t2, a[1] + ey * t2)
             return [p1, p2,
                     (p2[0] + ix * d2 + ex * lean, p2[1] + iy * d2 + ey * lean),
                     (p1[0] + ix * d1 + ex * lean, p1[1] + iy * d1 + ey * lean)]
-        excl.append(quad(-J, L + J, ch + J, ch + J))
+        # nothing else goes under the coping, nor in the gap left over above it
+        excl.append(quad(-J, L + J, ch + 2 * J + drop, ch + 2 * J + drop, a=(a0[0] - ix * J, a0[1] - iy * J)))
         t = 0.0
         k = 0
         while t < L - J * 0.5:
@@ -1354,7 +1438,10 @@ def coping_layout(outline, p, rng):
                 break
             lean = ch * 0.12 * (0.6 + 0.4 * rng.random()) if style == 'slate_up' else 0.0
             if style == 'saddle':
-                # a rounded top: three bands, standing out less towards the top
+                # a truly rounded top: built as its own curved solid (rounded_coping_solid)
+                units.append((_ccw(quad(t, t2, d1, d2)), 'round', (a, (ex, ey), (ix, iy), t, t2, ch)))
+            elif style == 'stepped':
+                # a stepped top: three bands, standing out less towards the top
                 for f0, f1, fd in ((0.0, 0.22, 0.55), (0.22, 0.5, 0.85), (0.5, 1.0, 1.0)):
                     q = quad(t, t2, d1 * f1, d2 * f1)
                     q = [(q[0][0] + ix * d1 * f0, q[0][1] + iy * d1 * f0),
@@ -1439,6 +1526,146 @@ def _break_unit(poly, rng, toward):
     return out
 
 
+def _bottom_at(outline, x):
+    """The bottom of the outline below x."""
+    ys = []
+    n = len(outline)
+    for i in range(n):
+        (ax, ay), (bx, by) = outline[i], outline[(i + 1) % n]
+        if (ax <= x <= bx) or (bx <= x <= ax):
+            if abs(bx - ax) < 1e-12:
+                ys += [ay, by]
+            else:
+                ys.append(ay + (by - ay) * (x - ax) / (bx - ax))
+    return min(ys) if ys else None
+
+
+def drop_hanging(walling, copings, fixed, opening_boxes, outline, J, unit_h):
+    """Takes out units the damage has left hanging in mid-air: any bit of wall not joined
+    (through its joints) to the ground, the quoins or the top of an opening, and any unit
+    left dangling with nothing under it and at most one neighbour.
+    Returns (walling kept, copings kept, units taken out)."""
+    units = [('w', u) for u in walling] + [('c', u) for u in copings]
+    if not units:
+        return walling, copings, []
+    boxes = [_bbox(u[0]) for _, u in units]
+    g = max(1.6 * J, unit_h * 0.08, 1e-9)        # how far apart two units can be and still touch
+    fboxes = [_bbox(f) for f in fixed]
+    cell = max(max(b[1] - b[0] for b in boxes), max(b[3] - b[2] for b in boxes), g) * 1.01
+    grid = {}
+    for k, b in enumerate(boxes):
+        for i in range(int(math.floor(b[0] / cell)), int(math.floor(b[1] / cell)) + 1):
+            for j in range(int(math.floor(b[2] / cell)), int(math.floor(b[3] / cell)) + 1):
+                grid.setdefault((i, j), []).append(k)
+
+    def touch(a, b):
+        """'below' (b holds a up), 'above', 'side' or None."""
+        ox = min(a[1], b[1]) - max(a[0], b[0])
+        oy = min(a[3], b[3]) - max(a[2], b[2])
+        wa, wb = a[1] - a[0], b[1] - b[0]
+        ha, hb = a[3] - a[2], b[3] - b[2]
+        if ox >= max(0.15 * min(wa, wb), 1e-12) and oy > -g:
+            if (b[2] + b[3]) < (a[2] + a[3]):
+                return 'below'
+            return 'above'
+        if oy >= max(0.3 * min(ha, hb), 1e-12) and ox > -g:
+            return 'side'
+        return None
+
+    nbrs = [dict() for _ in units]
+    for k, b in enumerate(boxes):
+        seen = set()
+        for i in range(int(math.floor((b[0] - g) / cell)), int(math.floor((b[1] + g) / cell)) + 1):
+            for j in range(int(math.floor((b[2] - g) / cell)), int(math.floor((b[3] + g) / cell)) + 1):
+                for m in grid.get((i, j), ()):
+                    if m != k and m not in seen:
+                        seen.add(m)
+                        t = touch(b, boxes[m])
+                        if t:
+                            nbrs[k][m] = t
+
+    # an opening is a bridge: what's over it (on the lintel) is joined to what's beside it,
+    # but it only holds anything up while there's still wall beside or under it
+    n_units = len(units)
+    nbrs += [dict() for _ in opening_boxes]
+    reach_g = g + unit_h * 0.5
+    for oi, ob in enumerate(opening_boxes):
+        node = n_units + oi
+        for k, b in enumerate(boxes):
+            ox = min(b[1], ob[1]) - max(b[0], ob[0])
+            oy = min(b[3], ob[3]) - max(b[2], ob[2])
+            if ox > 0.15 * (b[1] - b[0]) and ob[3] - reach_g <= b[2] <= ob[3] + reach_g:
+                nbrs[k][node] = 'below'                 # on the head
+                nbrs[node][k] = 'above'
+            elif oy > 0.3 * (b[3] - b[2]) and ox > -reach_g:
+                nbrs[k][node] = 'side'                  # the wall beside it (not the sill below)
+                if b[3] >= ob[3] - 2.5 * unit_h:      # the top of the jamb, where the head bears
+                    nbrs[node][k] = 'L' if (b[0] + b[1]) < (ob[0] + ob[1]) else 'R'
+                else:
+                    nbrs[node][k] = 'side'
+
+    def held(b):
+        """Stood on the ground, or against a quoin."""
+        xc = (b[0] + b[1]) / 2.0
+        gy = _bottom_at(outline, xc)
+        if gy is not None and b[2] <= gy + g:
+            return True
+        for f in fboxes:
+            if touch(b, f):
+                return True
+        return False
+
+    alive = [True] * len(nbrs)
+    # 1. islands: not joined to anything that holds them up. An opening only carries its head
+    #    while there's wall still standing on both sides of it (a doorway stands on the ground).
+    reach = [False] * len(nbrs)
+    stack = [k for k, b in enumerate(boxes) if held(b)]
+    for k in stack:
+        reach[k] = True
+    active = set()
+    while True:
+        while stack:
+            k = stack.pop()
+            for m in nbrs[k]:
+                if m >= n_units and m not in active:
+                    continue
+                if not reach[m]:
+                    reach[m] = True
+                    stack.append(m)
+        for oi in range(len(opening_boxes)):
+            node = n_units + oi
+            if node in active:
+                continue
+            sides = set(t for m, t in nbrs[node].items() if t in ('L', 'R') and reach[m])
+            if sides == {'L', 'R'}:
+                active.add(node)
+                reach[node] = True
+                stack.append(node)
+        if not stack:
+            break
+    for k in range(len(nbrs)):
+        if not reach[k]:
+            alive[k] = False
+    # 2. danglers: nothing under them and at most one neighbour left (a few passes, so a
+    #    short run of them hanging off one another goes too)
+    for _ in range(4):
+        changed = False
+        for k in range(len(units)):
+            if not alive[k] or held(boxes[k]):
+                continue
+            live = [t for m, t in nbrs[k].items() if alive[m] and (m < n_units or reach[m])]
+            if 'below' not in live and len(live) <= 1:
+                alive[k] = False
+                changed = True
+        if not changed:
+            break
+    alive = alive[:n_units]
+    kw = [u for (w_, u), ok in zip(units, alive) if ok and w_ == 'w']
+    kc = [u for (w_, u), ok in zip(units, alive) if ok and w_ == 'c']
+    gone = [u for (w_, u), ok in zip(units, alive) if not ok]
+    return kw, kc, gone
+
+
 def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     """Everything that goes on one wall, in the wall's own flat coordinates (x along,
     y up, depth out from the face). `holes` are the openings (already grown by the
@@ -1469,7 +1696,13 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     if p.get('copings'):
         cu, ce = coping_layout(outline, p, random.Random(rng.random()))
         done = []
-        for poly, fd in cu:
+        for item in cu:
+            poly, fd = item[0], item[1]
+            if fd == 'round':
+                # a rounded stone is built whole (curved), not cut to the outline
+                cop_units.append((poly, th + p['c_over'], 'coping', rng.random(), ('round', item[2])))
+                done.append((poly, _bbox(poly), True))
+                continue
             for pc in to_outline(poly):
                 for piece in trim_poly(pc, done, subdiv, min_frag * 0.3):
                     cop_units.append((piece, max(th * 0.5, (th + p['c_over']) * fd), 'coping', rng.random()))
@@ -1578,6 +1811,7 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     blasts = blast_holes(W, H, p, drng) if int(p.get('holes_n', 0)) > 0 else []
     broken_p = (p.get('broken_pct') or 0.0) / 100.0
     unit_h = B if mat == 'brick' else B * 0.8
+    missing_polys = []           # units left out here and there (can go right through the backing)
 
     def damage(units, can_kick):
         keep = []
@@ -1585,6 +1819,7 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
             poly = u[0]
             cx, cy = _centroid(poly)
             gone = False
+            missing = False
             snap = None
             if ycut is not None:
                 lim = ycut(cx) + drng.uniform(-0.5, 0.5) * unit_h
@@ -1607,9 +1842,14 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
                             snap = (bc[0] - cx, bc[1] - cy)
             if not gone and can_kick and drng.random() * 100.0 < (p.get('missing_pct') or 0.0):
                 gone = True
+                missing = True
             if gone:
                 removed.append((cx, cy, u[2]))
+                if missing:
+                    missing_polys.append(poly)
                 continue
+            if snap is not None and len(u) > 4:
+                snap = None                  # a rounded coping stone isn't snapped, just left
             if snap is not None:
                 np_ = _break_unit(poly, drng, snap)
                 if np_ is None:
@@ -1624,6 +1864,12 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
                     u[1] = u[1] + p['kick_mm'] * (0.35 + 0.65 * drng.random())
                 elif p.get('spall') and drng.random() * 100.0 < (p.get('spall_pct') or 0.0):
                     u[1] = max(u[1] * 0.25, u[1] - p['spall_mm'] * (0.35 + 0.65 * drng.random()))
+                if p.get('worn') and drng.random() * 100.0 < (p.get('worn_pct') or 0.0):
+                    # worn: corners rounded off on the face, and the face edges rounded over
+                    r = (p.get('worn_mm') or 0.0) * (0.5 + 0.5 * drng.random())
+                    if r > 0:
+                        u[0] = _round_corners(_ccw(u[0]), r, 2)
+                        u = u[:4] + [('worn', r * 0.8)]
             keep.append(tuple(u))
         return keep
 
@@ -1631,6 +1877,17 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     quo_units = damage(quo_units, False)
     dress_units = damage(dress_units, False)
     cop_units = damage(cop_units, False)
+
+    # ---- hanging units: bits of wall left in mid-air by the damage
+    n_hanging = 0
+    if p.get('no_hanging') and (ycut is not None or blasts or (p.get('missing_pct') or 0) > 0):
+        fixed = [u[0] for u in quo_units + dress_units]
+        tops = [bb for k, (h, bb, cv) in enumerate(real_holes)]
+        walling, cop_units, gone_units = drop_hanging(walling, cop_units, fixed, tops, outline, J, unit_h)
+        n_hanging = len(gone_units)
+        for u in gone_units:
+            cx, cy = _centroid(u[0])
+            removed.append((cx, cy, u[2]))
 
     # ---- the backing sheet (follows the broken top, open where the wall is blown through)
     backing = []
@@ -1650,15 +1907,35 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
                         yy = min(yy, bb[2])
                 top.append((x, max(yy, by0 + J)))
             prof_poly = _ccw([(bx0 - 1.0, by0 - 1.0), (bx1 + 1.0, by0 - 1.0)] + top[::-1])
-            if _is_convex(outline):
+            # doorways: fill them in to get the plain wall shape, then cut them out again after
+            eps_ = max(W, H) * 1e-7
+            ol = _ccw(list(outline))
+            door_cuts = [h for k, (h, bb, cv) in enumerate(real_holes) if hole_ids[k] >= NOTCH_BASE]
+            if door_cuts:
+                tol_ = max(W, H) * 1e-4
+                up = set()
+                for nt in outline_notches(outline):
+                    for q in nt:
+                        if q[1] > by0 + tol_:
+                            up.add((round(q[0] / eps_), round(q[1] / eps_)))
+                ol = [q for q in ol if (round(q[0] / eps_), round(q[1] / eps_)) not in up]
+            if len(ol) >= 3 and _is_convex(ol):
                 # a plain or gabled wall: cut the profile to the outline in one go
                 pc = prof_poly
-                ol = _ccw(list(outline))
                 for i in range(len(ol)):
                     pc = _clip_edge(pc, ol[i], ol[(i + 1) % len(ol)], True)
                     if len(pc) < 3:
                         break
-                pieces = [_simplify(pc, max(W, H) * 1e-7)] if len(pc) >= 3 else []
+                pieces = [_simplify(pc, eps_)] if len(pc) >= 3 else []
+                for dc in door_cuts:
+                    dc = _ccw(dc)
+                    for part in ([dc] if _is_convex(dc) else _ear_clip(dc)):
+                        nxt = []
+                        for pc in pieces:
+                            nxt.extend(_subtract_convex(pc, part))
+                        pieces = nxt
+                if len(pieces) > 1:
+                    pieces = _merge(pieces, eps_)
             else:
                 # clip the outline by each slice under the broken top, and join them up
                 parts = []
@@ -1671,19 +1948,82 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
                 pieces = _merge(parts, max(W, H) * 1e-7) if parts else []
         else:
             pieces = [_ccw(list(outline))]
-        cut = [h for h, bb, cv in real_holes]
+        # doorways are already notches in the outline, so only true holes are cut
+        cut = [h for k, (h, bb, cv) in enumerate(real_holes) if hole_ids[k] < NOTCH_BASE]
         if p.get('through'):
             cut += [_ccw(b) for b in blasts]
+        if p.get('miss_through') and missing_polys:
+            # a missing unit leaves a hole right through, unless it runs into another hole
+            m_ = max(J * 0.2, max(W, H) * 1e-5)
+            taken = [(_ccw(h), _bbox(h)) for h in cut]
+            for mp in missing_polys:
+                mp = _ccw(mp)
+                bb = _bbox(mp)
+                big = _grow(mp, m_)
+                clash = False
+                for h, t in taken:
+                    if bb[1] + m_ <= t[0] or bb[0] >= t[1] + m_ or bb[3] + m_ <= t[2] or bb[2] >= t[3] + m_:
+                        continue
+                    if any(_pip(q[0], q[1], h) for q in big) or any(_pip(q[0], q[1], big) for q in h) \
+                            or _pip(*(_centroid(mp) + (h,))):
+                        clash = True
+                        break
+                if not clash:
+                    cut.append(mp)
+                    taken.append((mp, bb))
+        edge = max(J * 0.25, max(W, H) * 1e-5)     # a hole must keep clear of the sheet's edge
+        eps_b = max(W, H) * 1e-7
+        if p.get('through') and blasts:
+            # a blast hole that breaks out through the edge of the sheet (into the broken top)
+            # can't be a hole in it: it's cut out of the sheet's edge instead
+            new_pieces = []
+            for pc in pieces:
+                pc = _ccw(pc)
+                work = [pc]
+                for bl in blasts:
+                    bl = _ccw(bl)
+                    g_ = _grow(bl, edge)
+                    if all(_pip(q[0], q[1], pc) for q in g_):
+                        continue                      # wholly inside: a plain hole, below
+                    if not any(_pip(q[0], q[1], pc) for q in bl) and not any(_pip(q[0], q[1], bl) for q in pc):
+                        continue                      # nowhere near this piece
+                    nxt = []
+                    for w_ in work:
+                        sub = [w_]
+                        for tri in _ear_clip(bl):
+                            sub = [r for s_ in sub for r in _subtract_convex(s_, tri)]
+                        nxt.extend(sub)
+                    nxt = [x for x in nxt if len(x) >= 3 and abs(_area(x)) > eps_b * eps_b * 1e6]
+                    merged = _merge(nxt, eps_b) if len(nxt) > 1 else nxt
+                    if 0 < len(merged) <= 4:
+                        work = merged
+                new_pieces.extend(work)
+            pieces = new_pieces
+        # no slivers, and nothing left floating (every piece stands on the bottom of the wall)
+        keep_p = []
+        for pc in pieces:
+            pb = _bbox(pc)
+            if len(pc) < 3 or abs(_area(pc)) < (max(J, unit_h * 0.2)) ** 2 or pb[3] - pb[2] < max(J, 1e-9):
+                continue
+            if pb[2] > by0 + max(J, unit_h * 0.2):
+                continue
+            keep_p.append(pc)
+        pieces = keep_p
         for pc in pieces:
             pc = _ccw(pc)
             inner = []
             for h in cut:
-                if all(_pip(q[0], q[1], pc) for q in h) and abs(_area(h)) < abs(_area(pc)):
-                    inner.append(_ccw(h))
+                hh = _ccw(h)
+                if all(_pip(q[0], q[1], pc) for q in _grow(hh, edge)) and abs(_area(h)) < abs(_area(pc)):
+                    gh_ = _grow(hh, edge)
+                    if any(any(_pip(q[0], q[1], o) for q in gh_) or any(_pip(q[0], q[1], gh_) for q in o)
+                           for o in inner):
+                        continue                      # holes in one sheet mustn't run into each other
+                    inner.append(hh)
             backing.append((pc, inner))
 
     stats = {'units': len(walling), 'quoins': len(quo_units) + len(dress_units),
-             'copings': len(cop_units), 'removed': len(removed)}
+             'copings': len(cop_units), 'removed': len(removed), 'hanging': n_hanging}
     return {'walling': walling, 'quoins': quo_units, 'dressings': dress_units,
             'copings': cop_units, 'backing': backing, 'removed': removed, 'stats': stats,
             'ycut': ycut, 'blasts': blasts}
@@ -1730,10 +2070,13 @@ def piece_shapes(p, rng, kind):
     A, B = p['length'], p['height']
     E = p.get('header_len') or A / 2.0
     if kind == 'timber':
-        mm = p.get('_mm', 1.0)            # timbers are real sizes, whatever the walling
-        L = rng.uniform(1200.0, 3200.0) * mm
-        w = rng.uniform(75.0, 225.0) * mm
-        return _rect(-L / 2, -w / 2, L / 2, w / 2), w * rng.uniform(0.35, 1.0)
+        # planks and timbers: real sizes from the Rubble pile tab, whatever the walling
+        mm = p.get('_mm', 1.0)
+        Lmax = p.get('plank_len') or 3200.0 * mm
+        L = Lmax * rng.uniform(0.4, 1.0)
+        w = (p.get('plank_w') or 225.0 * mm) * rng.uniform(0.75, 1.0)
+        t = (p.get('plank_t') or 75.0 * mm) * rng.uniform(0.85, 1.15)
+        return _rect(-L / 2, -w / 2, L / 2, w / 2), t
     if mat == 'brick':
         if kind == 'whole':
             return _rect(-A / 2, -E / 2, A / 2, E / 2), B
@@ -1764,10 +2107,97 @@ def piece_shapes(p, rng, kind):
     return _ccw(poly), B * rng.uniform(0.6, 1.0)
 
 
-def drop_pieces(p, rng, n, sample, inside, max_h, timbers=0, broken=0.4, core=None):
+def barrel_faces(p, rng):
+    """An oil drum (straight, two rolling hoops) or a wooden barrel (bulging), centred on 0,
+    stood up or lying on its side."""
+    D, Hb = p.get('barrel_d') or 585.0, p.get('barrel_h') or 880.0
+    r = D / 2.0
+    m = 16
+    if p.get('barrel_kind', 'drum') == 'barrel':
+        rings = [(-0.5, 0.84), (-0.3, 0.95), (0.0, 1.0), (0.3, 0.95), (0.5, 0.84)]
+    else:
+        h1, h2 = 0.17, 0.2
+        rings = [(-0.5, 1.0), (-h2, 1.0), (-h2, 1.035), (-h1, 1.035), (-h1, 1.0),
+                 (h1, 1.0), (h1, 1.035), (h2, 1.035), (h2, 1.0), (0.5, 1.0)]
+    ang0 = rng.uniform(0, 2 * math.pi)
+    loops = [[(r * f * math.cos(ang0 + 2 * math.pi * k / m), r * f * math.sin(ang0 + 2 * math.pi * k / m), z * Hb)
+              for k in range(m)] for z, f in rings]
+    faces = [loops[-1], loops[0][::-1]]
+    for lo, hi in zip(loops, loops[1:]):
+        for k in range(m):
+            j = (k + 1) % m
+            faces.append([lo[k], lo[j], hi[j], hi[k]])
+    if rng.random() < 0.5:                       # lying on its side
+        faces = [[(q[0], q[2], -q[1]) for q in f] for f in faces]
+    return faces
+
+
+def crate_faces(p, rng):
+    """A wooden crate or packing case, a little different in size each time."""
+    s = p.get('crate_size') or 600.0
+    a, b, c = s * rng.uniform(0.8, 1.2), s * rng.uniform(0.6, 1.0), s * rng.uniform(0.5, 0.9)
+    return prism_faces(_rect(-a / 2, -b / 2, a / 2, b / 2), -c / 2, c / 2)
+
+
+def custom_faces(p, rng):
+    """Your own object (picked from the model), centred on 0, at the scale set."""
+    src = p.get('_custom') or []
+    k = (p.get('custom_scale') or 100.0) / 100.0 * p.get('_mm', 1.0)
+    return [([(q[0] * k, q[1] * k, q[2] * k) for q in o], [[(q[0] * k, q[1] * k, q[2] * k) for q in h] for h in hs])
+            for o, hs in src]
+
+
+def object_faces(group, limit=20000):
+    """Every face of a group or component (and the groups inside it), placed as it is in the
+    model, then centred on 0 and turned into mm. Returns [(outer, [holes])]."""
+    out = []
+
+    def mp(m, q):
+        v = vertex_to_vector3d(q)
+        if m is not None:
+            try:
+                v = m.map(v)
+            except Exception:
+                pass
+        return (v.x(), v.y(), v.z())
+
+    def walk(g, base, depth=0):
+        if depth > 30 or len(out) > limit:
+            return
+        x = getattr(g, 'xform', None)
+        if x is not None and not hasattr(x, 'map'):
+            x = None
+        m = base if x is None else (x if base is None else base * x)
+        mesh = getattr(g, 'mesh', None)
+        for f in list(getattr(mesh, 'faces', None) or []):
+            try:
+                outer = [mp(m, q) for q in f.vertices]
+                holes = [[mp(m, q) for q in h] for h in (getattr(f, 'holes', None) or [])]
+            except Exception:
+                continue
+            if len(outer) >= 3:
+                out.append((outer, [h for h in holes if len(h) >= 3]))
+        for ch in list(getattr(g, 'children', None) or []):
+            walk(ch, m, depth + 1)
+    walk(group, None)
+    if not out:
+        return []
+    pts = [q for o, _ in out for q in o]
+    lo = [min(q[k] for q in pts) for k in range(3)]
+    hi = [max(q[k] for q in pts) for k in range(3)]
+    c = [(lo[k] + hi[k]) / 2.0 for k in range(3)]
+    k = 1000.0 if max(hi[i] - lo[i] for i in range(3)) < 50.0 else 1.0   # drawn in metres
+    return [([((q[0] - c[0]) * k, (q[1] - c[1]) * k, (q[2] - c[2]) * k) for q in o],
+             [[((q[0] - c[0]) * k, (q[1] - c[1]) * k, (q[2] - c[2]) * k) for q in h] for h in hs])
+            for o, hs in out]
+
+
+def drop_pieces(p, rng, n, sample, inside, max_h, timbers=0, broken=0.4, core=None, extras=()):
     """Drops n loose pieces one at a time where sample() says, letting each one roll
     down off any piece already there that it would sit too steeply on. Returns a list
-    of solids (each a list of faces) in local x, y (ground) and z (up)."""
+    of solids (each a list of faces) in local x, y (ground) and z (up).
+    extras: [(kind, maker)] objects (barrels, crates, your own), dropped in among the later
+    pieces so they sit partly buried, partly on top."""
     A, B = p['length'], p['height']
     cell = max(A * 0.45, 1e-9)
     grid = {}
@@ -1783,7 +2213,51 @@ def drop_pieces(p, rng, n, sample, inside, max_h, timbers=0, broken=0.4, core=No
         r = rng.random()
         kinds.append('whole' if r > broken else ('bat' if r > broken * 0.45 else 'bit'))
     rng.shuffle(kinds)
+    for ex in extras:
+        kinds.insert(rng.randint(len(kinds) // 2, len(kinds)), ex)
     for kind in kinds:
+        if isinstance(kind, tuple):
+            name, maker = kind
+            faces = maker(p, rng)
+            if not faces:
+                continue
+            best = None
+            for attempt in range(8):                # roll down to where it can rest; always lands
+                x, y = sample()
+                i, j = int(math.floor(x / cell)), int(math.floor(y / cell))
+                for _ in range(12):
+                    h0 = gh(i, j)
+                    nb = None
+                    for di in (-1, 0, 1):
+                        for dj in (-1, 0, 1):
+                            if (di or dj) and inside((i + di + 0.5) * cell, (j + dj + 0.5) * cell):
+                                h1 = gh(i + di, j + dj)
+                                if h1 < h0 - step and (nb is None or h1 < nb[0]):
+                                    nb = (h1, i + di, j + dj)
+                    if nb is None:
+                        break
+                    i, j = nb[1], nb[2]
+                if best is None or gh(i, j) < best[0]:
+                    best = (gh(i, j), i, j)
+                if gh(i, j) <= max_h:
+                    break
+            base, i, j = best
+            x = (i + rng.random()) * cell
+            y = (j + rng.random()) * cell
+            R = _rot(rng.uniform(0, 2 * math.pi), rng.uniform(0, 2 * math.pi), math.radians(rng.uniform(0, 12)))
+            faces = [_map_face(f, lambda q: _mul(R, q)) for f in faces]
+            zs = [q[2] for f in faces for q in _face_pts(f)]
+            zmin, zmax = min(zs), max(zs)
+            lift = max(base - zmin - (zmax - zmin) * 0.12, -zmin)
+            faces = [_map_face(f, lambda q: (q[0] + x, q[1] + y, q[2] + lift)) for f in faces]
+            solids.append((name, faces))
+            top = zmax + lift
+            xs = [q[0] for f in faces for q in _face_pts(f)]
+            ys = [q[1] for f in faces for q in _face_pts(f)]
+            for ii in range(int(math.floor(min(xs) / cell)), int(math.floor(max(xs) / cell)) + 1):
+                for jj in range(int(math.floor(min(ys) / cell)), int(math.floor(max(ys) / cell)) + 1):
+                    grid[(ii, jj)] = max(gh(ii, jj), base + (top - base) * 0.8)
+            continue
         base = None
         for attempt in range(8):                # where it lands, if the heap isn't full there
             x, y = sample()
@@ -1939,9 +2413,14 @@ def make_pile(p, outline=None, seed_base=0):
             rr = rad_at(a) * t
             return (c[0] + rr * math.cos(a), c[1] + rr * math.sin(a))
         return c
+    extras = [('barrel', barrel_faces)] * int(p.get('pile_barrels') or 0)
+    extras += [('crate', crate_faces)] * int(p.get('pile_crates') or 0)
+    if p.get('_custom'):
+        extras += [('custom', custom_faces)] * int(p.get('pile_custom') or 0)
     pieces = drop_pieces(p, rng, p.get('pile_n', 150), sample, inside, Hp,
-                         timbers=p.get('pile_timbers', 0), broken=(p.get('pile_broken', 40.0)) / 100.0,
-                         core=hfun if core is not None else None)
+                         timbers=p.get('pile_timbers', 0) if p.get('pile_timbers_on', True) else 0,
+                         broken=(p.get('pile_broken', 40.0)) / 100.0,
+                         core=hfun if core is not None else None, extras=extras)
     return core, pieces
 
 
@@ -1992,8 +2471,97 @@ def slab_with_holes(outer, holes, z0, z1):
     return faces
 
 
+def _orient_out(faces):
+    """Turns every face of a convex solid to face outwards."""
+    pts = [q for f in faces for q in f]
+    if not pts:
+        return faces
+    c = [sum(q[k] for q in pts) / len(pts) for k in range(3)]
+    out = []
+    for f in faces:
+        nx = ny = nz = 0.0
+        for i in range(len(f)):
+            a, b = f[i], f[(i + 1) % len(f)]
+            nx += (a[1] - b[1]) * (a[2] + b[2])
+            ny += (a[2] - b[2]) * (a[0] + b[0])
+            nz += (a[0] - b[0]) * (a[1] + b[1])
+        fc = [sum(q[k] for q in f) / len(f) for k in range(3)]
+        if nx * (fc[0] - c[0]) + ny * (fc[1] - c[1]) + nz * (fc[2] - c[2]) < 0:
+            f = f[::-1]
+        out.append(f)
+    return out
+
+
+def rounded_coping_solid(info, D, steps=10):
+    """A saddleback coping stone with a truly rounded top: a curved profile (rising from the
+    wall face at the top to the full depth D, then straight down the front) run along the edge."""
+    a, e, i, t1, t2, ch = info
+    prof = [(0.0, 0.0)]
+    for k in range(steps + 1):
+        r = k / float(steps)
+        prof.append((0.65 * ch * r, D * max(0.1, math.sqrt(max(0.0, 1.0 - (1.0 - r) ** 2)))))
+    prof += [(ch, D), (ch, 0.0)]
+
+    def P(t, s, z):
+        return (a[0] + e[0] * t + i[0] * s, a[1] + e[1] * t + i[1] * s, z)
+    faces = [[P(t1, s, z) for s, z in prof], [P(t2, s, z) for s, z in prof]]
+    n = len(prof)
+    for k in range(n):
+        (sa, za), (sb, zb) = prof[k], prof[(k + 1) % n]
+        faces.append([P(t1, sa, za), P(t1, sb, zb), P(t2, sb, zb), P(t2, sa, za)])
+    return [(f, []) for f in _orient_out(faces)]
+
+
+def worn_unit_solid(poly, d, c):
+    """A worn brick or stone: its face edges rounded off (a sloping band round the face)."""
+    poly = _ccw(poly)
+    x0, x1, y0, y1 = _bbox(poly)
+    w, h = x1 - x0, y1 - y0
+    c = min(c, 0.45 * d, 0.3 * min(w, h))
+    if c <= 1e-9:
+        return unit_solid(poly, 0.0, d)
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    sx, sy = max(0.2, (w - 2 * c) / w), max(0.2, (h - 2 * c) / h)
+    inset = [(cx + (x - cx) * sx, cy + (y - cy) * sy) for x, y in poly]
+    rings = [[(x, y, 0.0) for x, y in poly], [(x, y, d - c) for x, y in poly],
+             [(x, y, d) for x, y in inset]]
+    faces = [rings[2], rings[0][::-1]]
+    n = len(poly)
+    for lo, hi in ((rings[0], rings[1]), (rings[1], rings[2])):
+        for k in range(n):
+            j = (k + 1) % n
+            faces.append([lo[k], lo[j], hi[j], hi[k]])
+    return [(f, []) for f in faces]
+
+
+def unit_faces(u, back=True):
+    """The solid for one unit (poly, depth, kind, shade[, extra]): a plain block, a worn one,
+    or a rounded coping stone."""
+    poly, d = u[0], u[1]
+    extra = u[4] if len(u) > 4 else None
+    if extra and extra[0] == 'round':
+        faces = rounded_coping_solid(extra[1], d)
+    elif extra and extra[0] == 'worn':
+        faces = worn_unit_solid(poly, d, extra[1])
+    else:
+        faces = unit_solid(poly, 0.0, d)
+    if not back:
+        faces = [f for f in faces if not all(abs(q[2]) < 1e-12 for q in f[0])]
+    return faces
+
+
+def _face_pts(f):
+    return f[0] if isinstance(f, tuple) else f
+
+
+def _map_face(f, fn):
+    if isinstance(f, tuple):
+        return ([fn(q) for q in f[0]], [[fn(q) for q in h] for h in f[1]])
+    return [fn(q) for q in f]
+
+
 def plain(solid_faces):
-    return [(f, []) for f in solid_faces]
+    return [(f[0], f[1]) if isinstance(f, tuple) else (f, []) for f in solid_faces]
 
 
 # ---------------------------------------------------------------------------
@@ -2065,6 +2633,12 @@ def unit_colour(mat, kind, shade):
         base = (181, 86, 60)
     elif kind == 'timber':
         base = (66, 52, 40)
+    elif kind == 'barrel':
+        base = ((128, 62, 38), (52, 78, 58), (70, 84, 108))[int(shade * 2.999)]
+    elif kind == 'crate':
+        base = (150, 116, 76)
+    elif kind == 'custom':
+        base = (120, 128, 140)
     elif kind == 'core':
         base = (124, 112, 100)
     else:
@@ -2111,8 +2685,8 @@ def wall_preview_solids(v):
         solids.append(([([(x, y, 0.0) for x, y in outline], [[(x, y, 0.0) for x, y in h[::-1]] for h in holes])],
                        MORTAR_RGB.get(mat, (200, 195, 185)), 0))
     for key in ('walling', 'quoins', 'dressings', 'copings'):
-        for poly, d, kind, shade in res[key]:
-            solids.append((unit_solid(poly, 0.0, d), unit_colour(mat, kind, shade)))
+        for u in res[key]:
+            solids.append((unit_faces(u), unit_colour(mat, u[2], u[3])))
     if v.get('foot'):
         crng = random.Random(5)
         for _kind, sol in foot_rubble(p, W, res['removed']):
@@ -2131,7 +2705,8 @@ def pile_preview_solids(v):
         solids.append((plain(core), unit_colour(mat, 'core', 0.5)))
     rng = random.Random(3)
     for kind, sol in pieces:
-        kind = 'timber' if kind == 'timber' else ('brick' if mat == 'brick' else 'stone')
+        if kind not in ('timber', 'barrel', 'crate', 'custom'):
+            kind = 'brick' if mat == 'brick' else 'stone'
         solids.append((plain(sol), unit_colour(mat, kind, rng.random())))
     return solids
 
@@ -2234,7 +2809,7 @@ def sizes_drawing(v, mode='wall'):
         x = 0.0
         k = 0
         while x < Wd - 1e-9:
-            if style in ('slab', 'saddle'):
+            if style in ('slab', 'saddle', 'stepped'):
                 w, hh = K, Jc
             elif style == 'brick_edge':
                 w, hh = B, Jc
@@ -2243,7 +2818,7 @@ def sizes_drawing(v, mode='wall'):
             box(x, yc, min(x + w, Wd), yc + hh, 'coping')
             x += w + J
             k += 1
-        if style in ('slab', 'saddle'):
+        if style in ('slab', 'saddle', 'stepped'):
             dim_h(0, min(K, Wd), ytop + tick * 1.5, "K", tick)
         dim_v(-tick * 2, yc, ytop, "J", tick)
     # an end section, drawn larger: the face, and how far each part stands out
@@ -2455,7 +3030,9 @@ SIZE_PRESET_KEYS = {'material', 'length', 'height', 'depth', 'joint', 'header_le
 # kept as they are whatever preset is picked
 KEEP_KEYS = {'back_faces', 'swap', 'new_group', 'hole_gap', 'subdiv', 'soldier_len', 'soldier_holes',
              'pile_shape', 'pile_len', 'pile_wid', 'pile_h', 'pile_n', 'pile_broken', 'pile_timbers',
-             'pile_core', 'pile_seed'}
+             'pile_core', 'pile_seed', 'pile_timbers_on', 'plank_len', 'plank_w', 'plank_t',
+             'pile_barrels', 'barrel_kind', 'barrel_d', 'barrel_h', 'pile_crates', 'crate_size',
+             'pile_custom', 'custom_scale'}
 
 TABS = ("Walling", "Bond", "Openings", "Quoins && copings", "Damage", "Rubble pile")
 
@@ -2513,6 +3090,9 @@ FIELDS = [
     ("Damage", 'spall_pct', "   How many ", 1.0, 100.0, 0, " %", "The share of units sunk back."),
     ("Damage", 'spall_mm', "   Sunk by up to", 0.01, 100.0, 2, " mm",
      "How far their faces are sunk back (frost-blown or spalled faces)."),
+    ("Damage", 'worn_pct', "   How many  ", 1.0, 100.0, 0, " %", "The share of units worn round."),
+    ("Damage", 'worn_mm', "   Worn by up to", 0.1, 200.0, 1, " mm",
+     "How much the corners and face edges are rounded off (each one a random amount up to this)."),
     ("Damage", 'missing_pct', "Missing units", 0.0, 90.0, 1, " %",
      "Units left out here and there, all over the wall."),
     ("Damage", 'ruin_depth', "   Broken down by up to", 1.0, 50000.0, 0, " mm",
@@ -2539,8 +3119,22 @@ FIELDS = [
      "How many loose bricks or stones are dropped on the heap."),
     ("Rubble pile", 'pile_broken', "Broken pieces", 0.0, 100.0, 0, " %",
      "The share of pieces that are halves and broken bits rather than whole."),
-    ("Rubble pile", 'pile_timbers', "Timbers", 0, 50, -1, "",
-     "Broken roof or floor timbers lying in the heap."),
+    ("Rubble pile", 'pile_timbers', "   How many planks", 0, 200, -1, "",
+     "How many planks and timbers lie in the heap."),
+    ("Rubble pile", 'plank_len', "   Plank length", 10.0, 20000.0, 0, " mm",
+     "The longest plank. Each one is a random length, from 40% of this up to it."),
+    ("Rubble pile", 'plank_w', "   Plank width", 1.0, 2000.0, 0, " mm", "How wide the planks are."),
+    ("Rubble pile", 'plank_t', "   Plank thickness", 1.0, 1000.0, 0, " mm", "How thick the planks are."),
+    ("Rubble pile", 'pile_barrels', "Barrels", 0, 100, -1, "", "Barrels or oil drums in the heap."),
+    ("Rubble pile", 'barrel_d', "   Barrel diameter", 10.0, 5000.0, 0, " mm",
+     "Across the barrel. An oil drum is about 585 mm."),
+    ("Rubble pile", 'barrel_h', "   Barrel height", 10.0, 5000.0, 0, " mm", "An oil drum is about 880 mm tall."),
+    ("Rubble pile", 'pile_crates', "Crates", 0, 100, -1, "", "Wooden crates or packing cases in the heap."),
+    ("Rubble pile", 'crate_size', "   Crate size", 10.0, 5000.0, 0, " mm",
+     "About how big the crates are (each one a little different)."),
+    ("Rubble pile", 'pile_custom', "   How many copies", 0, 100, -1, "",
+     "How many copies of your own object go in the heap."),
+    ("Rubble pile", 'custom_scale', "   Scale", 1.0, 1000.0, 0, " %", "100% = the size it is in the model."),
     ("Rubble pile", 'pile_seed', "Pile pattern no.", 0, 999999, -1, "",
      "Change this for a different heap."),
 ]
@@ -2586,7 +3180,15 @@ class BrickDialog(QDialog):
         for title in TABS:
             pg = QWidget()
             self.pages[title] = _form(pg)
-            self.tabs.addTab(pg, title)
+            try:
+                from PySide6.QtWidgets import QScrollArea, QFrame
+                sa = QScrollArea()
+                sa.setWidgetResizable(True)
+                sa.setFrameShape(QFrame.NoFrame)
+                sa.setWidget(pg)
+                self.tabs.addTab(sa, title)
+            except Exception:
+                self.tabs.addTab(pg, title)
         tab_tips = ["What the wall is built of, and the sizes of the bricks, blocks or stones.",
                     "Bricks and blocks: the bond, row offsets and header courses.",
                     "Soldier courses, and how the walling is cut round windows and doors.",
@@ -2599,6 +3201,7 @@ class BrickDialog(QDialog):
             self.tabs.setTabToolTip(i, t)
         side.addWidget(self.tabs, 1)
         self.sp = {}
+        self._key_tab = {}
         F = self.pages
 
         def combo(items, tip):
@@ -2633,6 +3236,7 @@ class BrickDialog(QDialog):
                 lab = QLabel(label)
                 lab.setToolTip(tip)
                 self.sp[key] = (s, lab)
+                self._key_tab[key] = tab
                 s.valueChanged.connect(self.changed)
                 yield key, lab, s
 
@@ -2760,10 +3364,15 @@ class BrickDialog(QDialog):
         self.cb_cop = check("Copings along the top", "Coping along the top of the wall, and up both slopes "
                                                      "of a gable.")
         F[Q].addRow(self.cb_cop)
-        self.cb_cstyle = combo(COPINGS, "Stone slabs, rounded saddleback stones, bricks on edge, cock and hen "
-                                        "(upright stones, tall and short in turn, as on a dry-stone wall) or "
-                                        "upright slates.")
+        self.cb_cstyle = combo(COPINGS, "Stone slabs, saddleback stones (rounded or stepped top), bricks on "
+                                        "edge, cock and hen (upright stones, tall and short in turn, as on a "
+                                        "dry-stone wall) or upright slates.")
         F[Q].addRow("   Coping:", self.cb_cstyle)
+        self.cb_ccourse = check("   Coping sits on a whole course (bricks)",
+                                "Bricks: the coping sits on the last whole course of bricks, so any odd bit of "
+                                "height left over is a gap at the top of the face, not a row of cut bricks or "
+                                "a gap under the coping.")
+        F[Q].addRow(self.cb_ccourse)
         for k in ('c_h', 'c_len', 'c_over'):
             row(Q, k)
 
@@ -2780,19 +3389,25 @@ class BrickDialog(QDialog):
         F[D].addRow(self.cb_spall)
         row(D, 'spall_pct')
         row(D, 'spall_mm')
+        self.cb_worn = check("Worn (rounded) units", "A few units have their corners and face edges rounded "
+                                                     "off, like old, weathered bricks and stones.")
+        F[D].addRow(self.cb_worn)
+        row(D, 'worn_pct')
+        row(D, 'worn_mm')
         row(D, 'missing_pct')
         self.cb_ruin = check("Broken-down top (ruin)", "The top of the wall broken down unevenly, in steps "
                                                        "along the joints, like a bombed or derelict building.")
         F[D].addRow(self.cb_ruin)
         row(D, 'ruin_depth')
         row(D, 'ruin_rough')
-        row(D, 'broken_pct')
         row(D, 'holes_n')
         row(D, 'hole_size')
-        self.cb_through = check("   Holes go right through the backing",
-                                "The blast holes are cut through the backing sheet too, so you can see "
-                                "through the wall (with the face deleted).")
-        F[D].addRow(self.cb_through)
+        row(D, 'broken_pct')
+        self.cb_hang = check("Take out hanging units", "After the damage, takes out any odd units left "
+                                                       "hanging in mid-air: bits of wall not joined to the rest, "
+                                                       "and units with nothing under them and only one "
+                                                       "neighbour.")
+        F[D].addRow(self.cb_hang)
         self.cb_foot = check("Rubble at the foot of the wall", "Loose bricks or stones heaped against the "
                                                                "foot of the wall, under the damage they "
                                                                "fell from.")
@@ -2800,6 +3415,16 @@ class BrickDialog(QDialog):
         row(D, 'foot_w')
         row(D, 'foot_amt')
         row(D, 'backing')
+        self.cb_through = check("   Blast holes go right through the backing",
+                                "The blast holes are cut through the backing sheet too, so you can see "
+                                "right through the wall (delete the face too). Ticking it with no backing "
+                                "sheet gives you one.")
+        F[D].addRow(self.cb_through)
+        self.cb_mthrough = check("   Missing units go right through the backing",
+                                 "Where a unit is missing, the backing sheet has a hole the same shape, so you "
+                                 "can see right through (delete the face too). Ticking it with no backing "
+                                 "sheet gives you one.")
+        F[D].addRow(self.cb_mthrough)
         self.cb_remove = check("Delete the face the walling is on",
                                "Takes the face away once the walling is on, so a broken-down top or holes "
                                "show (use a backing sheet so there's still a wall behind). Don't use it on "
@@ -2817,12 +3442,47 @@ class BrickDialog(QDialog):
         self.cb_pshape = combo(PILE_SHAPES, "A round heap, a long heap (along the face's longer side), or a "
                                             "heap filling the whole selected face.")
         F[Rp].addRow("Shape:", self.cb_pshape)
-        for k in ('pile_len', 'pile_wid', 'pile_h', 'pile_n', 'pile_broken', 'pile_timbers'):
+        for k in ('pile_len', 'pile_wid', 'pile_h', 'pile_n', 'pile_broken'):
             row(Rp, k)
         self.cb_core = check("Solid core under the pieces", "A solid mound under the loose pieces, so the "
                                                             "heap looks full and prints as one piece with "
                                                             "far fewer pieces.")
         F[Rp].addRow(self.cb_core)
+        self.cb_planks = check("Planks and timbers", "Broken roof or floor timbers and planks lying in the "
+                                                     "heap. Untick for none.")
+        F[Rp].addRow(self.cb_planks)
+        for k in ('pile_timbers', 'plank_len', 'plank_w', 'plank_t'):
+            row(Rp, k)
+        row(Rp, 'pile_barrels')
+        self.cb_bkind = combo([('drum', "Oil drums"), ('barrel', "Wooden barrels")],
+                              "Steel oil drums (straight, with two rolling hoops) or bulging wooden barrels. "
+                              "Some stand up, some lie on their sides.")
+        F[Rp].addRow("   Kind:", self.cb_bkind)
+        row(Rp, 'barrel_d')
+        row(Rp, 'barrel_h')
+        row(Rp, 'pile_crates')
+        row(Rp, 'crate_size')
+        # your own object, picked from the model
+        self._custom = None
+        self._custom_name = ""
+        self.lbl_custom = QLabel("Your own object: none picked")
+        self.lbl_custom.setWordWrap(True)
+        self.btn_custom = QPushButton("Use selected object")
+        self.btn_custom.setToolTip("Select a group or component in the model (a sack, a wheel, a sign ...), "
+                                   "then press this. Copies of it are dropped in the heap. It keeps its "
+                                   "own up (Z) direction.")
+        self.btn_custom.clicked.connect(self.pick_custom)
+        self.btn_custom_clear = QPushButton("Clear")
+        self.btn_custom_clear.setToolTip("Forget the object you picked.")
+        self.btn_custom_clear.clicked.connect(self.clear_custom)
+        crow = QHBoxLayout()
+        crow.addWidget(self.btn_custom)
+        crow.addWidget(self.btn_custom_clear)
+        crow.addStretch(1)
+        F[Rp].addRow(self.lbl_custom)
+        F[Rp].addRow(crow)
+        row(Rp, 'pile_custom')
+        row(Rp, 'custom_scale')
         row(Rp, 'pile_seed')
         self.tabs.currentChanged.connect(self.changed)
 
@@ -2882,11 +3542,13 @@ class BrickDialog(QDialog):
                 'heads': self.cb_heads, 'sills': self.cb_sills, 'copings': self.cb_cop,
                 'kick': self.cb_kick, 'spall': self.cb_spall, 'ruin': self.cb_ruin,
                 'through': self.cb_through, 'foot': self.cb_foot, 'remove_face': self.cb_remove,
-                'pile_core': self.cb_core, 'header_on': self.cb_head}
+                'pile_core': self.cb_core, 'header_on': self.cb_head, 'c_course': self.cb_ccourse,
+                'worn': self.cb_worn, 'no_hanging': self.cb_hang, 'miss_through': self.cb_mthrough,
+                'pile_timbers_on': self.cb_planks}
 
     def combos(self):
         return {'material': self.cb_mat, 'bond': self.cb_bond, 'offset_mode': self.cb_off,
-                'c_style': self.cb_cstyle, 'pile_shape': self.cb_pshape}
+                'c_style': self.cb_cstyle, 'pile_shape': self.cb_pshape, 'barrel_kind': self.cb_bkind}
 
     def get_values(self):
         v = {}
@@ -2970,12 +3632,34 @@ class BrickDialog(QDialog):
             d = {k: v_ for k, v_ in d.items() if v_ is not None}
             self.set_values(d)
 
+    def _row_vis(self, tab, w, on):
+        """Shows or hides a whole row (the setting and its label)."""
+        fl = self.pages[tab]
+        try:
+            fl.setRowVisible(w, bool(on))
+            return
+        except Exception:
+            pass
+        w.setVisible(bool(on))
+        try:
+            lab = fl.labelForField(w)
+            if lab is not None:
+                lab.setVisible(bool(on))
+        except Exception:
+            pass
+
     def changed(self, *_):
         if self._busy:
             return
         if self._sold_linked:
             self._busy = True
             self.sp['soldier_len'][0].setValue(self.sp['length'][0].value())
+            self._busy = False
+        if (self.cb_through.isChecked() or self.cb_mthrough.isChecked()) \
+                and self.sp['backing'][0].value() <= 0:
+            # holes right through need a backing sheet to be cut through: give it one
+            self._busy = True
+            self.sp['backing'][0].setValue(102.5)
             self._busy = False
         v = self.get_values()
         mat = v['material']
@@ -2987,16 +3671,35 @@ class BrickDialog(QDialog):
               'min_end_pct': brick and v['even_ends'],
               'q_long': v['quoins_l'] or v['quoins_r'] or v['q_open'] or v['heads'] or v['sills'],
               'c_h': v['copings'] and v['c_style'] != 'brick_edge',
-              'c_len': v['copings'] and v['c_style'] in ('slab', 'saddle'), 'c_over': v['copings'],
-              'kick_pct': v['kick'], 'kick_mm': v['kick'], 'spall_pct': v['spall'], 'spall_mm': v['spall'],
-              'ruin_depth': v['ruin'], 'ruin_rough': v['ruin'], 'hole_size': v['holes_n'] > 0,
-              'foot_w': v['foot'], 'foot_amt': v['foot'],
+              'c_len': v['copings'] and v['c_style'] in ('slab', 'saddle', 'stepped'), 'c_over': v['copings'],
               'pile_wid': v['pile_shape'] != 'face', 'pile_len': v['pile_shape'] != 'face'}
         on['q_short'] = on['q_h'] = on['q_proud'] = on['q_long']
         for key, ok in on.items():
             s, lab = self.sp[key]
             s.setEnabled(bool(ok))
             lab.setEnabled(bool(ok))
+        # Damage and Rubble pile: settings that belong to a tick only show when it's ticked
+        holes = v['holes_n'] > 0
+        missing = (v['missing_pct'] or 0) > 0
+        show = {'kick_pct': v['kick'], 'kick_mm': v['kick'], 'spall_pct': v['spall'], 'spall_mm': v['spall'],
+                'worn_pct': v['worn'], 'worn_mm': v['worn'],
+                'ruin_depth': v['ruin'], 'ruin_rough': v['ruin'], 'hole_size': holes,
+                'broken_pct': v['ruin'] or holes,
+                'foot_w': v['foot'], 'foot_amt': v['foot'],
+                'pile_timbers': v['pile_timbers_on'], 'plank_len': v['pile_timbers_on'],
+                'plank_w': v['pile_timbers_on'], 'plank_t': v['pile_timbers_on'],
+                'barrel_d': v['pile_barrels'] > 0, 'barrel_h': v['pile_barrels'] > 0,
+                'crate_size': v['pile_crates'] > 0, 'custom_scale': v['pile_custom'] > 0}
+        for key, ok in show.items():
+            s, lab = self.sp[key]
+            s.setEnabled(True)
+            lab.setEnabled(True)
+            self._row_vis(self._key_tab[key], s, ok)
+        self._row_vis("Damage", self.cb_through, holes)
+        self._row_vis("Damage", self.cb_mthrough, missing)
+        self._row_vis("Damage", self.cb_hang, v['ruin'] or holes or missing)
+        self._row_vis("Rubble pile", self.cb_bkind, v['pile_barrels'] > 0)
+        self.cb_ccourse.setEnabled(brick and v['copings'])
         for w_ in (self.cb_bond, self.cb_off, self.cb_head, self.cb_sold, self.cb_even, self.cb_qc):
             w_.setEnabled(brick)
         self.sp_every.setEnabled(brick and self.cb_head.isChecked())
@@ -3005,7 +3708,6 @@ class BrickDialog(QDialog):
         self.sp_seed.setEnabled(brick and off == "random")
         self.sp_rmax.setEnabled(brick and off == "random")
         self.cb_cstyle.setEnabled(v['copings'])
-        self.cb_through.setEnabled(v['holes_n'] > 0 and v['backing'] > 0)
         self.lst_open.setEnabled(True)
         what = 'pile' if self.tabs.currentIndex() == TABS.index("Rubble pile") else 'wall'
         pv = self.preview_values(v)
@@ -3019,7 +3721,47 @@ class BrickDialog(QDialog):
                 p[k] = d
         p['soldier_len'] = p.get('soldier_len') or p['length']
         p['tiny'] = 1.0
+        if getattr(self, '_custom', None):
+            p['_custom'] = self._custom
         return p
+
+    # ---- your own object for the rubble pile ----
+    def pick_custom(self, *_):
+        scene = getattr(self.viewport, 'scene', None)
+        sel = list(getattr(scene, 'selection', None) or [])
+        groups = [e for e in sel if getattr(e, 'mesh', None) is not None
+                  and 'face' not in type(e).__name__.lower() and not hasattr(e, 'loop')]
+        if not groups:
+            self.show_report("Select a group or component in the model first (the object you want in the "
+                             "heap), then press 'Use selected object'.", True)
+            return
+        g = groups[0]
+        try:
+            faces = object_faces(g)
+        except Exception as e:
+            self.show_report("Couldn't read that object: %s" % e, True)
+            return
+        if not faces:
+            self.show_report("That object has no faces to copy.", True)
+            return
+        self._custom = faces
+        self._custom_name = str(getattr(g, 'name', '') or 'Your object')
+        xs = [q[0] for o, _ in faces for q in o]
+        ys = [q[1] for o, _ in faces for q in o]
+        zs = [q[2] for o, _ in faces for q in o]
+        self.lbl_custom.setText("Your own object: %s (%.0f x %.0f x %.0f mm, %d faces)"
+                                % (self._custom_name, max(xs) - min(xs), max(ys) - min(ys),
+                                   max(zs) - min(zs), len(faces)))
+        if self.sp['pile_custom'][0].value() == 0:
+            self.sp['pile_custom'][0].setValue(3)
+        self.show_report("Picked %s for the rubble pile." % self._custom_name)
+        self.changed()
+
+    def clear_custom(self, *_):
+        self._custom = None
+        self._custom_name = ""
+        self.lbl_custom.setText("Your own object: none picked")
+        self.changed()
 
     def show_report(self, text, bad=False):
         self.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if bad else "#2e7d32"))
@@ -3204,13 +3946,17 @@ DEFAULTS = {
     'even_ends': True, 'min_end_pct': 50.0,
     'quoins_l': False, 'quoins_r': False, 'q_open': False, 'q_courses': True,
     'q_long': 450.0, 'q_short': 225.0, 'q_h': 290.0, 'q_proud': 10.0, 'heads': False, 'sills': False,
-    'copings': False, 'c_style': 'slab', 'c_h': 150.0, 'c_len': 600.0, 'c_over': 30.0,
+    'copings': False, 'c_style': 'slab', 'c_h': 150.0, 'c_len': 600.0, 'c_over': 30.0, 'c_course': True,
     'kick': False, 'kick_pct': 8.0, 'kick_mm': 3.0, 'spall': False, 'spall_pct': 6.0, 'spall_mm': 3.0,
     'missing_pct': 0.0, 'ruin': False, 'ruin_depth': 900.0, 'ruin_rough': 6, 'broken_pct': 40.0,
     'holes_n': 0, 'hole_size': 700.0, 'through': False, 'foot': False, 'foot_w': 900.0, 'foot_amt': 50.0,
+    'worn': False, 'worn_pct': 15.0, 'worn_mm': 15.0, 'no_hanging': True, 'miss_through': False,
     'backing': 0.0, 'remove_face': False, 'dmg_seed': 1,
     'pile_shape': 'heap', 'pile_len': 2500.0, 'pile_wid': 1800.0, 'pile_h': 900.0, 'pile_n': 220,
     'pile_broken': 40.0, 'pile_timbers': 2, 'pile_core': True, 'pile_seed': 1,
+    'pile_timbers_on': True, 'plank_len': 3200.0, 'plank_w': 225.0, 'plank_t': 75.0,
+    'pile_barrels': 0, 'barrel_kind': 'drum', 'barrel_d': 585.0, 'barrel_h': 880.0,
+    'pile_crates': 0, 'crate_size': 600.0, 'pile_custom': 0, 'custom_scale': 100.0,
 }
 
 
@@ -3265,6 +4011,10 @@ EDDY_TIPS = {
     'None': 'Unticks all the openings.',
     'Apply to face': 'Covers the selected face (a wall) with the walling set here.',
     'Make rubble pile': 'Makes a heap of loose bricks or stones on the selected face.',
+    'Kind': 'Oil drums or wooden barrels.',
+    'Use selected object': 'Select a group or component in the model, then press this to drop copies of it '
+                           'in the rubble pile.',
+    'Clear': 'Forget the object you picked for the rubble pile.',
 }
 EDDY_TIPS_END = None
 
@@ -3510,6 +4260,9 @@ class BrickBlockStudioTool(Tool):
             return
         vals = dialog.get_values()
         self._remember(vals)
+        if getattr(dialog, '_custom', None):
+            vals['_custom'] = dialog._custom
+            vals['_custom_name'] = dialog._custom_name
         msg = self.make_pile_on(dialog.viewport, sel[0], vals)
         if msg:
             dialog.show_report(*msg)
@@ -3560,6 +4313,19 @@ class BrickBlockStudioTool(Tool):
                 poly.reverse()
             holes.append(poly)
             hole_ids.append(hi)
+        # doorways: notches up into the bottom edge (found the right way up, whatever 'swap' says)
+        o0 = face_pts[0]
+        base_outline = [(QVector3D.dotProduct(q - o0, base_u), QVector3D.dotProduct(q - o0, base_v))
+                        for q in face_pts]
+        for j, notch in enumerate(outline_notches(base_outline)):
+            poly = []
+            for a, b in notch:
+                q = o0 + base_u * a + base_v * b
+                poly.append((QVector3D.dotProduct(q - origin, u_dir), QVector3D.dotProduct(q - origin, v_dir)))
+            if _area(poly) < 0:
+                poly.reverse()
+            holes.append(poly)
+            hole_ids.append(NOTCH_BASE + j)
         return {'origin': origin, 'u': u_dir, 'v': v_dir, 'n': normal, 'left': left_handed,
                 'W': W, 'H': H, 'outline': outline, 'holes': holes, 'hole_ids': hole_ids}
 
@@ -3618,11 +4384,8 @@ class BrickBlockStudioTool(Tool):
 
         def solids(units):
             out = []
-            for poly, d, kind, shade in units:
-                faces = unit_solid(poly, 0.0, d)
-                if not p['back_faces']:
-                    del faces[1]                 # the back face
-                out.append(to_w(faces))
+            for u in units:
+                out.append(to_w(unit_faces(u, p['back_faces'])))
             return out
         parts = []
         if res['walling']:
@@ -3659,14 +4422,18 @@ class BrickBlockStudioTool(Tool):
             msg += ", %d coping pieces" % st['copings']
         if st['removed']:
             msg += "; %d knocked out by the damage" % st['removed']
+        if st.get('hanging'):
+            msg += " (%d of them left hanging, so taken out)" % st['hanging']
         if n_loose:
             msg += "; %d loose pieces at the foot" % n_loose
         msg += ". %d faces." % nf
         if remove:
             msg += " Deleted the face under them."
-        elif p.get('ruin') or p.get('holes_n'):
+        elif p.get('ruin') or p.get('holes_n') or p.get('miss_through'):
             msg += (" The face is still whole behind the damage: tick 'Delete the face' (with a backing "
                     "sheet) to see the broken top and holes.")
+        if (p.get('through') or p.get('miss_through')) and not p.get('backing'):
+            msg += " To see right through, set a backing sheet thickness: the holes are cut through that."
         if self._errors[0]:
             msg += " %d faces could not be made (%s)." % self._errors
         try:
@@ -3687,19 +4454,24 @@ class BrickBlockStudioTool(Tool):
         parts = []
         if core:
             parts.append(("Rubble core", [to_w(plain(core))]))
-        loose = [s for k, s in pieces if k != 'timber']
-        timbers = [s for k, s in pieces if k == 'timber']
+        special = ('timber', 'barrel', 'crate', 'custom')
+        loose = [s for k, s in pieces if k not in special]
         if loose:
             parts.append(("Loose pieces (%d)" % len(loose), [to_w(plain(s)) for s in loose]))
-        if timbers:
-            parts.append(("Timbers (%d)" % len(timbers), [to_w(plain(s)) for s in timbers]))
+        for kind, title in (('timber', "Planks and timbers"), ('barrel', "Barrels"), ('crate', "Crates"),
+                            ('custom', vals.get('_custom_name') or "Your object")):
+            got = [s for k, s in pieces if k == kind]
+            if got:
+                parts.append(("%s (%d)" % (title, len(got)), [to_w(plain(s)) for s in got]))
         if not parts:
             return ("No pile could be made: try more pieces, or a taller pile.", True)
         mat_name = MATERIAL_NAMES.get(p['material'], "").split(" (")[0].lower()
         nf = self.add_to_scene(viewport, parts, "Rubble pile - %s" % mat_name, True, [])
         if nf is None:
             return None
-        msg = "Rubble pile: %d loose pieces%s, %d faces." % (len(pieces), " on a solid core" if core else "", nf)
+        msg = "Rubble pile: %d pieces%s, %d faces." % (len(pieces), " on a solid core" if core else "", nf)
+        if int(p.get('pile_custom') or 0) > 0 and not p.get('_custom'):
+            msg += " (No object of your own was added: pick one first with 'Use selected object'.)"
         if self._errors[0]:
             msg += " %d faces could not be made (%s)." % self._errors
         return (msg, bool(self._errors[0]))
