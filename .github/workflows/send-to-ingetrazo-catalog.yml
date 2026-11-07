@@ -38,12 +38,22 @@ concurrency:
 jobs:
   send:
     runs-on: ubuntu-latest
+    env:
+      # a dry run needs no token
+      HAS_TOKEN: ${{ secrets.CATALOG_TOKEN != '' || github.event.inputs.dry_run == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Waiting for the CATALOG_TOKEN secret
+        if: env.HAS_TOKEN != 'true'
+        run: |
+          echo "::warning title=Nothing sent::The CATALOG_TOKEN secret isn't set up yet, so nothing was sent to the catalog. See catalog/README.md (one-time setup)."
+      - uses: actions/checkout@v5
+        if: env.HAS_TOKEN == 'true'
+      - uses: actions/setup-python@v6
+        if: env.HAS_TOKEN == 'true'
         with:
           python-version: "3.12"
       - name: Send new and changed plugins
+        if: env.HAS_TOKEN == 'true'
         env:
           GH_TOKEN: ${{ secrets.CATALOG_TOKEN }}
           CATALOG_REPO: ingelibre/ingetrazo-extensions
