@@ -110,7 +110,10 @@ def main() -> int:
     fork = os.environ.get("FORK_REPO", "eddy-99/ingetrazo-extensions")
     source_repo = os.environ["SOURCE_REPO"]
     sha_commit = os.environ["SOURCE_SHA"]
-    token = os.environ.get("GH_TOKEN", "")
+    # a token pasted into the secret often carries a stray space or line break
+    token = "".join(os.environ.get("GH_TOKEN", "").split())
+    if token:
+        os.environ["GH_TOKEN"] = token          # gh reads it from here too
     dry = os.environ.get("DRY_RUN") == "1"
     only = {x for x in re.split(r"[,\s]+", os.environ.get("ONLY", "")) if x}
     if not token and not dry:
