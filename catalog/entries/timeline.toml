@@ -4,7 +4,8 @@
 # catalog/screenshots/ whenever the plugin or this entry changes.
 
 id = "timeline"
-pr_note = "No network. It writes checkpoint copies of your model in a folder beside your file, and deletes only its own oldest automatic checkpoints once there are more than you chose to keep (named ones are never deleted). It can open that folder in the file manager."
+version = "1.0.1"
+pr_note = "1.0.1: automatic checkpoints are now off by default (turn them on in the checkpoints menu), and the error log goes in the app's own data folder instead of the home folder - both as suggested in review. No network. When you make checkpoints it writes copies of your model in a folder beside your file, and deletes only its own oldest automatic checkpoints once there are more than you chose to keep (named ones are never deleted). It can open that folder in the file manager."
 source = "plugins/3D_Eddys/ed3d_timeline.py"
 author = "Phillip Edwards (Eddy)"
 author_url = "https://github.com/eddy-99"

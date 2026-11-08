@@ -19,12 +19,16 @@ One window with pages (tabs) and a live 3D preview of what's selected:
              by a percentage, to a size you type (width, depth, height, kept in proportion
              or not), or from one model scale to another. In place or as a copy.
   Pieces     splits it into pieces (one per group, or your own plan), shown in colour in
-             the preview, laid out on the bed.
+             the preview, laid out on the bed. In the plan: 'Everything left' makes the grey
+             parts still showing one piece; open pieces can have their holes closed when
+             printed; each piece can go to its own slicer (FDM one way, resin the other).
   3D print   print bed, nozzle, thin-wall warnings, lay flat, slicer.
   Repair     checks for cracks, holes, faces the wrong way, thin walls; mends them.
   Export     3D printing (STL, 3MF), other 3D programs (OBJ with colours, PLY), web, games
              and AR (GLB / glTF), CAD (DXF), electronics (VRML), laser cutting and drawings
              (DXF / SVG outlines), and a picture (PNG).
+
+Scale + next can gather objects onto one bed and send them to the slicer together.
 
 Ctrl+Alt+K opens the window. The quick converter bar along the top of the main window is
 still there (turn it on or off on the Converter page).
@@ -105,6 +109,7 @@ STUDIO_DEFAULTS = {
     'per_piece': True, 'layout': 'bed', 'colours': True, 'apply_fixes': True, 'view': 'top',
     'png_size': 2000, 'follow': True, 'preview': 'model', 'last_folder': '', 'show_preview': True, 'beside': True, 'next_how': 'slicer', 'print_folder': '',
     'pv_width': 320, 'printers': [], 'printer': '', 'kind': 'fdm', 'print_format': '3mf',
+    'before_fit': None, 'project_folder': '',
 }
 
 COPY_GAP = 0.1   # gap between original and copy, as a fraction of the original's width
@@ -1101,17 +1106,25 @@ def check_parts(parts, nozzle=0.0):
     return out, lines, warn
 
 
+# words in a slicer's program name that mean it's for resin printers (they want STL)
+RESIN_SLICERS = ('chitubox', 'lychee', 'photon', 'halot', 'voxeldance', 'tango', 'elegoo', 'uniformation',
+                 'formware', 'ameralabs', 'nova3d', 'phrozen')
+
+PRINTER_COLOURS = [(46, 139, 87), (142, 68, 173), (211, 120, 20), (41, 128, 185), (192, 57, 43)]
+
+
 def piece_colour(i):
     return PIECE_COLOURS[i % len(PIECE_COLOURS)]
 
 
-def piece_leaves(entities, with_tris=True):
+def piece_leaves(entities, with_tris=True, tops_out=None):
     """Every smallest part of the selection: [(key, name, kind, [triangles in world metres])].
     key is the part's path of group names (so a plan still fits after the window is reopened),
-    kind the name of the group it's in."""
+    kind the name of the group it's in. tops_out: filled with the number of the selected object
+    each part belongs to (-1: loose faces)."""
     out, seen = [], {}
     loose = []
-    for e in entities:
+    for ei, e in enumerate(entities):
         if _is_face(e):
             loose.append(e)
             continue
@@ -1133,6 +1146,8 @@ def piece_leaves(entities, with_tris=True):
                     # the group it's in - or, straight under what you selected, its own name
                     kind = path[-1] if len(path) >= 2 else nm
                     out.append((key, nm, kind, tris))
+                    if tops_out is not None:
+                        tops_out.append(ei)
             if lvl < 12:
                 for c in _kids(g):
                     walk(c, here, lvl + 1)
@@ -1141,12 +1156,86 @@ def piece_leaves(entities, with_tris=True):
         tris = _tris_of(loose) if with_tris else [None]
         if tris:
             out.append(("Selected faces", "Selected faces", "", tris))
+            if tops_out is not None:
+                tops_out.append(-1)
     return out
 
 
-def plan_parts(leaves, plan):
+_FLOW = []
+
+
+def flow_layout(spacing=6):
+    """A row of buttons that wraps onto more lines when the window is too narrow for them all."""
+    if not _FLOW:
+        from PySide6.QtWidgets import QLayout
+        from PySide6.QtCore import QRect, QSize, QPoint
+
+        class FlowLayout(QLayout):
+            def __init__(self, parent=None, sp=6):
+                super().__init__(parent)
+                self._items = []
+                self._sp = sp
+                self.setContentsMargins(0, 0, 0, 0)
+
+            def addItem(self, item):
+                self._items.append(item)
+
+            def count(self):
+                return len(self._items)
+
+            def itemAt(self, i):
+                return self._items[i] if 0 <= i < len(self._items) else None
+
+            def takeAt(self, i):
+                return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+            def expandingDirections(self):
+                from PySide6.QtCore import Qt
+                try:
+                    return Qt.Orientation(0)
+                except Exception:
+                    return Qt.Orientations(0)
+
+            def hasHeightForWidth(self):
+                return True
+
+            def heightForWidth(self, w):
+                return self._place(QRect(0, 0, w, 0), True)
+
+            def setGeometry(self, r):
+                super().setGeometry(r)
+                self._place(r, False)
+
+            def sizeHint(self):
+                return self.minimumSize()
+
+            def minimumSize(self):
+                sz = QSize()
+                for it in self._items:
+                    sz = sz.expandedTo(it.minimumSize())
+                return sz
+
+            def _place(self, r, test):
+                x, y, line = r.x(), r.y(), 0
+                for it in self._items:
+                    h = it.sizeHint()
+                    nx = x + h.width() + self._sp
+                    if nx - self._sp > r.right() + 1 and line > 0:
+                        x, y = r.x(), y + line + self._sp
+                        nx, line = x + h.width() + self._sp, 0
+                    if not test:
+                        it.setGeometry(QRect(QPoint(x, y), h))
+                    x = nx
+                    line = max(line, h.height())
+                return y + line - r.y()
+        _FLOW.append(FlowLayout)
+    return _FLOW[0](None, spacing)
+
+
+def plan_parts(leaves, plan, with_piece=False):
     """Parts from leaves and a plan {'pieces': [names], 'keys': {key: piece name}}: each planned
-    piece is all its parts together; parts in no piece print on their own."""
+    piece is all its parts together; parts in no piece print on their own.
+    with_piece: (name, tris, the plan's piece it is - "" for a part on its own)."""
     pieces = list(plan.get('pieces', [])) if plan else []
     keys = plan.get('keys', {}) if plan else {}
     merged = dict((p, []) for p in pieces)
@@ -1156,17 +1245,40 @@ def plan_parts(leaves, plan):
         if p in merged:
             merged[p] += tris
         else:
-            alone.append((name, tris))
-    out = [(p, merged[p]) for p in pieces if merged[p]]
+            alone.append((name, tris, ""))
+    out = [(p, merged[p], p) for p in pieces if merged[p]]
     names = {}
-    for n, tr in out + alone:
+    for n, tr, _p in out + alone:
         names[n] = names.get(n, 0) + 1
     seen = {}
     res = []
-    for n, tr in out + alone:
+    for n, tr, p in out + alone:
         seen[n] = seen.get(n, 0) + 1
-        res.append((n if names[n] == 1 else "%s (%d)" % (n, seen[n]), tr))
+        nm = n if names[n] == 1 else "%s (%d)" % (n, seen[n])
+        res.append((nm, tr, p) if with_piece else (nm, tr))
     return res
+
+
+def piece_state(tris):
+    """'ok' (closed - prints solid), 'open' (holes: the slicer may leave it out or fill it
+    wrongly) or 'flat' (a sheet with no thickness - needs thickness to print)."""
+    if not tris:
+        return 'ok'
+    s = tris_size(tris)
+    big = max(s) or 1.0
+    if min(s) <= big * 1e-6:
+        return 'flat'
+    opened, _many = edge_report(tris)
+    return 'open' if opened else 'ok'
+
+
+def close_all_holes(tris):
+    """Closes every hole, whatever its size (a missing bottom, an open end), so the piece is a
+    closed solid the slicer can print. Returns (tris, holes closed, holes that couldn't be)."""
+    tris, filled, left = fill_holes(tris, 10 ** 9)
+    if filled:
+        tris, _t, _i = fix_winding(tris)
+    return tris, filled, left
 
 
 def _qt(group, name):
@@ -2370,7 +2482,7 @@ class PieceCanvas(QWidget):
     def __init__(self, dlg):
         super().__init__(dlg)
         self.dlg = dlg
-        self.setMinimumSize(560, 480)
+        self.setMinimumSize(200, 180)          # small enough for a narrow window
         self.az = 52.0
         self.el = 32.0                  # negative: looking up from underneath
         self.zoom, self.pan = 1.0, (0.0, 0.0)
@@ -2433,8 +2545,13 @@ class PieceCanvas(QWidget):
         items.sort(key=lambda e: -e[0])
         self.items = items
         if items:
-            xs = [x for e in items for x, _ in e[2]]
-            ys = [y for e in items for _, y in e[2]]
+            # frame what's showing (one object on its own fills the picture)
+            try:
+                vis = [e for e in items if self.dlg.shown(e[1])] or items
+            except Exception:
+                vis = items
+            xs = [x for e in vis for x, _ in e[2]]
+            ys = [y for e in vis for _, y in e[2]]
             self.boxes = (min(xs), max(xs), min(ys), max(ys))
 
     def _map(self):
@@ -2620,7 +2737,7 @@ class PiecesDialog(QDialog):
     """Shows every part of the selection; you pick parts and put them into print pieces, each
     piece its own colour. Parts in no piece print on their own."""
 
-    def __init__(self, parent, leaves, plan):
+    def __init__(self, parent, leaves, plan, targets=None, objects=None):
         super().__init__(parent)
         from PySide6.QtWidgets import QTableWidget, QAbstractItemView, QSplitter
         self.setWindowTitle(PLUGIN_NAME + " - Plan the print pieces")
@@ -2629,16 +2746,43 @@ class PiecesDialog(QDialog):
         keys = (plan or {}).get('keys', {})
         known = set(k for k, _n, _kd, _t in leaves)
         self.keys = {k: p for k, p in keys.items() if k in known and p in self.pieces}
+        # pieces to close the holes in, and which slicer each piece goes to ("" = parts on their own)
+        self.close = set((plan or {}).get('close', []))
+        # which printer each piece prints on: {piece: printer key} - not there: the first printer
+        self.slicer_of = dict((plan or {}).get('printer', {}))
+        # [(printer key, "Printer - Slicer")] - the printer on the 3D print page first (key "")
+        self.targets = list(targets or []) or [("", "This printer")]
+        self.by_printer = bool(self.slicer_of)
+        self._state = {}
+        self._undo, self._redo, self._restoring = [], [], False
         lay = QVBoxLayout(self)
         tip = QLabel("Pick parts in the list or click them in the picture (Ctrl+click to pick more, Shift+click to un-pick), then "
                      "put them in a piece. Each piece prints as one and has its own colour; grey parts print "
                      "on their own.")
         tip.setWordWrap(True)
         lay.addWidget(tip)
-        row = QHBoxLayout()
-        lay.addLayout(row, 1)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Part", "In group", "Print piece"])
+        # several objects selected: work on them one at a time
+        self.objects = list(objects or [])          # [(object number, name, [part numbers])]
+        self.cur_obj, self.done_objs = None, set()
+        self.cb_obj = None
+        if len(self.objects) > 1:
+            orow = QHBoxLayout()
+            orow.addWidget(QLabel("<b>Object:</b>"))
+            self.cb_obj = QComboBox()
+            self.cb_obj.setToolTip("You selected several objects: pick one to work on just that one - the others are "
+                                   "hidden. Plan its pieces and printers, then 'Scale & next' puts it on the gathered "
+                                   "bed and moves on to the next object.")
+            orow.addWidget(self.cb_obj)
+            self.lbl_obj = QLabel()
+            orow.addWidget(self.lbl_obj, 1)
+            lay.addLayout(orow)
+        from PySide6.QtCore import Qt as _Qt
+        row = QSplitter(_Qt.Horizontal)           # drag the bars to make the boxes bigger or smaller
+        row.setChildrenCollapsible(False)
+        row.setHandleWidth(7)
+        lay.addWidget(row, 1)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Part", "In group", "Print piece", "Prints on"])
         try:
             self.table.setSelectionBehavior(getattr(QAbstractItemView, 'SelectRows', None) or
                                             QAbstractItemView.SelectionBehavior.SelectRows)
@@ -2662,23 +2806,45 @@ class PiecesDialog(QDialog):
             pass
         from PySide6.QtWidgets import QListWidget
         self.hidden_parts, self.hidden_pieces = set(), set()
-        left = QVBoxLayout()
-        left.addWidget(self.table, 1)
-        lp = QLabel("Print pieces - untick to hide them in the picture:")
+        vsplit = QSplitter(_Qt.Vertical)
+        vsplit.setChildrenCollapsible(False)
+        vsplit.setHandleWidth(7)
+        vsplit.setToolTip("Drag the bar between the parts and the print pieces to make either box bigger.")
+        vsplit.addWidget(self.table)
+        lower = QWidget()
+        left = QVBoxLayout(lower)
+        left.setContentsMargins(0, 0, 0, 0)
+        lp = QLabel("Print pieces - untick to hide them in the picture, right-click for holes and slicer "
+                    "(drag the bar above to make this box bigger):")
+        lp.setWordWrap(True)
         left.addWidget(lp)
         self.piece_list = QListWidget()
-        self.piece_list.setMaximumHeight(170)
+        self.piece_list.setMinimumHeight(60)
+        try:
+            from PySide6.QtWidgets import QAbstractItemView as _AIV
+            self.piece_list.setSelectionMode(getattr(_AIV, 'ExtendedSelection', None) or
+                                             _AIV.SelectionMode.ExtendedSelection)
+        except Exception:
+            pass
         self.piece_list.setToolTip("Every piece, in its colour, and the parts printing on their own. Untick one "
                                    "to hide it in the picture, so you can see what's behind. (Hidden parts are "
                                    "still printed.)")
-        left.addWidget(self.piece_list)
-        row.addLayout(left, 2)
+        left.addWidget(self.piece_list, 1)
+        vsplit.addWidget(lower)
+        row.addWidget(vsplit)
         self.canvas = PieceCanvas(self)
         self.canvas.setToolTip("The parts, coloured by the piece they're in (grey: on their own). Click a part to "
                                "pick it - Ctrl+click to pick more, Shift+click to un-pick. Picked parts show yellow.")
-        row.addWidget(self.canvas, 3)
+        row.addWidget(self.canvas)
+        self.hsplit, self.vsplit = row, vsplit
+        try:
+            sz = load_settings().get('plan_splits') or {}
+            row.setSizes([int(x) for x in sz.get('h', [520, 780])])
+            vsplit.setSizes([int(x) for x in sz.get('v', [520, 220])])
+        except Exception:
+            pass
 
-        brow = QHBoxLayout()
+        brow = flow_layout()                   # the buttons wrap onto more lines in a narrow window
         b_new = QPushButton("New piece from picked")
         b_new.setToolTip("Makes a new piece (a new colour) holding the parts you've picked.")
         self.cb_piece = QComboBox()
@@ -2687,11 +2853,19 @@ class PiecesDialog(QDialog):
         b_add.setToolTip("Puts the picked parts into the piece chosen beside it.")
         b_out = QPushButton("Print on their own")
         b_out.setToolTip("Takes the picked parts out of their piece, so each prints on its own.")
-        for w in (b_new, b_add, self.cb_piece, b_out):
+        b_rest = QPushButton("Everything left: new piece and hide")
+        b_rest.setToolTip("Puts every grey part still showing (on its own, not hidden) into one new piece and "
+                          "hides it - for when lots of little bits are left that will print fine together.")
+        b_rest.clicked.connect(self.rest_piece_and_hide)
+        b_holes = QPushButton("Close holes in open pieces")
+        b_holes.setToolTip("Every piece marked 'open' (holes - it won't print as a solid) gets its holes closed "
+                           "when it's printed. Right-click a piece in the pieces list to do just that one. Your "
+                           "model isn't changed.")
+        b_holes.clicked.connect(self.close_all_open)
+        for w in (b_new, b_add, self.cb_piece, b_out, b_rest, b_holes):
             brow.addWidget(w)
-        brow.addStretch(1)
         lay.addLayout(brow)
-        brow2 = QHBoxLayout()
+        brow2 = flow_layout()
         b_kind = QPushButton("A piece for each group")
         b_kind.setToolTip("Quick start: one piece per group the parts are in - all the columns together, all "
                           "the brackets together and so on.")
@@ -2713,16 +2887,101 @@ class PiecesDialog(QDialog):
         b_ren = QPushButton("Rename piece...")
         b_ren.setToolTip("Gives the piece chosen above a name of your own (it's the name the slicer shows).")
         self.lbl = QLabel()
-        b_ok = QPushButton("Use these pieces")
+        # ---- which printer each piece prints on: a big button for each of your printers
+        pbox = QGroupBox("Print on - pick parts (in the list or picture), then click the printer they print on")
+        pbl = QVBoxLayout(pbox)
+        brow3 = flow_layout()
+        self.printer_buttons_ = []
+        for k_, (key, lab) in enumerate(self.targets):
+            b_ = QPushButton(lab)
+            col = PRINTER_COLOURS[k_ % len(PRINTER_COLOURS)]
+            b_.setStyleSheet("QPushButton{background:rgb(%d,%d,%d);color:white;font-weight:bold;"
+                             "padding:6px 12px;border-radius:4px}QPushButton:pressed{background:rgb(%d,%d,%d)}"
+                             % (col + tuple(int(c * 0.75) for c in col)))
+            b_.setToolTip("The picked parts (or the pieces picked in the pieces list) print on %s. Parts not "
+                          "in a piece are made into one new piece first.%s" % (
+                              lab, " Anything you don't give a printer prints on this one." if k_ == 0 else ""))
+            b_.clicked.connect(lambda *_a, key=key: self.send_picked(key))
+            brow3.addWidget(b_)
+            self.printer_buttons_.append(b_)
+        if len(self.targets) > 1:
+            self.b_else = QPushButton("Everything else \u25be")
+            self.b_else.setStyleSheet("QPushButton{font-weight:bold;padding:6px 12px}")
+            self.b_else.setToolTip("Every part you haven't given a printer yet (the pieces with no \u2192 and the "
+                                   "grey parts) - pick the printer they all print on. Or just pick them to see them.")
+            self.b_else.clicked.connect(lambda *_: self.everything_else_menu(self.b_else))
+            brow3.addWidget(self.b_else)
+        # then: keep the plan, and keep the plan + Scale + next - all four buttons in one row
+        def big(text, col, tip, fn):
+            b_ = QPushButton(text)
+            b_.setStyleSheet("QPushButton{background:rgb(%d,%d,%d);color:white;font-weight:bold;"
+                             "padding:6px 12px;border-radius:4px}QPushButton:pressed{background:rgb(%d,%d,%d)}"
+                             % (col + tuple(int(c * 0.75) for c in col)))
+            b_.setToolTip(tip)
+            b_.clicked.connect(lambda *_a: fn())
+            brow3.addWidget(b_)
+            return b_
+        big("\u2714 Use these pieces", (90, 100, 110), "Keeps this plan now - the window stays open so you can "
+            "carry on (the preview and the Pieces page behind show it). 'Done' closes.", self.apply_now)
+        big("Scale & next \u25b6", (200, 70, 50), "Puts the object on the gathered bed at the scale on the Scale "
+            "page - each piece on its own printer's bed. With several objects selected it's the one picked under "
+            "'Object' (the window stays open and moves on to the next one); with one object the window closes and "
+            "the preview shows the gathered bed.", self.use_and_scale_next)
+        brow3b = flow_layout()
+        b_sl_clear = QPushButton("All on %s" % self.targets[0][1].split(" - ")[0])
+        b_sl_clear.setToolTip("Puts every piece back on the first printer.")
+        b_sl_clear.clicked.connect(self.clear_slicers)
+        brow3b.addWidget(b_sl_clear)
+        self.cb_byp = QCheckBox("Colour the picture by printer")
+        self.cb_byp.setChecked(self.by_printer)
+        self.cb_byp.setToolTip("Ticked: each part shows in its printer's colour (the colour of its button). "
+                               "Unticked: the piece colours.")
+        self.cb_byp.toggled.connect(self.colour_by_printer)
+        brow3b.addWidget(self.cb_byp)
+        pbl.addLayout(brow3)
+        pbl.addLayout(brow3b)
+        self.lbl_sl = QLabel()
+        self.lbl_sl.setWordWrap(True)
+        pbl.addWidget(self.lbl_sl)
+        if len(self.targets) < 2:
+            na = QLabel("Only one printer: to print some pieces on another, save that printer (with its slicer) "
+                        "on the 3D print page.")
+            na.setWordWrap(True)
+            pbl.addWidget(na)
+        lay.addWidget(pbox)
+        self.send_after = False
+        b_ok = QPushButton("Done")
         b_ok.setDefault(True)
-        b_ok.setToolTip("Keeps this plan: the next export prints these pieces.")
+        b_ok.setToolTip("Keeps this plan and closes the window: the next export prints these pieces.")
+        b_go = QPushButton("Use and send to the printers")
+        b_go.setToolTip("Keeps this plan and sends it straight away: each printer's slicer opens once, with its "
+                        "own pieces on its own bed.")
+        b_go.clicked.connect(self.use_and_send)
         b_cancel = QPushButton("Cancel")
-        for w in (b_kind, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall):
+        b_cancel.setToolTip("Closes without keeping changes made since you last pressed 'Use these pieces'.")
+        self.b_undo = QPushButton("Undo")
+        self.b_undo.setToolTip("Takes back the last change to the pieces (Ctrl+Z). Ctrl+Y puts it back again.")
+        self.b_undo.clicked.connect(self.undo)
+        self.b_redo = QPushButton("Redo")
+        self.b_redo.setToolTip("Puts back what Undo took back (Ctrl+Y).")
+        self.b_redo.clicked.connect(self.redo)
+        try:
+            from PySide6.QtGui import QShortcut, QKeySequence
+            for seq, fn in (("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo)):
+                sc = QShortcut(QKeySequence(seq), self)
+                sc.activated.connect(fn)
+        except Exception:
+            pass
+        for w in (self.b_undo, self.b_redo, b_kind, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall):
             brow2.addWidget(w)
-        brow2.addWidget(self.lbl, 1)
-        brow2.addWidget(b_ok)
-        brow2.addWidget(b_cancel)
         lay.addLayout(brow2)
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+        okrow = QHBoxLayout()
+        okrow.addStretch(1)
+        for w in (b_ok, b_go, b_cancel):
+            okrow.addWidget(w)
+        lay.addLayout(okrow)
         b_new.clicked.connect(self.new_piece)
         b_add.clicked.connect(self.add_to)
         b_out.clicked.connect(self.take_out)
@@ -2732,6 +2991,9 @@ class PiecesDialog(QDialog):
         b_ok.clicked.connect(self.accept)
         b_cancel.clicked.connect(self.reject)
         self.table.itemSelectionChanged.connect(self.canvas.update)
+        self._pick_source, self._syncing = 'parts', False
+        self.table.itemSelectionChanged.connect(self.parts_picked)
+        self.piece_list.itemSelectionChanged.connect(self.piece_list_picked)
         try:
             self.table.viewport().installEventFilter(self)
         except Exception:
@@ -2755,12 +3017,26 @@ class PiecesDialog(QDialog):
             self.setSizeGripEnabled(True)
         except Exception:
             pass
+        if self.cb_obj is not None:
+            self.fill_objects()
+            self.cb_obj.currentIndexChanged.connect(self.object_picked)
+            self.cb_obj.setCurrentIndex(1)                # start with the first object on its own
         self.refresh()
 
     # ---- the plan
     def colour_of(self, i):
         p = self.keys.get(self.leaves[i][0])
+        if getattr(self, 'by_printer', False):
+            return self.printer_colour(self.slicer_of.get(p if p in self.pieces else "", ""))
         return piece_colour(self.pieces.index(p)) if p in self.pieces else LOOSE_COLOUR
+
+    def printer_colour(self, key):
+        keys = [k for k, _l in self.targets]
+        return PRINTER_COLOURS[(keys.index(key) if key in keys else 0) % len(PRINTER_COLOURS)]
+
+    def colour_by_printer(self, on):
+        self.by_printer = bool(on)
+        self.refresh()
 
     def picked_rows(self):
         try:
@@ -2818,6 +3094,47 @@ class PiecesDialog(QDialog):
             self.table.selectRow(i)
         self.canvas.update()
 
+    def suggest_name(self, rows):
+        """A name for a new piece from its parts: the part's own name, the group they're all in, or
+        the object they're from - else 'Piece n'."""
+        rows = list(rows)
+        if len(rows) == 1:
+            nm = self.leaves[rows[0]][1]
+        else:
+            kinds = set(self.leaves[r][2] for r in rows)
+            nm = kinds.pop() if len(kinds) == 1 else ""
+            if not nm:
+                objs = set(o[1] for o in getattr(self, 'objects', []) for r in rows if r in o[2])
+                nm = objs.pop() if len(objs) == 1 else ""
+        nm = str(nm or "").strip() or self._unused_name()
+        return self.unique_name(nm)
+
+    def unique_name(self, nm):
+        if nm not in self.pieces:
+            return nm
+        k = 2
+        while "%s %d" % (nm, k) in self.pieces:
+            k += 1
+        return "%s %d" % (nm, k)
+
+    def name_new_piece(self, rows):
+        """Asks for the new piece's name; Cancel (or nothing typed) keeps the name it's given from
+        its parts."""
+        sug = self.suggest_name(rows)
+        try:
+            from PySide6.QtWidgets import QInputDialog
+            res = QInputDialog.getText(self, PLUGIN_NAME + " - new piece",
+                                       "A name for the new piece (%d part%s) - the slicer shows it.\n"
+                                       "Cancel keeps '%s'." % (len(rows), "" if len(rows) == 1 else "s", sug),
+                                       text=sug)
+            new, ok = (res[0], res[1]) if isinstance(res, (tuple, list)) else (res, bool(res))
+        except Exception:
+            new, ok = sug, False
+        new = str(new or "").strip()
+        if not ok or not new:
+            return sug
+        return new if new == sug else self.unique_name(new)
+
     def _unused_name(self):
         k = len(self.pieces) + 1
         while "Piece %d" % k in self.pieces:
@@ -2829,7 +3146,7 @@ class PiecesDialog(QDialog):
         if not rows:
             self.lbl.setText("Pick some parts first.")
             return
-        name = self._unused_name()
+        name = self.name_new_piece(rows)
         self.pieces.append(name)
         for r in rows:
             self.keys[self.leaves[r][0]] = name
@@ -2876,6 +3193,11 @@ class PiecesDialog(QDialog):
         for k, p in list(self.keys.items()):
             if p == old:
                 self.keys[k] = new
+        if old in self.close:
+            self.close.discard(old)
+            self.close.add(new)
+        if old in self.slicer_of:
+            self.slicer_of[new] = self.slicer_of.pop(old)
         self.refresh(new)
 
     def refresh(self, current=None):
@@ -2884,6 +3206,8 @@ class PiecesDialog(QDialog):
         # pieces nothing's in any more go
         used = set(self.keys.values())
         self.pieces = [p for p in self.pieces if p in used]
+        self.close &= set(self.pieces) | {""}
+        self.slicer_of = {p: s for p, s in self.slicer_of.items() if (p in self.pieces or p == "") and s}
         picked = self.picked_rows()
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.leaves))
@@ -2892,8 +3216,10 @@ class PiecesDialog(QDialog):
             col = self.colour_of(i)
             light = QColor(int(col[0] * 0.35 + 255 * 0.65), int(col[1] * 0.35 + 255 * 0.65),
                            int(col[2] * 0.35 + 255 * 0.65))
-            for c, txt in enumerate((name, kind, p or "(on its own)")):
-                it = QTableWidgetItem(("■ " + txt) if c == 2 and p else txt)
+            got = self.slicer_of.get(p if p in self.pieces else "", "")
+            on = self.slicer_name(got) if got else ""
+            for c, txt in enumerate((name, kind, p or "(on its own)", on)):
+                it = QTableWidgetItem(("■ " + txt) if (c == 2 and p) or (c == 3 and txt) else txt)
                 if c == 0:
                     try:
                         it.setFlags(it.flags() | _qt('ItemFlag', 'ItemIsUserCheckable'))
@@ -2910,6 +3236,9 @@ class PiecesDialog(QDialog):
                 it.setBackground(QBrush(light))
                 if c == 2 and p:
                     it.setForeground(QBrush(QColor(*col).darker(130)))
+                if c == 3:
+                    pc_ = self.printer_colour(self.slicer_of.get(p if p in self.pieces else "", ""))
+                    it.setForeground(QBrush(QColor(*pc_).darker(115)))
                 self.table.setItem(i, c, it)
         self.table.blockSignals(False)
         for r in picked:
@@ -2929,7 +3258,9 @@ class PiecesDialog(QDialog):
                 n_ = sum(1 for kk, _n, _kd, _t in self.leaves if (self.keys.get(kk) or "") == p_)
                 if p_ == "" and not n_:
                     continue
-                li = QListWidgetItem("%s  (%d part%s)" % (p_ or "On their own", n_, "" if n_ == 1 else "s"))
+                li = QListWidgetItem("%s  (%d part%s)%s" % (p_ or "On their own", n_, "" if n_ == 1 else "s",
+                                                            self.piece_note(p_)))
+                li.setToolTip(self.piece_tip(p_))
                 pm = QPixmap(16, 16)
                 pm.fill(QColor(*(piece_colour(k_) if p_ else LOOSE_COLOUR)))
                 li.setIcon(QIcon(pm))
@@ -2939,6 +3270,12 @@ class PiecesDialog(QDialog):
                                  else _qt('CheckState', 'Checked'))
                 self.piece_list.addItem(li)
             self.piece_list.blockSignals(False)
+        except Exception:
+            pass
+        self.remember()
+        try:
+            if len(self.targets) > 1:
+                self.lbl_sl.setText(self.printer_summary())
         except Exception:
             pass
         n_alone = sum(1 for k, _n, _kd, _t in self.leaves if k not in self.keys)
@@ -2976,6 +3313,19 @@ class PiecesDialog(QDialog):
         a_h1.setEnabled(n > 0)
         a_h1.triggered.connect(self.hide_picked)
         a_nh.triggered.connect(self.new_piece_and_hide)
+        n_left = len(self.left_rows())
+        a_rest = m.addAction("Everything left (%d part%s): new piece and hide" % (n_left, "" if n_left == 1 else "s"))
+        a_rest.setEnabled(n_left > 0)
+        a_rest.triggered.connect(self.rest_piece_and_hide)
+        a_pl = m.addAction("Pick everything left")
+        a_pl.setEnabled(n_left > 0)
+        a_pl.triggered.connect(self.pick_left)
+        m.addSeparator()
+        sub_ps = m.addMenu("Print picked on")
+        sub_ps.setEnabled(n > 0)
+        self.fill_slicer_menu(sub_ps, self.send_picked)
+        sub_pr = m.addMenu("Everything else on")
+        self.fill_slicer_menu(sub_pr, self.send_rest)
         m.addSeparator()
         a_new = m.addAction("New piece from picked")
         a_new.setEnabled(n > 0)
@@ -3007,7 +3357,13 @@ class PiecesDialog(QDialog):
         if item is None:
             return
         name = item.data(_qt('ItemDataRole', 'UserRole'))
+        sel = self.selected_pieces()
+        names = sel if name in sel and len(sel) > 1 else [name]
         m = QMenu(self)
+        if len(names) > 1:
+            t_ = m.addAction("%d pieces picked" % len(names))
+            t_.setEnabled(False)
+            m.addSeparator()
         rows = [i for i in range(len(self.leaves)) if self.piece_of(i) == name]
         a_pick = m.addAction("Pick its parts")
         a_hide = m.addAction("Show" if name in self.hidden_pieces else "Hide")
@@ -3016,6 +3372,25 @@ class PiecesDialog(QDialog):
         a_ren.setEnabled(bool(name))
         a_free = m.addAction("Break up (each part on its own)")
         a_free.setEnabled(bool(name))
+        m.addSeparator()
+        st_ = self.state_of(name)
+        a_close = m.addAction("Close its holes when printing")
+        a_close.setCheckable(True)
+        a_close.setChecked(all(n_ in self.close for n_ in names))
+        a_close.setEnabled(any(n_ in self.close or self.state_of(n_) == 'open' for n_ in names))
+        a_close.setToolTip("Closes every hole (any size) in the print file so it prints as a solid. Your model "
+                           "isn't changed.")
+        a_close.triggered.connect(lambda on=False: [self.set_close(n_, bool(on)) for n_ in names])
+        sub_s = m.addMenu("Print %s on" % ("these" if len(names) > 1 else "it"))
+        self.fill_slicer_menu(sub_s, lambda p_: self.set_slicers_for(names, p_),
+                              self.slicer_of.get(name, "") if len(names) == 1 else None)
+        sub_r = m.addMenu("Everything else on")
+        self.fill_slicer_menu(sub_r, self.send_rest)
+        try:
+            m.setToolTipsVisible(True)
+            sub_s.setToolTipsVisible(True)
+        except Exception:
+            pass
 
         def pick():
             self.table.clearSelection()
@@ -3063,13 +3438,13 @@ class PiecesDialog(QDialog):
             self.table.clearSelection()
         self.refresh(name)
 
-    def new_piece_and_hide(self, *_):
+    def new_piece_and_hide(self, *_a, rows=None):
         """Makes a piece of the picked parts and hides it, so what's left is easier to get at."""
-        rows = self.picked_rows()
+        rows = self.picked_rows() if rows is None else rows
         if not rows:
             self.lbl.setText("Pick some parts first.")
             return
-        name = self._unused_name()
+        name = self.name_new_piece(rows)
         self.pieces.append(name)
         for r in rows:
             self.keys[self.leaves[r][0]] = name
@@ -3132,7 +3507,433 @@ class PiecesDialog(QDialog):
         self.refresh()
 
     def plan(self):
-        return {'pieces': list(self.pieces), 'keys': dict(self.keys)}
+        return {'pieces': list(self.pieces), 'keys': dict(self.keys), 'close': sorted(self.close),
+                'printer': dict(self.slicer_of)}
+
+    # ---- undo and redo (Ctrl+Z, Ctrl+Y)
+    def snapshot(self):
+        return (tuple(self.pieces), tuple(sorted(self.keys.items())), tuple(sorted(self.close)),
+                tuple(sorted(self.slicer_of.items())), tuple(sorted(self.hidden_pieces)),
+                tuple(sorted(self.hidden_parts)))
+
+    def remember(self):
+        """Called after every change (refresh): keeps the state so Ctrl+Z can go back to it."""
+        if self._restoring:
+            return
+        now = self.snapshot()
+        if not self._undo or self._undo[-1] != now:
+            self._undo.append(now)
+            del self._undo[:-200]
+            self._redo = []
+        self.undo_buttons()
+
+    def undo_buttons(self):
+        try:
+            self.b_undo.setEnabled(len(self._undo) > 1)
+            self.b_redo.setEnabled(bool(self._redo))
+        except Exception:
+            pass
+
+    def restore(self, snap):
+        pcs, keys, close, sl, hp, hparts = snap
+        self.pieces, self.keys, self.close = list(pcs), dict(keys), set(close)
+        self.slicer_of, self.hidden_pieces, self.hidden_parts = dict(sl), set(hp), set(hparts)
+        self._restoring = True
+        try:
+            self.refresh()
+        finally:
+            self._restoring = False
+        self.undo_buttons()
+
+    def undo(self, *_):
+        if len(self._undo) < 2:
+            self.lbl.setText("Nothing to undo.")
+            return
+        self._redo.append(self._undo.pop())
+        self.restore(self._undo[-1])
+        self.lbl.setText("Undone. " + self.lbl.text())
+
+    def redo(self, *_):
+        if not self._redo:
+            self.lbl.setText("Nothing to redo.")
+            return
+        snap = self._redo.pop()
+        self._undo.append(snap)
+        self.restore(snap)
+        self.lbl.setText("Redone. " + self.lbl.text())
+
+    def done(self, r):
+        self.keep_splits()                 # the box sizes, for next time
+        super().done(r)
+
+    def keep_splits(self):
+        try:
+            update_settings(plan_splits={'h': list(self.hsplit.sizes()), 'v': list(self.vsplit.sizes())})
+        except Exception:
+            pass
+
+    # ---- everything left
+    def left_rows(self):
+        """The parts still showing in the picture that aren't in a piece (the grey ones)."""
+        return [i for i in range(len(self.leaves)) if not self.piece_of(i) and self.shown(i)]
+
+    def pick_left(self, *_):
+        rows = self.left_rows()
+        self.table.clearSelection()
+        for r in rows:
+            self.pick_row(r, True)
+        self.lbl.setText("Picked the %d part%s left." % (len(rows), "" if len(rows) == 1 else "s"))
+
+    def rest_piece_and_hide(self, *_):
+        """Every grey part still showing goes into one new piece, which is hidden."""
+        rows = self.left_rows()
+        if not rows:
+            self.lbl.setText("Nothing's left showing on its own.")
+            return
+        self.new_piece_and_hide(rows=rows)
+
+    # ---- holes and slicers, piece by piece
+    def piece_tris(self, name):
+        """The triangles of a piece ("" : each part on its own, as a list of parts)."""
+        if name:
+            return [t for k, _n, _kd, tr in self.leaves if self.keys.get(k) == name for t in tr]
+        return None
+
+    def state_of(self, name):
+        """'ok', 'open' or 'flat' for a piece; for the parts on their own, the worst of them."""
+        if name:
+            sig = (name, tuple(sorted(k for k, p in self.keys.items() if p == name)))
+            if sig not in self._state:
+                try:
+                    self._state[sig] = piece_state(self.piece_tris(name))
+                except Exception:
+                    self._state[sig] = 'ok'
+            return self._state[sig]
+        worst = 'ok'
+        for k, _n, _kd, tr in self.leaves:
+            if self.keys.get(k) in self.pieces:
+                continue
+            sig = ("", k)
+            if sig not in self._state:
+                try:
+                    self._state[sig] = piece_state(tr)
+                except Exception:
+                    self._state[sig] = 'ok'
+            if self._state[sig] == 'open':
+                return 'open'
+            if self._state[sig] == 'flat':
+                worst = 'flat'
+        return worst
+
+    def slicer_label(self, key):
+        key = "" if key == "*" else key
+        for k, lab in self.targets:
+            if k == key:
+                return lab
+        return self.targets[0][1]
+
+    def piece_note(self, name):
+        bits = []
+        st = self.state_of(name)
+        if name in self.close:
+            bits.append("holes closed")
+        elif st == 'open':
+            bits.append("\u26a0 open - won't print solid")
+        elif st == 'flat':
+            bits.append("\u26a0 flat - no thickness")
+        if self.slicer_of.get(name):            # only once you've told it which printer
+            bits.append("\u2192 " + self.slicer_label(self.slicer_of[name]).split(" - ")[0])
+        return ("   " + ", ".join(bits)) if bits else ""
+
+    def piece_tip(self, name):
+        st = self.state_of(name)
+        t = {'ok': "Closed all round - it prints as a solid.",
+             'open': "Has holes (open edges) - the slicer may leave bits out or fill it wrongly. Right-click: "
+                     "'Close its holes when printing'.",
+             'flat': "A flat sheet with no thickness - it needs thickness to print (closing holes won't help)."}[st]
+        if name in self.close:
+            t = ("Its holes are closed in the print file, so it prints as a solid (your model isn't changed). "
+                 "Right-click to turn that off.")
+        t += " Prints on %s." % self.slicer_label(self.slicer_of.get(name, ""))
+        return t
+
+    def set_close(self, name, on):
+        if on:
+            self.close.add(name)
+        else:
+            self.close.discard(name)
+        self.refresh(name or None)
+
+    def close_all_open(self, *_):
+        n = 0
+        for p_ in self.pieces + [""]:
+            if p_ not in self.close and self.state_of(p_) == 'open':
+                self.close.add(p_)
+                n += 1
+        self.refresh()
+        self.lbl.setText(("Holes will be closed in %d piece%s when printed." % (n, "" if n == 1 else "s"))
+                         if n else "No open pieces - nothing to close.")
+
+    # ---- slicers: picked pieces to one, everything else to another
+    def selected_pieces(self):
+        try:
+            return [it.data(_qt('ItemDataRole', 'UserRole')) for it in self.piece_list.selectedItems()]
+        except Exception:
+            return []
+
+    def fill_slicer_menu(self, menu, apply, current=None):
+        """Your printers as menu items; picking one calls apply(printer key)."""
+        cur_ = ("" if current == "*" else current) if current else None
+        for k, lab in self.targets:
+            act = menu.addAction(lab)
+            if current is not None:
+                act.setCheckable(True)
+                act.setChecked(cur_ == k)
+            act.triggered.connect(lambda _=False, k_=k: apply(k_))
+        if len(self.targets) < 2:
+            na = menu.addAction("(save your other printer on the 3D print page)")
+            na.setEnabled(False)
+
+    def slicer_popup(self, button, apply):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        self.fill_slicer_menu(m, apply)
+        try:
+            m.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        except Exception:
+            m.exec()
+
+    def piece_list_picked(self, *_):
+        """Pieces clicked in the print pieces list: they're what the printer buttons act on, and
+        their parts light up in the picture."""
+        names = self.selected_pieces()
+        if not names:
+            return
+        self._pick_source = 'list'
+        self._syncing = True
+        try:
+            self.table.clearSelection()
+            for i in range(len(self.leaves)):
+                if self.piece_of(i) in names:
+                    self.pick_row(i, True)
+        finally:
+            self._syncing = False
+        self.canvas.update()
+
+    def parts_picked(self, *_):
+        """Parts picked in the list or picture: they're what the printer buttons act on now."""
+        if self._syncing:
+            return
+        self._pick_source = 'parts'
+        try:
+            self.piece_list.blockSignals(True)
+            self.piece_list.clearSelection()
+        finally:
+            self.piece_list.blockSignals(False)
+
+    def picked_pieces(self, make=True):
+        """The pieces of the picked parts (picked in the list or picture), or else the pieces picked in
+        the pieces list. Picked parts on their own are made into one new piece first (make)."""
+        if getattr(self, '_pick_source', 'parts') == 'list':
+            names = self.selected_pieces()
+            if names:
+                return names
+        rows = self.picked_rows()
+        if not rows:
+            return self.selected_pieces()
+        names = []
+        loose = [r for r in rows if not self.piece_of(r)]
+        for r in rows:
+            p_ = self.piece_of(r)
+            if p_ and p_ not in names:
+                names.append(p_)
+        if loose and make:
+            nm = self.name_new_piece(loose)
+            self.pieces.append(nm)
+            for r in loose:
+                self.keys[self.leaves[r][0]] = nm
+            names.append(nm)
+        return names
+
+    def slicer_name(self, key):
+        return self.slicer_label(key).split(" - ")[0]
+
+    def printer_summary(self):
+        """How many parts print on each printer, in words."""
+        cnt = {}
+        for i in range(len(self.leaves)):
+            k = self.slicer_of.get(self.piece_of(i), "")
+            k = "" if k == "*" else k
+            cnt[k] = cnt.get(k, 0) + 1
+        out = []
+        for k, lab in self.targets:
+            if cnt.get(k):
+                out.append("%s: %d part%s" % (lab.split(" - ")[0], cnt[k], "" if cnt[k] == 1 else "s"))
+        return "   \u2022   ".join(out)
+
+    def send_picked(self, key):
+        names = self.picked_pieces()
+        if not names:
+            self.lbl_sl.setText("Pick some parts first (click them in the picture or the list - Ctrl+click for "
+                                "more), then click the printer.")
+            return
+        self.set_slicers_for(names, key)
+        if not self.by_printer:
+            self.cb_byp.setChecked(True)          # show it: each part in its printer's colour
+        self.table.clearSelection()
+        n_parts = sum(1 for i in range(len(self.leaves)) if self.piece_of(i) in names)
+        self.lbl_sl.setText("\u2714 %s (%d part%s) now print%s on %s - see 'Prints on' in the list.   All:  %s" % (
+            ", ".join(n_ or "Parts on their own" for n_ in names), n_parts, "" if n_parts == 1 else "s",
+            "s" if len(names) == 1 else "", self.slicer_name(key), self.printer_summary()))
+
+    def rest_pieces(self):
+        """The pieces with no printer told yet ("" = the grey parts on their own, if there are any)."""
+        rest = [p_ for p_ in self.pieces + [""] if not self.slicer_of.get(p_)]
+        if "" in rest and not any(not self.piece_of(i) for i in range(len(self.leaves))):
+            rest.remove("")
+        return rest
+
+    def everything_else_menu(self, button):
+        from PySide6.QtWidgets import QMenu
+        rest = self.rest_pieces()
+        n = sum(1 for i in range(len(self.leaves)) if self.piece_of(i) in rest)
+        m = QMenu(self)
+        t = m.addAction("Everything else: %d part%s with no printer yet" % (n, "" if n == 1 else "s"))
+        t.setEnabled(False)
+        m.addSeparator()
+        for k, lab in self.targets:
+            act = m.addAction("All on " + lab)
+            act.setEnabled(n > 0)
+            act.triggered.connect(lambda _=False, k_=k: self.send_rest(k_))
+        m.addSeparator()
+        a_pick = m.addAction("Just pick them (to see them)")
+        a_pick.setEnabled(n > 0)
+        a_pick.triggered.connect(self.pick_rest)
+        try:
+            m.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        except Exception:
+            m.exec()
+
+    def pick_rest(self, *_):
+        rest = self.rest_pieces()
+        self.table.clearSelection()
+        for i in range(len(self.leaves)):
+            if self.piece_of(i) in rest:
+                self.pick_row(i, True)
+        self.lbl_sl.setText("Picked everything with no printer yet - click a printer button to put them on it.")
+
+    def send_rest(self, key):
+        rest = [p_ for p_ in self.pieces + [""] if not self.slicer_of.get(p_)]
+        if "" in rest and not any(not self.piece_of(i) for i in range(len(self.leaves))):
+            rest.remove("")
+        if not rest:
+            self.lbl_sl.setText("Every piece already has a printer.")
+            return
+        self.set_slicers_for(rest, key)
+        if not self.by_printer:
+            self.cb_byp.setChecked(True)
+        self.lbl_sl.setText("\u2714 Everything else \u2192 %s.   All:  %s" % (self.slicer_name(key), self.printer_summary()))
+
+    def set_slicers_for(self, names, key):
+        first = self.targets[0][0]
+        for n_ in names:
+            # "*": you chose the first printer for it (shown as chosen, prints on the 3D print page's printer)
+            self.slicer_of[n_] = key if (key and key != first) else "*"
+        self.refresh(names[0] if len(names) == 1 and names[0] else None)
+
+    def clear_slicers(self, *_):
+        self.slicer_of = {}
+        self.refresh()
+        self.lbl_sl.setText("Everything prints on %s." % self.slicer_name(self.targets[0][0]))
+
+    def apply_now(self, *_):
+        """'Use these pieces': keeps the plan without closing the window."""
+        fn = getattr(self, 'on_apply', None)
+        if fn is not None:
+            try:
+                fn(self.plan())
+            except Exception as e:
+                self.lbl_sl.setText("Couldn't use the plan: %s" % e)
+                return
+        self.lbl_sl.setText("\u2714 Kept - this plan is in use now (the preview behind shows it).   %s   Next: "
+                            "'Scale & next' puts this object on the gathered bed, or 'Done' to close." %
+                            self.printer_summary())
+
+    def use_and_send(self, *_):
+        self.send_after = True
+        self.accept()
+
+    def use_and_scale_next(self, *_):
+        if len(self.objects) < 2 or getattr(self, 'on_scale_next', None) is None:
+            self.scale_next_after = True
+            self.accept()
+            return
+        # several objects: this one (or, with 'All objects', every one not done yet) onto the bed
+        if self.cur_obj is not None and self.cur_obj in self.done_objs:
+            self.lbl_sl.setText("'%s' is on the gathered bed already. To redo it, use 'Take one off' on the Scale "
+                                "page first, or pick another object under 'Object'." % self.objects[self.cur_obj][1])
+            return
+        todo = [self.cur_obj] if self.cur_obj is not None else \
+            [j for j in range(len(self.objects)) if j not in self.done_objs]
+        if not todo:
+            self.lbl_sl.setText("Every object is on the bed already - press Done, then 'Preview the bed' or "
+                                "'Send the bed to slicer'.")
+            return
+        said = []
+        for j in todo:
+            t, nm, _rows = self.objects[j]
+            ok, words = self.on_scale_next(self.plan(), t, nm)
+            if not ok:
+                self.lbl_sl.setText("Couldn't put '%s' on the bed: %s" % (nm, words))
+                return
+            self.done_objs.add(j)
+            said.append(words)
+        self.fill_objects()
+        left = [j for j in range(len(self.objects)) if j not in self.done_objs]
+        if left:
+            self.cb_obj.setCurrentIndex(left[0] + 1)      # on to the next object
+            nxt = "Now '%s'." % self.objects[left[0]][1]
+        else:
+            nxt = "All %d objects are on the bed - press Done, then 'Preview the bed' or 'Send the bed to slicer'." % (
+                len(self.objects))
+        self.lbl_sl.setText("\u2714 " + " ".join(said) + "  " + nxt)
+
+    # ---- several objects: one at a time
+    def fill_objects(self):
+        if self.cb_obj is None:
+            return
+        keep = self.cb_obj.currentIndex()
+        self.cb_obj.blockSignals(True)
+        self.cb_obj.clear()
+        self.cb_obj.addItem("All objects (%d)" % len(self.objects))
+        for j, (_t, nm, rows) in enumerate(self.objects):
+            self.cb_obj.addItem("%s%d. %s  (%d part%s)" % ("\u2714 " if j in self.done_objs else "", j + 1, nm,
+                                                         len(rows), "" if len(rows) == 1 else "s"))
+        self.cb_obj.setCurrentIndex(max(0, keep))
+        self.cb_obj.blockSignals(False)
+        n = len(self.done_objs)
+        self.lbl_obj.setText("%d of %d on the gathered bed (\u2714)" % (n, len(self.objects)) if n else "")
+
+    def object_picked(self, i):
+        """Object list: 0 = all of them, else just that object (the others hidden)."""
+        j = i - 1
+        if not (0 <= j < len(self.objects)):
+            self.cur_obj = None
+            self.hidden_parts = set()
+        else:
+            self.cur_obj = j
+            mine = set(self.objects[j][2])
+            self.hidden_parts = {self.leaves[r][0] for r in range(len(self.leaves)) if r not in mine}
+        self.hidden_pieces = set()
+        self.table.clearSelection()
+        self.refresh()
+        try:
+            self.canvas.view()
+        except Exception:
+            pass
+
+    def set_slicer(self, name, key):
+        self.set_slicers_for([name], key)
 
 
 def lay_out(parts, row_width, gap):
@@ -3592,10 +4393,16 @@ INFO_TEXT = (
     "percentage, to a size you type (width, depth and height, in proportion or each its own), "
     "or from one model scale to another (an OO model to N). <i>Scale in place</i> changes the object "
     "itself (Undo puts it back); <i>Scale a copy</i> leaves it and puts a scaled copy beside it. "
+    "<i>Scale + next</i> does the same to one object after another; set to <i>Adds it to one bed</i>, "
+    "it gathers them and <i>Send the bed to slicer</i> opens them all in one slicer window, on one bed. "
     "IngeTrazo treats points closer than 0.1 mm as one, so details that small are lost when a "
     "model is made very small in the work area - the Export page keeps every detail.<br>"
     "<b>Pieces</b>: splits what's selected into pieces - one per group, or your own plan - each "
-    "in its own colour in the preview. Laid flat and side by side on the bed for printing.<br>"
+    "in its own colour in the preview. Laid flat and side by side on the bed for printing. In "
+    "<i>Plan the pieces</i>, <i>Everything left: new piece and hide</i> puts every grey part still "
+    "showing into one piece; a piece marked <i>open</i> won't print as a solid - right-click it to close "
+    "its holes when printing; right-click <i>Send to slicer</i> sends a piece to any of your slicers "
+    "(each slicer opens once, with its own pieces on its own printer's bed).<br>"
     "<b>3D print</b>: your print bed (it says if it fits, and the biggest scale that does), "
     "nozzle, thin walls, and your slicer.<br>"
     "<b>Repair</b>: <i>Check</i> looks for faces with no area, doubled faces, hairline cracks, "
@@ -3603,6 +4410,9 @@ INFO_TEXT = (
     "left in red. The ticked repairs are made in every exported file - your model isn't changed. "
     "<i>Put a repaired copy in the model</i> makes a mended copy (as triangles) beside it.<br>"
     "<b>Export</b>: pick what it's for and the right file type and settings are picked for you. "
+    "<i>Save pieces by slicer</i> saves your planned pieces in that file type, one file for each slicer, "
+    "and can send each to its slicer. In <i>Plan the pieces</i>, Ctrl+Z undoes a change (Ctrl+Y redoes) "
+    "and the bars between the boxes drag to make them bigger. "
     "3MF and STL for printing; OBJ (with colours) and PLY for other 3D programs; GLB / glTF for web "
     "pages, games, AR and VR; DXF 3D faces for CAD; VRML for electronics 3D models; flat DXF and "
     "SVG drawings for laser cutting and plans; a PNG picture of the preview.<br><br>"
@@ -3661,6 +4471,8 @@ class _ModePages(QWidget):
 
 class StudioDialog(QDialog):
     _plan = None
+    _gathered = []          # the gathered bed, kept while IngeTrazo is open (closing the window keeps it)
+    _taken = []             # what was taken off it, newest last, so 'Put back' can undo: [(place, item)]
 
     def __init__(self, viewport, tool, parent=None):
         super().__init__(parent or viewport)
@@ -3680,6 +4492,12 @@ class StudioDialog(QDialog):
         self._done = 0
         self._waiting = False
         self._done_key = None
+        self._bed = StudioDialog._gathered   # objects gathered by Scale + next: [(name, scale, parts, printers)]
+        self._bed_view = 0      # which slicer's bed the preview shows
+        self._plan_view = 0     # the same for your planned pieces ('On the print bed')
+        self._bed_note = []     # lines over the preview: which bed, does it fit
+        self._last_files = []
+        self._raw_pieces = []
         self._typed = False
         self._drive_ax = 0
         self._shown = None
@@ -3719,6 +4537,17 @@ class StudioDialog(QDialog):
         b_ref.setToolTip("Reads the selection again and redraws the preview.")
         b_ref.clicked.connect(lambda *_: self.watch_selection(force=True))
         top.addWidget(b_ref)
+        b_sv = QPushButton("Save project...")
+        b_sv.setToolTip("Saves this job to a file - the piece plan, the gathered bed (every printer's) and the "
+                        "scale - so you can work on something else and come back to it, even after closing "
+                        "IngeTrazo.")
+        b_sv.clicked.connect(lambda *_: self.save_project())
+        top.addWidget(b_sv)
+        b_op = QPushButton("Open project...")
+        b_op.setToolTip("Opens a job saved with 'Save project...': its piece plan, gathered bed and scale come back. "
+                        "(The plan fits when the same model is selected.)")
+        b_op.clicked.connect(lambda *_: self.open_project())
+        top.addWidget(b_op)
         top.addStretch(1)
         self.cb_pv = QCheckBox("Preview")
         self.cb_pv.setChecked(bool(st.get('show_preview', True)))
@@ -3747,11 +4576,19 @@ class StudioDialog(QDialog):
         self.cb_preview = QComboBox()
         self.cb_preview.addItem("As in the model", 'model')
         self.cb_preview.addItem("On the print bed", 'bed')
+        self.cb_preview.addItem("The gathered bed (Scale + next)", 'gathered')
         self.cb_preview.setCurrentIndex(max(0, self.cb_preview.findData(st['preview'])))
         self.cb_preview.setToolTip("As in the model: the object (or its pieces in colour) where they are. "
                                    "Laid out on the print bed: the pieces scaled, laid flat and side by side, the "
                                    "way they'll print, on your bed.")
         vrow.addWidget(self.cb_preview, 1)
+        self.b_nextbed = QPushButton("Next bed \u25b8")
+        self.b_nextbed.setToolTip("When your pieces go to more than one slicer, each printer has its own bed: "
+                                  "this shows the next one (PrusaSlicer's bed, then Chitubox's...).")
+        self.b_nextbed.clicked.connect(self.next_bed)
+        self.b_nextbed.setMaximumWidth(110)
+        self.b_nextbed.setVisible(False)
+        vrow.addWidget(self.b_nextbed)
         for lab, az, el, tip in (("3D", 52.0, 30.0, "A view from above and to one side."),
                                  ("Top", 270.0, 89.0, "Looking straight down."),
                                  ("Front", 90.0, 0.0, "Looking at the front."),
@@ -3807,6 +4644,13 @@ class StudioDialog(QDialog):
             self.page_buttons.setdefault(page, []).append(b)
             return b
         btn(2, "Plan the pieces...", "Pick parts and put them into pieces of your own.", self.plan_pieces)
+        btn(2, "Scale + next", "The same as Scale + next on the Scale page (at the scale set there - it shows "
+            "over the preview): does what 'Scale + next' is set to, then gets ready for the next object.",
+            self.scale_and_next)
+        self.b_send2 = btn(2, "Send to the printers", "Saves the pieces at the new size (no save box) and opens them: "
+                           "each piece in the slicer your plan gives it (see the Printing column) - each slicer "
+                           "opens once, with its own pieces on one bed. Your model isn't changed.",
+                           lambda: self.send_to_slicer_pick(self.b_send2))
         self.b_send3 = btn(3, "Send to slicer", "Saves it at the new size (no save box) and opens it in this "
                            "printer's slicer - with more than one, you pick which suits this model. Your model "
                            "isn't changed.", lambda: self.send_to_slicer_pick(self.b_send3))
@@ -3818,6 +4662,8 @@ class StudioDialog(QDialog):
             "area.", self.repaired_copy)
         btn(5, "Export...", "Saves what's selected with these settings. Your model isn't changed.",
             self.export, True)
+        btn(5, "Save pieces by slicer...", "Saves your planned pieces with these settings, one file for each "
+            "slicer, and sends each to its slicer if ticked.", self.export_by_slicer)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         self.tabs.currentChanged.connect(self.page_shown)
@@ -4062,13 +4908,17 @@ class StudioDialog(QDialog):
         f2.addRow(self.cb_beside)
         self.cb_next = QComboBox()
         self.cb_next.addItem("Sends it to the slicer (model kept)", 'slicer')
+        self.cb_next.addItem("Adds it to one bed - send them all together (model kept)", 'bed')
         self.cb_next.addItem("Makes a scaled copy (original kept)", 'copy')
         self.cb_next.addItem("Scales it in place", 'inplace')
         self.cb_next.setCurrentIndex(max(0, self.cb_next.findData(st.get('next_how', 'slicer'))))
-        self.cb_next.setToolTip("What 'Scale + next' does to each object before getting ready for the next one.")
+        self.cb_next.setToolTip("What 'Scale + next' does to each object before getting ready for the next one. "
+                                "'Adds it to one bed': each object is scaled and kept here; when they're all "
+                                "done, 'Send the bed to slicer' lays them out side by side and opens them in "
+                                "one slicer window, on one bed.")
         f2.addRow("Scale + next:", self.cb_next)
         v.addLayout(f2)
-        srow = QHBoxLayout()
+        srow = flow_layout()                  # wraps in a narrow window, nothing cut off
         for text, tip, fn in (
                 ("Send to slicer", "Leaves your model as it is: saves it at the new size as a print file (no "
                  "save box - into the folder set on the 3D print page) and opens it in your printer's slicer. "
@@ -4088,8 +4938,43 @@ class StudioDialog(QDialog):
             else:
                 b.clicked.connect(lambda *_a, fn=fn: fn())
             srow.addWidget(b)
-        srow.addStretch(1)
+
         v.addLayout(srow)
+        brow_ = flow_layout()
+        self.b_sendbed = QPushButton("Send the bed to slicer")
+        self.b_sendbed.setToolTip("Lays every object gathered by 'Scale + next' (set to 'Adds it to one bed') side "
+                                  "by side on your print bed and opens them all in this printer's slicer - one "
+                                  "window, one bed. Then the bed is emptied, ready for the next lot.")
+        self.b_sendbed.clicked.connect(lambda *_: self.send_bed(self.b_sendbed))
+        self.b_takeoff = QPushButton("Take one off \u25be")
+        self.b_takeoff.setToolTip("Takes one object off the bed (the last one added, or any one you pick) - for "
+                                  "one added by mistake. Nothing else on the bed changes.")
+        self.b_takeoff.clicked.connect(lambda *_: self.take_off_menu(self.b_takeoff))
+        self.b_putback = QPushButton("Put back \u21b6")
+        self.b_putback.setToolTip("Puts back the last object taken off the bed (or everything, after 'Empty the "
+                                  "bed') - in case you took off the wrong one. Press again for the one before.")
+        self.b_putback.clicked.connect(self.put_back)
+        self.b_emptybed = QPushButton("Empty the bed")
+        self.b_emptybed.setToolTip("Forgets the objects gathered so far (nothing is saved or sent).")
+        self.b_emptybed.clicked.connect(self.empty_bed)
+        self.b_seebed = QPushButton("Preview the bed")
+        self.b_seebed.setToolTip("Shows the objects gathered so far laid out on your bed in the preview, as "
+                                 "they'll go to the slicer (each object its own colour). Pick 'As in the model' "
+                                 "under the preview to go back.")
+        self.b_seebed.clicked.connect(self.show_gathered)
+        brow_.addWidget(self.b_seebed)
+        brow_.addWidget(self.b_sendbed)
+        brow_.addWidget(self.b_takeoff)
+        brow_.addWidget(self.b_putback)
+        brow_.addWidget(self.b_emptybed)
+        b_again = QPushButton("Start again")
+        b_again.setToolTip("Empties the gathered bed (every printer's) and forgets your piece plan - a clean start. "
+                           "Your model isn't changed.")
+        b_again.clicked.connect(self.start_again)
+        brow_.addWidget(b_again)
+
+        v.addLayout(brow_)
+        self.bed_buttons()
         self.lbl_count = QLabel()
         self.lbl_count.setWordWrap(True)
         v.addWidget(self.lbl_count)
@@ -4113,7 +4998,7 @@ class StudioDialog(QDialog):
             "that many levels inside what you selected is one piece with everything in it - so group together "
             "the bits you'll print as one and they come out as one.")
         form.addRow("Pieces:", self.cb_split)
-        prow = QHBoxLayout()
+        prow = flow_layout()
         self.b_plan = QPushButton("Plan the pieces...")
         self.b_plan.setToolTip("Shows every part in a list and a picture: pick parts and put them into pieces of "
                                "your own, each its own colour. A plan decides the pieces (instead of the list "
@@ -4123,8 +5008,13 @@ class StudioDialog(QDialog):
         self.b_unplan.setToolTip("Goes back to the list above to decide the pieces.")
         self.b_unplan.clicked.connect(self.forget_plan)
         prow.addWidget(self.b_plan)
+        b_again2 = QPushButton("Start again")
+        b_again2.setToolTip("Empties the gathered bed (every printer's) and forgets your piece plan - a clean start. "
+                            "Your model isn't changed.")
+        b_again2.clicked.connect(self.start_again)
         prow.addWidget(self.b_unplan)
-        prow.addStretch(1)
+        prow.addWidget(b_again2)
+
         form.addRow("", prow)
         self.sp_gap = self._dspin(st['gap'], 0.2, 200.0, 1, " mm",
                                   tip="The space left between the pieces when they're laid out on the bed "
@@ -4140,8 +5030,8 @@ class StudioDialog(QDialog):
         self.lbl_pieces = QLabel()
         self.lbl_pieces.setWordWrap(True)
         v.addWidget(self.lbl_pieces)
-        self.tbl = QTableWidget(0, 3)
-        self.tbl.setHorizontalHeaderLabels(["Piece", "Size (new)", "Faces"])
+        self.tbl = QTableWidget(0, 4)
+        self.tbl.setHorizontalHeaderLabels(["Piece", "Size (new)", "Faces", "Printing"])
         self.tbl.setToolTip("The pieces, in their preview colours, at the new size. Click one to show it in the "
                             "preview.")
         try:
@@ -4171,7 +5061,7 @@ class StudioDialog(QDialog):
         prow.addWidget(self.cb_bedp)
         prow.addStretch(1)
         v.addLayout(prow)
-        brow = QHBoxLayout()
+        brow = flow_layout()
         for text, tip, fn in (
                 ("Save as new...", "Saves everything on this page as a printer of your own, under a name you type. "
                  "It goes at the top of the list.", self.printer_save_as),
@@ -4187,7 +5077,7 @@ class StudioDialog(QDialog):
             b.clicked.connect(lambda *_a, fn=fn: fn())
             brow.addWidget(b)
             setattr(self, 'b_pr_' + text.split()[0].lower().rstrip('.'), b)
-        brow.addStretch(1)
+
         v.addLayout(brow)
         form = self._form()
         self.cb_kind = QComboBox()
@@ -4216,6 +5106,10 @@ class StudioDialog(QDialog):
         self.b_fit.setToolTip("Sets the Scale page to the biggest size that still fits on your bed.")
         self.b_fit.clicked.connect(self.use_biggest)
         frow.addWidget(self.b_fit)
+        self.b_unfit = QPushButton("Back to the scale before")
+        self.b_unfit.setToolTip("Puts the Scale page back the way it was before 'Use the biggest that fits'.")
+        self.b_unfit.clicked.connect(self.scale_back)
+        frow.addWidget(self.b_unfit)
         frow.addStretch(1)
         form.addRow(frow)
         nrow = QHBoxLayout()
@@ -4257,7 +5151,7 @@ class StudioDialog(QDialog):
                                   "files open in the computer's usual program for that type of file.")
         self.set_slicers(st.get('slicers') or [], st.get('slicer', ''))
         v.addWidget(self.cb_slicer)          # the path on its own line, the buttons under it
-        srow = QHBoxLayout()
+        srow = flow_layout()
         b_browse = QPushButton("Browse...")
         b_browse.setToolTip("Find a slicer's program yourself and add it to this printer's list.")
         b_browse.clicked.connect(self.browse_slicer)
@@ -4270,7 +5164,7 @@ class StudioDialog(QDialog):
         b_rem.clicked.connect(self.remove_slicer)
         for b in (b_browse, b_find, b_rem):
             srow.addWidget(b)
-        srow.addStretch(1)
+
         v.addLayout(srow)
         self.cb_open = QCheckBox("Open it in the slicer straight after saving")
         self.cb_open.setChecked(bool(st['open_after']))
@@ -4298,6 +5192,7 @@ class StudioDialog(QDialog):
         self.cb_kind.setCurrentIndex(max(0, self.cb_kind.findData(st.get('kind', 'fdm'))))
         self.cb_pfmt.setCurrentIndex(max(0, self.cb_pfmt.findData(st.get('print_format', '3mf'))))
         self.fill_printers(st.get('printer', ''))
+        self.fit_buttons()
 
     def build_repair_page(self):
         st = self.st
@@ -4414,6 +5309,31 @@ class StudioDialog(QDialog):
         self.lab_png = QLabel("Picture size:")
         form.addRow(self.lab_png, self.sp_png)
         v.addLayout(form)
+        # ---- your planned pieces, each lot to its own slicer, in the file type picked above
+        box = QGroupBox("Your planned pieces (Pieces page)")
+        bl = QVBoxLayout(box)
+        self.lbl_exp_plan = QLabel()
+        self.lbl_exp_plan.setWordWrap(True)
+        bl.addWidget(self.lbl_exp_plan)
+        self.cb_exp_send = QCheckBox("Send each lot to its slicer after saving (3MF and STL)")
+        self.cb_exp_send.setChecked(True)
+        self.cb_exp_send.setToolTip("After saving, each file opens in the slicer its pieces are planned for - one "
+                                    "window per slicer. Other file types are just saved.")
+        bl.addWidget(self.cb_exp_send)
+        hb = flow_layout()
+        self.b_exp_pieces = QPushButton("Save pieces by slicer...")
+        self.b_exp_pieces.setToolTip("Saves your planned pieces with the settings above (file type, units, "
+                                     "layout, repairs): one file for each slicer, in a folder you pick. Then "
+                                     "sends each to its slicer if that's ticked. Your model isn't changed.")
+        self.b_exp_pieces.clicked.connect(lambda *_: self.export_by_slicer())
+        b_plan5 = QPushButton("Plan the pieces...")
+        b_plan5.setToolTip("Pick parts, put them into pieces and choose each piece's slicer.")
+        b_plan5.clicked.connect(lambda *_: self.plan_pieces())
+        hb.addWidget(self.b_exp_pieces)
+        hb.addWidget(b_plan5)
+
+        bl.addLayout(hb)
+        v.addWidget(box)
         v.addStretch(1)
 
     # ------------------------------------------------------------------ wiring
@@ -4479,7 +5399,8 @@ class StudioDialog(QDialog):
             'view': self.cb_view.currentData(), 'png_size': self.sp_png.value(),
             'follow': self.cb_follow.isChecked(), 'preview': self.cb_preview.currentData(),
             'show_preview': self.cb_pv.isChecked(), 'beside': self.cb_beside.isChecked(),
-            'next_how': self.cb_next.currentData()})
+            'next_how': self.cb_next.currentData(), 'before_fit': self.st.get('before_fit'),
+            'project_folder': self.st.get('project_folder', '')})
         update_settings(studio=dict(st))
 
     def closeEvent(self, ev):
@@ -4801,8 +5722,12 @@ class StudioDialog(QDialog):
         return True
 
     def send_to_slicer_pick(self, button=None):
-        """'Send to slicer' button: asks which slicer first when this printer has more than one."""
-        if not self.pick_slicer(button):
+        """'Send to slicer' button: asks which slicer first when this printer has more than one
+        (not when your plan already says where every piece goes)."""
+        own = ((self.plan or {}).get('printer') or {}) if self.plan_on() else {}
+        pcs = self.raw_piece_names() if own else []
+        all_set = bool(pcs) and all(pc is not None and self.norm_target(own.get(pc or "", "")) for pc in pcs)
+        if not all_set and not self.pick_slicer(button):
             return False
         return self.send_to_slicer()
 
@@ -4988,26 +5913,26 @@ class StudioDialog(QDialog):
             fits = sz <= bed[2] and ((sx <= bed[0] and sy <= bed[1]) or (sy <= bed[0] and sx <= bed[1]))
             big = biggest_that_fits(now, bed)
             n_fit = 1.0 / big if big > 0 else 0
-            t = ("<b>New size %s</b><br>" % fmt_size(new, 'mm'))
-            t += ("<span style='color:#2e7d32'>Fits on the print bed.</span>" if fits else
+            t = ("<b>This object at the new size: %s</b><br>" % fmt_size(new, 'mm'))
+            t += ("<span style='color:#2e7d32'>It fits on the print bed.</span>" if fits else
                   "<span style='color:#c0392b'>Too big for the print bed (as it stands; laying pieces flat "
                   "may help).</span>")
             t += "<br>Biggest that fits as it stands: 1:%s (%s %% of full size)." % (
                 ("%.1f" % n_fit) if n_fit >= 10 else ("%.3g" % n_fit), "%.3g" % (big * 100))
-            self.lbl_fit.setText(t)
+            self.lbl_fit.setText(t + self.gathered_fit_html())
             self.b_fit.setEnabled(True)
         else:
-            self.lbl_fit.setText("" if has else "Select the object first.")
+            self.lbl_fit.setText(("" if has else "Select the object first.") + self.gathered_fit_html())
             self.b_fit.setEnabled(False)
         for w in self.bed:
             w.setEnabled(self.cb_bed.isChecked())
         self.sp_nozzle.setEnabled(self.cb_thin.isChecked())
         self.sp_hole.setEnabled(self.cb_fholes.isChecked())
-        planned = bool(self.plan and self.plan.get('pieces'))
+        planned = self.plan_on()
         self.cb_split.setEnabled(not planned)
-        self.b_unplan.setEnabled(planned)
+        self.b_unplan.setEnabled(bool(self.plan and self.plan.get('pieces')))
         self.canvas.overlay = (["Now: " + fmt_size(now, u), "New: %s  (%s)" % (fmt_size(new, u), self.describe())]
-                               if has else [])
+                               if has else []) + list(getattr(self, '_bed_note', None) or [])
         self.canvas.update()
 
     def use_biggest(self, *_):
@@ -5017,26 +5942,206 @@ class StudioDialog(QDialog):
             return
         n = 1.0 / big
         n = math.ceil(n * 10.0 - 1e-9) / 10.0 if n >= 1 else n     # a round number that still fits
+        self.st['before_fit'] = self.scale_state()                  # so 'Back to the scale before' can undo it
         self.cb_mode.setCurrentIndex(max(0, self.cb_mode.findData('scale')))
         self.cb_scale.setCurrentIndex(self.cb_scale.count() - 1)       # Custom
         self.sp_scale.setValue(n)
-        self.report("Set the scale to 1:%g - the biggest that fits on your bed as it stands." % n)
+        self.report("Set the scale to 1:%g - the biggest that fits on your bed as it stands. 'Back to the scale "
+                    "before' (3D print page) undoes it." % n)
+        self.fit_buttons()
+        self.save_now()
+
+    # ------------------------------------------------------------------ projects
+    def project_folder(self):
+        d = self.st.get('project_folder') or os.path.join(os.path.expanduser("~"), "Documents",
+                                                            "3D Scale Studio projects")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return d
+
+    def save_project(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        def tr_out(tris):
+            return [[[round(c, 4) for c in p] for p in t] for t in tris]
+        name = "".join(ch for ch in self.name() if ch not in '\\/:*?"<>|').strip() or "My project"
+        res = QFileDialog.getSaveFileName(self, "Save project", os.path.join(self.project_folder(), name + ".json"),
+                                          "3D Scale Studio project (*.json)")
+        path = res[0] if isinstance(res, (tuple, list)) else res
+        if not path:
+            return False
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        cur, _i = self.picked_printer()
+        data = {'kind': '3D Scale Studio project', 'version': 1,
+                'plan': self.plan, 'scale': self.scale_state(), 'before_fit': self.st.get('before_fit'),
+                'printer': cur.get('name') if cur else '',
+                'pieces': {'split': self.cb_split.currentData(), 'gap': self.sp_gap.value(),
+                           'lay_flat': self.cb_flat.isChecked()},
+                'bed': [{'name': nm, 'scale': sc, 'printers': list(ds),
+                         'parts': [{'name': n, 'colour': list(c), 'tris': tr_out(tr)} for n, c, tr in parts]}
+                        for nm, sc, parts, ds in self._bed]}
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception as e:
+            self.report("Couldn't save the project: %s" % e, bad=True)
+            return False
+        self.st['project_folder'] = os.path.dirname(path)
+        self.save_now()
+        n = len(self._bed)
+        self.report("Saved the project:\n%s\n(%s, %d object%s on the gathered bed, scale %s)" % (
+            path, "a piece plan" if self.plan else "no piece plan", n, "" if n == 1 else "s", self.describe()))
+        return True
+
+    def open_project(self):
+        from PySide6.QtWidgets import QFileDialog
+        res = QFileDialog.getOpenFileName(self, "Open project", self.project_folder(),
+                                          "3D Scale Studio project (*.json);;All files (*)")
+        path = res[0] if isinstance(res, (tuple, list)) else res
+        if not path:
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get('kind') != '3D Scale Studio project':
+                raise ValueError("that isn't a 3D Scale Studio project")
+            bed = []
+            for b in data.get('bed') or []:
+                parts = [(str(p.get('name', 'Piece')), tuple(p.get('colour') or (200, 200, 200)),
+                          [tuple(tuple(c) for c in t) for t in p.get('tris') or []]) for p in b.get('parts') or []]
+                bed.append((str(b.get('name', 'Object')), str(b.get('scale', '')), parts,
+                            list(b.get('printers') or [""] * len(parts))))
+        except Exception as e:
+            self.report("Couldn't open the project: %s" % e, bad=True)
+            return False
+        if self._bed:
+            StudioDialog._taken.append((None, list(self._bed)))     # 'Put back' brings the old bed back
+        del self._bed[:]
+        self._bed.extend(bed)
+        self.plan = data.get('plan') or None
+        StudioDialog._plan = self.plan
+        self._raw = None
+        self._busy = True
+        try:
+            self.set_scale_state(data.get('scale'))
+            pc = data.get('pieces') or {}
+            if 'split' in pc:
+                self.cb_split.setCurrentIndex(max(0, self.cb_split.findData(pc['split'])))
+            if pc.get('gap'):
+                self.sp_gap.setValue(float(pc['gap']))
+            if 'lay_flat' in pc:
+                self.cb_flat.setChecked(bool(pc['lay_flat']))
+        finally:
+            self._busy = False
+        self.st['before_fit'] = data.get('before_fit')
+        if data.get('printer'):
+            j = self.cb_bedp.findData("own:" + data['printer'])
+            if j >= 0:
+                self.cb_bedp.setCurrentIndex(j)
+        self.st['project_folder'] = os.path.dirname(path)
+        self._bed_view = self._plan_view = 0
+        self.fit_buttons()
+        self.bed_buttons()
+        self.changed()
+        self.refresh_preview()
+        n = len(bed)
+        self.report("Opened the project %s: %s, %d object%s on the gathered bed, scale %s.%s" % (
+            os.path.basename(path), "its piece plan" if self.plan else "no piece plan", n, "" if n == 1 else "s",
+            self.describe(), " Select the same model for the plan to fit." if self.plan else ""))
+        return True
+
+    def scale_state(self):
+        """How the Scale page is set (to save and put back)."""
+        return {'mode': self.cb_mode.currentData(), 'scale': self.sp_scale.value(),
+                'scale_item': self.cb_scale.currentIndex(), 'percent': self.sp_pct.value(),
+                'from_scale': self.sp_from.value(), 'to_scale': self.sp_to.value()}
+
+    def set_scale_state(self, d):
+        if not d:
+            return
+        self.cb_mode.setCurrentIndex(max(0, self.cb_mode.findData(d.get('mode', 'scale'))))
+        i = int(d.get('scale_item', -1))
+        if 0 <= i < self.cb_scale.count():
+            self.cb_scale.setCurrentIndex(i)
+        self.sp_scale.setValue(float(d.get('scale', self.sp_scale.value())))
+        self.sp_pct.setValue(float(d.get('percent', self.sp_pct.value())))
+        self.sp_from.setValue(float(d.get('from_scale', self.sp_from.value())))
+        self.sp_to.setValue(float(d.get('to_scale', self.sp_to.value())))
+
+    def scale_back(self, *_):
+        d = self.st.get('before_fit')
+        if not d:
+            self.report("There's no scale to go back to.")
+            return
+        self.set_scale_state(d)
+        self.st['before_fit'] = None
+        self.fit_buttons()
+        self.changed()
+        self.save_now()
+        self.report("Back to %s, the scale before 'Use the biggest that fits'." % self.describe())
+
+    def fit_buttons(self):
+        d = self.st.get('before_fit')
+        try:
+            self.b_unfit.setVisible(bool(d))
+            if d:
+                self.b_unfit.setText("Back to 1:%g" % float(d.get('scale', 0)) if d.get('mode') == 'scale'
+                                     else "Back to the scale before")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ pieces
     def split_depth(self):
         return self.cb_split.currentData()
 
+    def plan_on(self):
+        """True when there's a plan and it was made for what's selected now (a plan made for the
+        canopy mustn't be used on a cylinder selected later)."""
+        if not (self.plan and self.plan.get('pieces')) or not self.ents:
+            return False
+        sig = (self._sel_key, id(self.plan))
+        fit = getattr(self, '_plan_fit', None)
+        if fit and fit[0] == sig:
+            return fit[1]
+        try:
+            known = set(k for k, _n, _kd, _t in piece_leaves(self.ents, with_tris=False))
+        except Exception:
+            known = set()
+        ok = bool(set((self.plan.get('keys') or {}).keys()) & known)
+        self._plan_fit = (sig, ok)
+        return ok
+
     def raw_parts(self):
         """The pieces in the model's units: [(name, colour, tris)]."""
-        planned = bool(self.plan and self.plan.get('pieces'))
-        key = (self._sel_key, self.split_depth(), id(self.plan) if planned else None)
+        planned = self.plan_on()
+        key = (self._sel_key, self.split_depth(), id(self.plan) if planned else None,
+               getattr(self, '_only_top', None))
         if self._raw is not None and self._raw[0] == key:
             return self._raw[1]
         ents = self.ents
         out = []
+        self._raw_pieces = []
         if ents:
             if planned:
-                raw = plan_parts(piece_leaves(ents), self.plan)
+                tops = []
+                leaves = piece_leaves(ents, tops_out=tops)
+                only = getattr(self, '_only_top', None)
+                if only is not None:
+                    leaves = [lf for lf, t in zip(leaves, tops) if t == only]
+                raw3 = plan_parts(leaves, self.plan, with_piece=True)
+                raw = [(n, tr) for n, tr, _p in raw3]
+                self._raw_pieces = [p_ for n, tr, p_ in raw3 if tr]
+            elif getattr(self, '_only_top', None) is not None:
+                # one of the selected objects on its own (no plan): its parts as the Pieces list says
+                tops = []
+                leaves = [lf for lf, t in zip(piece_leaves(ents, tops_out=tops), tops) if t == self._only_top]
+                if self.split_depth() is not None and self.split_depth() >= 0:
+                    raw = [(nm, tr) for _k, nm, _kd, tr in leaves]
+                else:
+                    raw = [("Object", [t for lf in leaves for t in lf[3]])] if leaves else []
             elif self.split_depth() is not None and self.split_depth() >= 0:
                 raw = split_parts(ents, int(self.split_depth()))
             else:
@@ -5053,12 +6158,31 @@ class StudioDialog(QDialog):
         self._raw = (key, out)
         return out
 
+    def raw_piece_names(self):
+        """The plan's piece for each part raw_parts gives ("" on its own; None without a plan)."""
+        raw = self.raw_parts()
+        pcs = list(getattr(self, '_raw_pieces', None) or [])
+        return pcs if len(pcs) == len(raw) else [None] * len(raw)
+
     def plan_pieces(self, *_):
-        leaves = piece_leaves(self.ents)
+        tops = []
+        leaves = piece_leaves(self.ents, tops_out=tops)
         if not leaves:
             self.report("Select the object (a group, or its faces) first.", bad=True)
             return
-        pdlg = PiecesDialog(self, leaves, self.plan)
+        # the objects you selected, so you can work on them one at a time
+        objects = []
+        for t in sorted(set(tops), key=lambda x: (x < 0, x)):
+            if t >= 0:
+                e = self.ents[t]
+                nm = str(getattr(e, 'name', '') or "Object %d" % (t + 1))
+            else:
+                nm = "Selected faces"
+            objects.append((t, nm, [i for i, x in enumerate(tops) if x == t]))
+        pdlg = PiecesDialog(self, leaves, self.plan, [(k, lab) for k, lab, _p, _pr in self.printer_targets()],
+                            objects=objects)
+        pdlg.on_apply = self.apply_plan
+        pdlg.on_scale_next = self.scale_next_object
         try:
             eddy_window(pdlg, PLUGIN_NAME + " - pieces", EDDY_TIPS, place=True)
         except Exception:
@@ -5069,6 +6193,39 @@ class StudioDialog(QDialog):
             self._raw = None
             self.changed()
             self.refresh_preview()
+            if getattr(pdlg, 'send_after', False):
+                self.send_to_slicer_pick()
+            elif getattr(pdlg, 'scale_next_after', False):
+                # straight onto the gathered bed, and show it, so you can see where each piece went
+                self.scale_and_next('bed', force=True)
+                if self._bed:
+                    self._bed_view = 0
+                    self.show_gathered()
+
+    def scale_next_object(self, plan, top, name):
+        """Plan window, several objects selected: puts just this one on the gathered bed, at the
+        scale on the Scale page. Returns (it worked, words)."""
+        self.apply_plan(plan)
+        ok = self.add_to_bed(top=top, name=name)
+        if not ok:
+            return False, self._last
+        self._done += 1
+        n = len(self._bed)
+        try:
+            self.lbl_count.setText("On the bed: %d object%s." % (n, "" if n == 1 else "s"))
+        except Exception:
+            pass
+        words = "'%s' is on the gathered bed at %s - %s." % (name, self.describe(), getattr(self, '_bed_split', ""))
+        self.report(words + " (%d on the bed)" % n)
+        return True, words
+
+    def apply_plan(self, plan):
+        """'Use these pieces' in the plan window: the plan is used at once, the window stays open."""
+        self.plan = plan
+        StudioDialog._plan = plan
+        self._raw = None
+        self.changed()
+        self.refresh_preview()
 
     def forget_plan(self, *_):
         self.plan = None
@@ -5084,6 +6241,18 @@ class StudioDialog(QDialog):
         k = self.unit_mm()
         self.tbl.setRowCount(len(parts))
         sizes = {}
+        # what your plan says for each piece: holes closed, which slicer
+        notes = []
+        pcs = self.raw_piece_names() if len(parts) == len(self.raw_parts()) else [None] * len(parts)
+        own_s = ((self.plan or {}).get('printer') or {}) if self.plan_on() else {}
+        close = set((self.plan or {}).get('close', []))
+        for pc in pcs:
+            bits = []
+            if pc is not None and pc in close:
+                bits.append("holes closed")
+            if pc is not None and own_s.get(pc or ""):
+                bits.append("\u2192 " + self.target_name(own_s.get(pc or "", "")).split(" - ")[0])
+            notes.append(", ".join(bits))
         for r, (n, col, tr) in enumerate(parts):
             s = tris_size(tr)
             s = (s[0] * k * f[0], s[1] * k * f[1], s[2] * k * f[2])
@@ -5094,10 +6263,18 @@ class StudioDialog(QDialog):
             self.tbl.setItem(r, 0, it)
             self.tbl.setItem(r, 1, QTableWidgetItem(sizes[r]))
             self.tbl.setItem(r, 2, QTableWidgetItem(str(len(tr))))
+            self.tbl.setItem(r, 3, QTableWidgetItem(notes[r] if r < len(notes) else ""))
         self.canvas.piece_sizes = sizes
-        planned = bool(self.plan and self.plan.get('pieces'))
+        planned = self.plan_on()
+        other = bool(self.plan and self.plan.get('pieces')) and not planned and bool(self.ents)
         self.lbl_pieces.setText("%d piece%s%s." % (len(parts), "" if len(parts) == 1 else "s",
-                                                   " (your plan)" if planned else ""))
+                                                   " (your plan)" if planned else
+                                                   " - your plan is for another object, so it isn't used here"
+                                                   if other else ""))
+        try:
+            self.lbl_exp_plan.setText(self.plan_words())
+        except Exception:
+            pass
 
     def piece_row_picked(self, *_):
         rows = sorted({ix.row() for ix in self.tbl.selectionModel().selectedRows()}) \
@@ -5117,7 +6294,18 @@ class StudioDialog(QDialog):
 
     # ------------------------------------------------------------------ preview
     def refresh_preview(self):
+        if self.cb_preview.currentData() == 'gathered':
+            self.preview_gathered()
+            if self.ents:
+                try:
+                    self.fill_piece_table(self.raw_parts())
+                except Exception:
+                    pass
+            self.update_info()
+            return
         if not self.ents:
+            self._bed_note = []
+            self.b_nextbed.setVisible(False)
             self.canvas.set_parts([], None)
             self._shown = None
             self.fill_piece_table([])
@@ -5128,7 +6316,12 @@ class StudioDialog(QDialog):
         try:
             raw = self.raw_parts()
             self.fill_piece_table(raw)
-            if self.cb_preview.currentData() == 'bed':
+            groups = self.planned_slicers() if self.cb_preview.currentData() == 'bed' else None
+            if groups:
+                self.preview_planned_bed(groups)
+            elif self.cb_preview.currentData() == 'bed':
+                self.b_nextbed.setVisible(False)
+                self._bed_note = []
                 parts, _notes, _w = self.make_parts({'use_scale': True, 'layout': 'bed', 'apply_fixes': False,
                                                     'per_piece': True})
                 bed = (self.bed[0].value(), self.bed[1].value()) if self.cb_bed.isChecked() else None
@@ -5139,6 +6332,8 @@ class StudioDialog(QDialog):
                 self.canvas.set_parts(parts, bed, None)
                 self._shown = None
             else:
+                self.b_nextbed.setVisible(False)
+                self._bed_note = []
                 shown = (id(raw), len(self._marks), 'model')
                 if getattr(self, '_shown', None) != shown:
                     self.canvas.set_parts(raw, None, self._marks)
@@ -5159,14 +6354,32 @@ class StudioDialog(QDialog):
     def make_parts(self, o):
         """The pieces in mm ready for a file: scaled, repaired, laid out. Returns (parts, notes,
         anything worth a warning)."""
-        raw = self.raw_parts()
-        k = self.unit_mm()
-        f = self.factors() if o.get('use_scale', True) else (1.0, 1.0, 1.0)
-        parts = [(n, c, scale_tris(tr, (k * f[0], k * f[1], k * f[2]))) for n, c, tr in raw]
-        if not o.get('per_piece', True) and len(parts) > 1:
-            parts = [(self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
         notes, warn = [], False
-        if o.get('apply_fixes'):
+        if o.get('parts') is not None:
+            # ready-made pieces (in mm, already scaled and mended) - the objects gathered on one bed
+            parts = list(o['parts'])
+        else:
+            raw = self.raw_parts()
+            pcs = self.raw_piece_names()
+            k = self.unit_mm()
+            f = self.factors() if o.get('use_scale', True) else (1.0, 1.0, 1.0)
+            only = o.get('only')
+            close = set((self.plan or {}).get('close', [])) if self.plan and self.plan.get('pieces') else set()
+            parts = []
+            for i, (n, c, tr) in enumerate(raw):
+                if only is not None and i not in only:
+                    continue
+                tr = scale_tris(tr, (k * f[0], k * f[1], k * f[2]))
+                if pcs[i] is not None and pcs[i] in close:
+                    tr, filled, left = close_all_holes(tr)
+                    if filled or left:
+                        notes.append("%s: closed %d hole%s%s." % (
+                            n, filled, "" if filled == 1 else "s",
+                            (" (%d couldn't be - edges shared by more than two faces)" % left) if left else ""))
+                parts.append((n, c, tr))
+            if not o.get('per_piece', True) and len(parts) > 1:
+                parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
+        if o.get('apply_fixes') and o.get('parts') is None:
             tot = {}
             fixed = []
             for n, c, tr in parts:
@@ -5190,16 +6403,10 @@ class StudioDialog(QDialog):
         parts = [p for p in parts if p[2]]
         lay = o.get('layout', 'keep')
         if lay == 'bed':
-            if self.cb_flat.isChecked():
-                parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
-            if len(parts) > 1:
-                bw = self.bed[0].value() if self.cb_bed.isChecked() else 0.0
-                bd = self.bed[1].value() if self.cb_bed.isChecked() else 0.0
-                placed, _size = lay_out_packed([(n, tr) for n, _c, tr in parts], bw, bd,
-                                               max(0.2, self.sp_gap.value()))
-                parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, parts)]
-            elif parts:
-                parts = [(parts[0][0], parts[0][1], stand_centred(parts[0][2]))]
+            parts = self.lay_on_bed(parts, flat=self.cb_flat.isChecked() and o.get('parts') is None)
+            if o.get('parts') is not None and not o.get('per_piece', True) and len(parts) > 1:
+                # one file holding them all (resin STL), laid out side by side first
+                parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
         elif lay == 'centre' and parts:
             allt = stand_centred([t for _n, _c, tr in parts for t in tr])
             i = 0
@@ -5209,6 +6416,20 @@ class StudioDialog(QDialog):
                 i += len(tr)
             parts = out
         return [p for p in parts if p[2]], notes, warn
+
+    def lay_on_bed(self, parts, flat=True):
+        """Pieces (mm) laid flat if asked, side by side in the middle of the bed."""
+        if flat:
+            parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
+        if len(parts) > 1:
+            bw = self.bed[0].value() if self.cb_bed.isChecked() else 0.0
+            bd = self.bed[1].value() if self.cb_bed.isChecked() else 0.0
+            placed, _size = lay_out_packed([(n, tr) for n, _c, tr in parts], bw, bd,
+                                           max(0.2, self.sp_gap.value()))
+            parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, parts)]
+        elif parts:
+            parts = [(parts[0][0], parts[0][1], stand_centred(parts[0][2]))]
+        return parts
 
     # ------------------------------------------------------------------ the window itself
     def page_shown(self, i):
@@ -5245,6 +6466,17 @@ class StudioDialog(QDialog):
                 'layout': 'bed', 'apply_fixes': True, 'per_piece': not (resin and fmt != '3mf')}
 
     def export_print(self):
+        groups = self.planned_slicers() if self.ents else None
+        if groups:
+            # pieces going to different slicers: one file for each slicer, in a folder you pick
+            from PySide6.QtWidgets import QFileDialog
+            start = self.st.get('last_folder') or os.path.join(os.path.expanduser("~"), "Downloads")
+            d = QFileDialog.getExistingDirectory(self, "Save the print files in", start)
+            if not d:
+                return
+            self.st['last_folder'] = d
+            self.send_split(groups, to_path=self.folder_namer(d), open_them=self.cb_open.isChecked())
+            return
         self.export(self.print_opts())
         self.warn_resin_3mf()
 
@@ -5261,26 +6493,264 @@ class StudioDialog(QDialog):
             d = os.path.expanduser("~")
         return d
 
+    def print_path(self, name, ext):
+        """A new file name in the print folder (never over an old one)."""
+        folder = self.print_folder()
+        path = os.path.join(folder, name + ext)
+        n = 2
+        while os.path.exists(path):
+            path = os.path.join(folder, "%s (%d)%s" % (name, n, ext))
+            n += 1
+        return path
+
+    # ---- every slicer you have, and the printer each belongs to
+    def slicer_targets(self):
+        """[(label, slicer program, your printer it's on - None: the 3D print page as it is now)]:
+        this printer's slicers first, then your other printers' slicers."""
+        out, seen = [], set()
+        cur, _i = self.picked_printer()
+
+        def add(path, p, where):
+            path = str(path or "").strip()
+            if not path or os.path.normcase(path) in seen:
+                return
+            seen.add(os.path.normcase(path))
+            nm = os.path.splitext(os.path.basename(path))[0] or path
+            out.append(("%s  (%s)" % (nm, where), path, p))
+        for path in self.slicers():
+            add(path, None, (cur.get('name') if cur else "this printer"))
+        for p in self.printers():
+            if cur is not None and p.get('name') == cur.get('name'):
+                continue
+            for path in list(p.get('slicers') or []) + [p.get('slicer', '')]:
+                add(path, p, p.get('name', '?'))
+        return out
+
+    def printer_of_slicer(self, path):
+        """The printer whose settings (bed, resin or FDM, file type) suit this slicer: the 3D print
+        page as it is (None) if the slicer's on its list, else your first printer that has it."""
+        for _lab, p_, pr in self.slicer_targets():
+            if os.path.normcase(p_) == os.path.normcase(path):
+                return pr
+        return None
+
+    def run_as_printer(self, printer, slicer, fn):
+        """Runs fn() with the 3D print page set up as that printer (bed, kind, nozzle, file type,
+        gap) and that slicer showing, then puts the page back just as it was."""
+        if printer is None:
+            keep = self.ed_slicer.text()
+            self._busy = True
+            try:
+                self.ed_slicer.setText(slicer)
+            finally:
+                self._busy = False
+            try:
+                return fn()
+            finally:
+                self._busy = True
+                try:
+                    self.ed_slicer.setText(keep)
+                finally:
+                    self._busy = False
+        was = self.printer_now("")
+        self._busy = True
+        try:
+            for s_, val in zip(self.bed, printer.get('bed', was['bed'])):
+                s_.setValue(float(val))
+            self.cb_kind.setCurrentIndex(max(0, self.cb_kind.findData(printer.get('kind', 'fdm'))))
+            self.sp_nozzle.setValue(float(printer.get('nozzle', was['nozzle'])))
+            self.cb_thin.setChecked(bool(printer.get('warn_thin', was['warn_thin'])))
+            self.cb_pfmt.setCurrentIndex(max(0, self.cb_pfmt.findData(printer.get('format', '3mf'))))
+            if printer.get('gap'):
+                self.sp_gap.setValue(float(printer['gap']))
+            self.ed_slicer.setText(slicer)
+        finally:
+            self._busy = False
+        try:
+            return fn()
+        finally:
+            self._busy = True
+            try:
+                for s_, val in zip(self.bed, was['bed']):
+                    s_.setValue(float(val))
+                self.cb_kind.setCurrentIndex(max(0, self.cb_kind.findData(was['kind'])))
+                self.sp_nozzle.setValue(float(was['nozzle']))
+                self.cb_thin.setChecked(bool(was['warn_thin']))
+                self.cb_pfmt.setCurrentIndex(max(0, self.cb_pfmt.findData(was['format'])))
+                self.sp_gap.setValue(float(was['gap']))
+                self.set_slicers(was['slicers'], was['slicer'])
+            finally:
+                self._busy = False
+            self.save_now()
+
+    # ---- printers the pieces print on (each with its own slicer and bed)
+    def printer_targets(self):
+        """[(key, label, slicer, printer or None)]: the printer on the 3D print page first (key "" -
+        its settings as they are now), then your other saved printers."""
+        cur, _i = self.picked_printer()
+        sl_now = self.ed_slicer.text().strip()
+        nm_now = os.path.splitext(os.path.basename(sl_now))[0] if sl_now else "usual program"
+        out = [("", "%s - %s" % (cur.get('name') if cur else "This printer (3D print page)", nm_now), sl_now, None)]
+        for p in self.printers():
+            if cur is not None and p.get('name') == cur.get('name'):
+                continue
+            path = str(p.get('slicer') or (list(p.get('slicers') or []) + [""])[0] or "").strip()
+            nm = os.path.splitext(os.path.basename(path))[0] if path else "usual program"
+            out.append((p.get('name', '?'), "%s - %s" % (p.get('name', '?'), nm), path, p))
+        return out
+
+    def norm_target(self, key):
+        """"" for the printer on the 3D print page (by name too), else the saved printer's name."""
+        cur, _i = self.picked_printer()
+        if not key or (cur is not None and key == cur.get('name')):
+            return ""
+        if not any(p.get('name') == key for p in self.printers()):
+            return ""                       # a printer that's been deleted: the one on the page
+        return key
+
+    def target(self, key):
+        """(slicer, printer or None) for a printer key."""
+        key = self.norm_target(key)
+        for k, _lab, path, pr in self.printer_targets():
+            if k == key:
+                return path, pr
+        return self.ed_slicer.text().strip(), None
+
+    def target_name(self, key):
+        key = self.norm_target(key)
+        for k, lab, _path, _pr in self.printer_targets():
+            if k == key:
+                return lab
+        return key
+
+    def planned_slicers(self):
+        """With a plan that puts pieces on different printers: [(slicer, [part numbers], printer
+        or None)] in the order they come (pieces with no printer go on the 3D print page's). Else None."""
+        if not (self.plan and self.plan.get('pieces') is not None and self.plan.get('printer')) or \
+                not self.plan_on():
+            return None
+        own = self.plan.get('printer') or {}
+        pcs = self.raw_piece_names()
+        groups, order = {}, []
+        for i, pc in enumerate(pcs):
+            k = self.norm_target(own.get(pc or "", "") if pc is not None else "")
+            if k not in groups:
+                path, pr = self.target(k)
+                groups[k] = (path, [], pr)
+                order.append(k)
+            groups[k][1].append(i)
+        if order == [""]:
+            return None
+        return [groups[k] for k in order]
+
+    def plan_words(self):
+        """Where the pieces go, in words (for the Export page)."""
+        if not self.ents:
+            return "Select the object first."
+        raw = self.raw_parts()
+        groups = self.planned_slicers()
+        if not groups:
+            return ("%d piece%s, all on %s. To print some pieces on another printer, use 'Plan the pieces...' "
+                    "and the 'Print on' buttons." % (len(raw), "" if len(raw) == 1 else "s", self.target_name("")))
+        return "; ".join("%d piece%s \u2192 %s" % (len(idx), "" if len(idx) == 1 else "s",
+                                                    (pr.get('name') if pr else self.target_name("").split(" - ")[0]))
+                         for p_, idx, pr in groups) + "."
+
+    def folder_namer(self, d):
+        def where(name, ext):
+            path = os.path.join(d, name + ext)
+            n = 2
+            while os.path.exists(path):
+                path = os.path.join(d, "%s (%d)%s" % (name, n, ext))
+                n += 1
+            return path
+        return where
+
+    def export_by_slicer(self):
+        """Export page: the planned pieces, one file per slicer, in the file type picked there."""
+        if not self.ents:
+            self.report("Select the object (a group, or its faces) first.", bad=True)
+            return False
+        raw = self.raw_parts()
+        groups = self.planned_slicers() or [(self.ed_slicer.text().strip(), list(range(len(raw))), None)]
+        from PySide6.QtWidgets import QFileDialog
+        start = self.st.get('last_folder') or os.path.join(os.path.expanduser("~"), "Downloads")
+        d = QFileDialog.getExistingDirectory(self, "Save the files in", start)
+        if not d:
+            return False
+        self.st['last_folder'] = d
+        printing = self.cb_fmt.currentData() in ('3mf', 'stl', 'stla')
+        return self.send_split(groups, to_path=self.folder_namer(d),
+                               open_them=printing and self.cb_exp_send.isChecked(), use_export=True)
+
+    def for_slicer(self, o, path, pr):
+        """Settings for a file a slicer opens: always millimetres, Z up (slicers read numbers as mm -
+        a file in metres or inches comes in tiny). Resin slicers (Chitubox, Lychee, Photon
+        Workshop...) read 3MF too small, so they get STL."""
+        o = dict(o)
+        if o.get('format') not in ('3mf', 'stl', 'stla'):
+            return o
+        o['file_unit'] = 'mm'
+        o['y_up'] = False
+        nm = os.path.basename(str(path or "")).lower()
+        resin = (pr.get('kind') == 'resin') if pr else (self.cb_kind.currentData() == 'resin')
+        if any(w in nm for w in RESIN_SLICERS):
+            resin = True
+        if resin and o.get('format') == '3mf':
+            o['format'] = 'stl'
+            o['per_piece'] = False             # one STL holding the pieces, laid out on the plate
+        return o
+
+    def send_split(self, groups, to_path=None, open_them=True, use_export=False):
+        """Each slicer gets its own pieces, laid out on its own printer's bed, in one go: one
+        window per slicer, not one per piece."""
+        lines, bad, sent = [], False, 0
+        base = "".join(ch for ch in self.name() if ch not in '\\/:*?"<>|').strip() or "model"
+        base += " " + self.describe().replace(":", "-").replace("%", "pc").replace(" ", "")
+        for path, idx, pr in groups:
+            nm = (os.path.splitext(os.path.basename(path))[0] if path else "") or "usual program"
+
+            def one(path=path, idx=idx, nm=nm):
+                o_ = dict(self.export_opts() if use_export else self.print_opts(), only=set(idx),
+                          name="%s - %s" % (base, nm))
+                ok = self.export(self.for_slicer(o_, path, pr),
+                                 to_path=to_path or self.print_path, open_it=False)
+                return ok, self._last, list(getattr(self, '_last_files', []) or [])
+            ok, text, files = self.run_as_printer(pr, path, one)
+            if not ok:
+                bad = True
+                lines.append("%s: %s" % (nm, text))
+                continue
+            sent += 1
+            note = open_in_slicer(files, path) if open_them else ("Saved: " + ", ".join(
+                os.path.basename(x) for x in files))
+            lines.append("%s: %d piece%s%s. %s" % (nm, len(idx), "" if len(idx) == 1 else "s",
+                                                  (" (on %s's bed)" % pr.get('name')) if pr else "", note))
+        head = ("Sent to %d slicer%s - each slicer gets its own pieces on one bed:" if open_them else
+                "Saved a file for each of %d slicer%s - each with its own pieces on one bed:") % (
+            sent, "" if sent == 1 else "s")
+        self.report(head + "\n" + "\n".join(lines) + "\nYour model in the work area is just as it was.", bad)
+        if sent and self.cb_preview.currentData() != 'bed':
+            self.cb_preview.setCurrentIndex(self.cb_preview.findData('bed'))
+        return sent > 0
+
     def send_to_slicer(self):
         """Saves the object at its new size as a print file (no save box) and opens it in this
-        printer's slicer. The model in the work area is left exactly as it is."""
+        printer's slicer. The model in the work area is left exactly as it is. With a plan that
+        sends pieces to different slicers, each slicer gets its own pieces."""
         live = self.selection()
         if not live:
             self.report("Select the object (a group, or its faces) first.", bad=True)
             return False
-        if tuple(id(e) for e in live) != self._sel_key or self._waiting:
-            self._waiting = False
-            self.watch_selection(force=True)
-        folder = self.print_folder()
-
-        def where(name, ext):
-            path = os.path.join(folder, name + ext)
-            n = 2
-            while os.path.exists(path):
-                path = os.path.join(folder, "%s (%d)%s" % (name, n, ext))
-                n += 1
-            return path
-        ok = self.export(self.print_opts(), to_path=where, open_it=True)
+        # always read it afresh: it may have been grouped or changed since it was last read
+        self._waiting = False
+        self.watch_selection(force=True)
+        groups = self.planned_slicers()
+        if groups:
+            return self.send_split(groups)
+        where = self.print_path
+        ok = self.export(self.for_slicer(self.print_opts(), self.ed_slicer.text().strip(), None),
+                         to_path=where, open_it=True)
         if ok:
             self.warn_resin_3mf()
         if ok and self.cb_preview.currentData() != 'bed':
@@ -5302,9 +6772,9 @@ class StudioDialog(QDialog):
         if not live:
             self.report("Select the object (a group, or its faces) first.", bad=True)
             return False
-        if tuple(id(e) for e in live) != self._sel_key or self._waiting:
-            self._waiting = False
-            self.watch_selection(force=True)
+        # always read it afresh: it may have been grouped or changed since it was last read
+        self._waiting = False
+        self.watch_selection(force=True)
         f = self.factors()
         if any(x <= 0 for x in f):
             self.report("The new size can't be nothing - type a size above 0.", bad=True)
@@ -5317,15 +6787,24 @@ class StudioDialog(QDialog):
         self.watch_selection(force=True)
         return not bad
 
-    def scale_and_next(self):
+    def scale_and_next(self, how=None, force=False):
         """Scales what's selected, then clears the selection ready for the next object. The
-        preview keeps showing the one just scaled until you select the next."""
+        preview keeps showing the one just scaled until you select the next. how: 'bed' etc. (else
+        what 'Scale + next' is set to); force: even if it's the one just done."""
         live = self.selection()
-        if not live or (self._waiting and tuple(id(e) for e in live) == self._done_key):
-            self.report("Select the next object in the work area, then press Scale + next.", bad=True)
+        if not live:
+            self.report("Select the object in the work area first, then press Scale + next.", bad=True)
             return
-        how = self.cb_next.currentData()
-        if not (self.send_to_slicer() if how == 'slicer' else self.scale_model(how)):
+        if not force and self._waiting and tuple(id(e) for e in live) == self._done_key:
+            self.report("That one's done - select the next object in the work area, then press Scale + next.",
+                        bad=True)
+            return
+        how = how or self.cb_next.currentData()
+        if how == 'bed':
+            ok = self.add_to_bed()
+        else:
+            ok = self.send_to_slicer() if how == 'slicer' else self.scale_model(how)
+        if not ok:
             return
         name = self.name()
         self._done += 1
@@ -5338,10 +6817,458 @@ class StudioDialog(QDialog):
         self._waiting = True
         self._sel_text = "Done: %s, now %s. Select the next object." % (name, fmt_size(self.size_mm(), self.show_unit()))
         self.update_info()
+        if how == 'bed':
+            n_ = len(self._bed)
+            self.lbl_count.setText("On the bed: %d object%s. Select the next one and press Scale + next - or "
+                                   "'Send the bed to slicer' when they're all on." % (n_, "" if n_ == 1 else "s"))
+            self.report("Put '%s' on the bed at %s (%d on it) - its pieces: %s. Select the next object, then press "
+                        "Scale + next again - or 'Send the bed to slicer'." % (
+                            name, self.describe(), n_, getattr(self, '_bed_split', "")))
+            return
         self.lbl_count.setText("Done: %d object%s this time. Select the next one and press Scale + next." % (
             self._done, "" if self._done == 1 else "s"))
         self.report("Scaled '%s' to %s (%d done). Select the next object, then press Scale + next again." % (
             name, self.describe(), self._done))
+
+    # ---- one bed for many objects (Scale + next)
+    def bed_buttons(self):
+        n = len(self._bed)
+        self.b_sendbed.setText("Send the bed to slicer (%d)" % n if n else "Send the bed to slicer")
+        self.b_sendbed.setEnabled(n > 0)
+        self.b_emptybed.setEnabled(n > 0)
+        try:
+            self.update_info()
+        except Exception:
+            pass
+        try:
+            self.b_takeoff.setEnabled(n > 0)
+            t = StudioDialog._taken
+            self.b_putback.setEnabled(bool(t))
+            if t:
+                last = t[-1][1]
+                self.b_putback.setText("Put back %s \u21b6" % (
+                    ("'%s'" % last[0]) if t[-1][0] is not None else "all %d" % len(last)))
+            else:
+                self.b_putback.setText("Put back \u21b6")
+            self.b_seebed.setEnabled(n > 0)
+            if self.cb_preview.currentData() == 'gathered':
+                self._pv_timer.start(200)
+        except Exception:
+            pass
+
+    def add_to_bed(self, top=None, name=None):
+        """Scales what's selected (mended, as it will print) and keeps it for the one bed. The
+        model in the work area isn't changed. With a plan that sends pieces to different slicers,
+        each piece remembers its slicer: the bed is sent as one bed per slicer."""
+        live = self.selection()
+        if not live:
+            self.report("Select the object (a group, or its faces) first.", bad=True)
+            return False
+        # always read it afresh: it may have been grouped or changed since it was last read
+        self._waiting = False
+        if top is None:
+            self.watch_selection(force=True)
+        else:
+            self._only_top = top           # just one of the objects selected (from the plan window)
+            self._raw = None
+        try:
+            o = dict(self.print_opts(), layout='keep', per_piece=True)
+            groups = self.planned_slicers()
+            parts, dests = [], []
+            if groups:
+                for path, idx, pr in groups:
+                    p_, _n, _w = self.make_parts(dict(o, only=set(idx)))
+                    parts += p_
+                    dests += [pr.get('name') if pr else self.norm_target("")] * len(p_)
+            else:
+                parts, _n, _w = self.make_parts(o)
+                dests = [""] * len(parts)          # "": the printer on the 3D print page when it's sent
+        except Exception as e:
+            self.report("Couldn't put it on the bed: %s" % e, bad=True)
+            return False
+        finally:
+            if top is not None:
+                self._only_top = None
+                self._raw = None
+        if not parts:
+            self.report("There's nothing to put on the bed - select the object (a group, or its faces).", bad=True)
+            return False
+        if self.cb_flat.isChecked():
+            parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
+        self._bed.append((name or self.name(), self.describe(), parts, dests))
+        self._bed_view = 0
+        self._bed_split = self.split_words(dests)
+        self.bed_buttons()
+        return True
+
+    def split_words(self, dests):
+        """'12 pieces on Ender 3 V3 SE, 3 on Mars 2 Pro' - which printer's bed the pieces went on."""
+        cnt, order = {}, []
+        for d in dests:
+            k = self.norm_target(d)
+            if k not in cnt:
+                order.append(k)
+            cnt[k] = cnt.get(k, 0) + 1
+        return ", ".join("%d on %s" % (cnt[k], self.target_name(k).split(" - ")[0]) for k in order)
+
+    def take_off_menu(self, button=None):
+        """A menu of the objects on the bed: pick one to take it off."""
+        from PySide6.QtWidgets import QMenu
+        if not self._bed:
+            return
+        m = QMenu(self)
+        last = m.addAction("The last one added (%s)" % self._bed[-1][0])
+        last.triggered.connect(lambda _=False: self.take_off(len(self._bed) - 1))
+        m.addSeparator()
+        for i, (name, sc, parts, _d) in enumerate(self._bed):
+            sz = tris_size([t for _n, _c, tr in parts for t in tr])
+            act = m.addAction("%d. %s - %s, %s mm" % (i + 1, name, sc, " x ".join(_fmt_mm(v) for v in sz)))
+            act.triggered.connect(lambda _=False, i=i: self.take_off(i))
+        try:
+            m.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        except Exception:
+            m.exec()
+
+    def take_off(self, i):
+        if not (0 <= i < len(self._bed)):
+            return
+        item = self._bed.pop(i)
+        name = item[0]
+        StudioDialog._taken.append((i, item))
+        del StudioDialog._taken[:-20]
+        self._done = max(0, self._done - 1)
+        self._waiting = False              # so the same object can be put back on
+        self._bed_view = 0
+        self.bed_buttons()
+        n = len(self._bed)
+        self.lbl_count.setText("On the bed: %d object%s." % (n, "" if n == 1 else "s") if n else "")
+        self.report("Took '%s' off the bed (%d left on it). Wrong one? Press 'Put back'." % (name, n))
+
+    def put_back(self, *_):
+        """Undoes the last 'Take one off' (or 'Empty the bed')."""
+        t = StudioDialog._taken
+        if not t:
+            self.report("Nothing to put back.")
+            return
+        place, item = t.pop()
+        if place is None:                      # a whole bed emptied: all of it back
+            self._bed.extend(item)
+            what = "all %d object%s" % (len(item), "" if len(item) == 1 else "s")
+        else:
+            self._bed.insert(min(place, len(self._bed)), item)
+            what = "'%s'" % item[0]
+        self._bed_view = 0
+        self.bed_buttons()
+        n = len(self._bed)
+        self.lbl_count.setText("On the bed: %d object%s." % (n, "" if n == 1 else "s"))
+        self.report("Put %s back on the bed (%d on it now)." % (what, n))
+
+    def start_again(self, *_):
+        """Empties the gathered bed and forgets the plan: back to a clean start."""
+        n = len(self._bed)
+        if n:
+            StudioDialog._taken.append((None, list(self._bed)))
+        del self._bed[:]
+        self._bed_view = self._plan_view = 0
+        self._done = 0
+        self._waiting = False
+        self._bed_note = []
+        self.bed_buttons()
+        try:
+            self.lbl_count.setText("")
+        except Exception:
+            pass
+        self.plan = None
+        StudioDialog._plan = None
+        self._raw = None
+        if self.cb_preview.currentData() != 'model':
+            self.cb_preview.setCurrentIndex(self.cb_preview.findData('model'))
+        self.changed()
+        self.refresh_preview()
+        back = ""
+        if self.st.get('before_fit'):
+            self.set_scale_state(self.st['before_fit'])
+            self.st['before_fit'] = None
+            self.fit_buttons()
+            back = " The scale is back to %s (from before 'Use the biggest that fits')." % self.describe()
+        self.report("Started again: the gathered bed is empty%s and the piece plan is forgotten.%s 'Put back' "
+                    "brings the bed back." % ((" (%d object%s taken off)" % (n, "" if n == 1 else "s")) if n else "",
+                                              back))
+
+    def empty_bed(self, *_):
+        n = len(self._bed)
+        if n:
+            StudioDialog._taken.append((None, list(self._bed)))
+        del self._bed[:]
+        self._bed_view = 0
+        self.bed_buttons()
+        self._done = 0
+        self.lbl_count.setText("")
+        if n:
+            self.report("Emptied the bed (%d object%s taken off). Didn't mean to? Press 'Put back'." % (
+                n, "" if n == 1 else "s"))
+
+    # ---- the gathered bed, one bed for each slicer
+    def bed_slicers(self, default=None):
+        """The printers the gathered pieces go on, in order: keys ("" = the one on the 3D print page)."""
+        out = []
+        for _n, _sc, _p, dests in self._bed:
+            for d in dests:
+                k = self.norm_target(d)
+                if k not in out:
+                    out.append(k)
+        return out
+
+    def printer_settings(self, pr):
+        """(bed x, y, z, gap, pieces kept separate) for one of your printers - None: the 3D print page."""
+        if pr is None:
+            o = self.print_opts()
+            return (self.bed[0].value(), self.bed[1].value(), self.bed[2].value(), self.sp_gap.value(),
+                    o.get('per_piece', True))
+        b = list(pr.get('bed') or [s.value() for s in self.bed]) + [250.0, 250.0, 250.0]
+        resin = pr.get('kind') == 'resin'
+        fmt = pr.get('format') or ('stl' if resin else '3mf')
+        return (float(b[0]), float(b[1]), float(b[2]), float(pr.get('gap') or self.sp_gap.value()),
+                not (resin and fmt != '3mf'))
+
+    def bed_items(self, o=None, colour_each=False, dest=None, default=None, per_piece=None):
+        """dest: a printer key - only the pieces going on that printer."""
+        """The gathered objects as pieces for the file: [(name, colour, tris)] (mm, not laid out).
+        colour_each: each object in its own colour (for the preview). dest: only the pieces going
+        to that slicer."""
+        o = o or self.print_opts()
+        keep = o.get('per_piece', True) if per_piece is None else per_piece
+        default = self.ed_slicer.text().strip() if default is None else default
+        items = []
+        for k, (name, _sc, parts, dests) in enumerate(self._bed):
+            if dest is not None:
+                want = self.norm_target(dest)
+                parts = [p for p, d in zip(parts, dests) if self.norm_target(d) == want]
+            if not parts:
+                continue
+            if colour_each:
+                parts = [(n, piece_colour(k), tr) for n, _c, tr in parts]
+            if not keep and len(parts) > 1:
+                # resin: each object stays in one piece, laid out with the others, all in one STL
+                allt = [t for _n, _c, tr in parts for t in tr]
+                parts = [(name, parts[0][1], allt)]
+            for n, c, tr in parts:
+                items.append((n if len(parts) == 1 else "%s - %s" % (name, n), c, tr))
+        names = {}
+        for n, _c, _t in items:
+            names[n] = names.get(n, 0) + 1
+        seen, uniq = {}, []
+        for n, c, tr in items:
+            seen[n] = seen.get(n, 0) + 1
+            uniq.append((n if names[n] == 1 else "%s (%d)" % (n, seen[n]), c, tr))
+        return uniq
+
+    def bed_for_slicer(self, key, colour_each=False):
+        """(pieces laid out on that printer's bed, (bed x, y, z), printer or None)."""
+        _path, pr = self.target(key)
+        bx, by, bz, gap, keep = self.printer_settings(pr)
+        items = self.bed_items(colour_each=colour_each, dest=key, per_piece=keep)
+        parts = items
+        if len(items) > 1:
+            placed, _s = lay_out_packed([(n, tr) for n, _c, tr in items],
+                                        bx if self.cb_bed.isChecked() else 0.0,
+                                        by if self.cb_bed.isChecked() else 0.0, max(0.2, gap))
+            parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, items)]
+        elif items:
+            parts = [(items[0][0], items[0][1], stand_centred(items[0][2]))]
+        return parts, (bx, by, bz), pr
+
+    def bed_fit_words(self, key):
+        parts, bed, pr = self.bed_for_slicer(key)
+        path, _pr = self.target(key)
+        if not parts:
+            return "", True
+        s = tris_size([t for _n, _c, tr in parts for t in tr])
+        fits = (not self.cb_bed.isChecked()) or (s[0] <= bed[0] + 1e-6 and s[1] <= bed[1] + 1e-6 and
+                                                 s[2] <= bed[2] + 1e-6)
+        nm = os.path.splitext(os.path.basename(path))[0] if path else "your usual program"
+        where = ("%s's bed" % pr.get('name')) if pr else "the bed on the 3D print page"
+        t = "%s: %d piece%s, %s mm altogether, on %s (%s x %s mm)" % (
+            nm, len(parts), "" if len(parts) == 1 else "s", " x ".join(_fmt_mm(v) for v in s), where,
+            _fmt_mm(bed[0]), _fmt_mm(bed[1]))
+        t += " - fits." if fits else " - TOO BIG: take something off, or send fewer at a time."
+        return t, fits
+
+    def gathered_fit_html(self):
+        """For the 3D print page: the gathered bed (everything Scale + next has put on it), laid out
+        the way it will be sent - not just the object selected."""
+        if not self._bed or not self.cb_bed.isChecked():
+            return ""
+        key = (tuple(id(x) for x in self._bed), tuple(s_.value() for s_ in self.bed), self.sp_gap.value(),
+               self.ed_slicer.text(), self.cb_kind.currentData(), self.cb_pfmt.currentData())
+        c = getattr(self, '_fit_cache', None)
+        if c and c[0] == key:
+            return c[1]
+        out = []
+        try:
+            for path in self.bed_slicers():
+                t, fits = self.bed_fit_words(path)
+                if t:
+                    out.append("<span style='color:%s'>%s</span>" % ("#2e7d32" if fits else "#c0392b", t))
+        except Exception as e:
+            out.append("Couldn't lay out the gathered bed: %s" % e)
+        html = ("<br><br><b>The gathered bed (Scale + next) - all of it, laid out:</b><br>" + "<br>".join(out)) \
+            if out else ""
+        self._fit_cache = (key, html)
+        return html
+
+    def next_bed(self, *_):
+        """The preview's 'Next bed' button: the next printer's bed."""
+        if self.cb_preview.currentData() == 'gathered':
+            self._bed_view = getattr(self, '_bed_view', 0) + 1
+        else:
+            self._plan_view = getattr(self, '_plan_view', 0) + 1
+        self.refresh_preview()
+
+    def lay_for_printer(self, parts, pr):
+        """Pieces (mm, already flat if wanted) laid out on one printer's bed. Returns (parts, bed)."""
+        bx, by, bz, gap, _keep = self.printer_settings(pr)
+        if len(parts) > 1:
+            placed, _s = lay_out_packed([(n, tr) for n, _c, tr in parts],
+                                        bx if self.cb_bed.isChecked() else 0.0,
+                                        by if self.cb_bed.isChecked() else 0.0, max(0.2, gap))
+            parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, parts)]
+        elif parts:
+            parts = [(parts[0][0], parts[0][1], stand_centred(parts[0][2]))]
+        return parts, (bx, by, bz)
+
+    def fit_words(self, parts, bed, path, pr):
+        s = tris_size([t for _n, _c, tr in parts for t in tr]) if parts else (0.0, 0.0, 0.0)
+        fits = (not self.cb_bed.isChecked()) or (s[0] <= bed[0] + 1e-6 and s[1] <= bed[1] + 1e-6 and
+                                                 s[2] <= bed[2] + 1e-6)
+        nm = os.path.splitext(os.path.basename(path))[0] if path else "your usual program"
+        where = ("%s's bed" % pr.get('name')) if pr else "the bed on the 3D print page"
+        t = "%s: %d piece%s, %s mm altogether, on %s (%s x %s mm)" % (
+            nm, len(parts), "" if len(parts) == 1 else "s", " x ".join(_fmt_mm(v) for v in s), where,
+            _fmt_mm(bed[0]), _fmt_mm(bed[1]))
+        t += " - fits." if fits else " - TOO BIG for that bed."
+        return t, fits
+
+    def bed_note(self, parts, bed, path, pr, i, n):
+        """Two short lines over the preview: which printer's bed, and does it all fit."""
+        s = tris_size([t for _n, _c, tr in parts for t in tr]) if parts else (0.0, 0.0, 0.0)
+        fits = (not self.cb_bed.isChecked()) or (s[0] <= bed[0] + 1e-6 and s[1] <= bed[1] + 1e-6 and
+                                                 s[2] <= bed[2] + 1e-6)
+        nm = os.path.splitext(os.path.basename(path))[0] if path else "usual program"
+        who = pr.get('name') if pr else self.target_name("").split(" - ")[0]
+        return ["Bed %d of %d: %s  (%s, %s x %s mm)" % (i + 1, n, nm, who, _fmt_mm(bed[0]), _fmt_mm(bed[1])),
+                "%d piece%s, %s mm - %s" % (len(parts), "" if len(parts) == 1 else "s",
+                                            " x ".join(_fmt_mm(v) for v in s),
+                                            "fits" if fits else "TOO BIG for this bed")]
+
+    def preview_planned_bed(self, groups):
+        """'On the print bed' when your plan sends pieces to more than one slicer: each printer's own
+        bed, one at a time ('Next bed' shows the next)."""
+        i = getattr(self, '_plan_view', 0) % len(groups)
+        path, idx, pr = groups[i]
+        _bx, _by, _bz, _gap, keep = self.printer_settings(pr)
+        parts, _n, _w = self.make_parts({'use_scale': True, 'layout': 'keep', 'apply_fixes': False,
+                                         'per_piece': keep, 'only': set(idx)})
+        if self.cb_flat.isChecked():
+            parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
+        parts, bed = self.lay_for_printer(parts, pr)
+        shown_bed = (bed[0], bed[1])
+        if not self.cb_bed.isChecked() and parts:
+            s = tris_size([t for _n, _c, tr in parts for t in tr])
+            shown_bed = (s[0] * 1.15 + 10, s[1] * 1.15 + 10)
+        self.canvas.empty_text = "Nothing to show"
+        self.canvas.set_parts(parts, shown_bed, None)
+        self._shown = None
+        self.b_nextbed.setVisible(len(groups) > 1)
+        self._bed_note = self.bed_note(parts, bed, path, pr, i, len(groups))
+
+    def preview_gathered(self):
+        """Shows the gathered objects laid out on the bed, as they'll be sent. With pieces going to
+        more than one slicer, each press of 'Preview the bed' shows the next slicer's bed."""
+        if not self._bed:
+            self.b_nextbed.setVisible(False)
+            self._bed_note = []
+            self.canvas.empty_text = ("The bed's empty - set Scale + next to 'Adds it to one bed', then select "
+                                      "each object and press Scale + next.")
+            self.canvas.set_parts([], None)
+            self._shown = None
+            return
+        sl = self.bed_slicers()
+        self.b_nextbed.setVisible(len(sl) > 1)
+        i = getattr(self, '_bed_view', 0) % max(1, len(sl))
+        key = sl[i] if sl else ""
+        path, _p0 = self.target(key)
+        parts, bed, _pr = self.bed_for_slicer(key, colour_each=True)
+        if not self.cb_bed.isChecked() and parts:
+            s = tris_size([t for _n, _c, tr in parts for t in tr])
+            bed = (s[0] * 1.15 + 10, s[1] * 1.15 + 10, s[2])
+        self.canvas.empty_text = "Nothing to show"
+        self.canvas.set_parts(parts, (bed[0], bed[1]), None)
+        self._shown = None
+        pr = _pr
+        bx, by, bz, _g, _k = self.printer_settings(pr)
+        self._bed_note = ["The gathered bed (%d object%s)" % (len(self._bed), "" if len(self._bed) == 1 else "s")] + \
+            self.bed_note(parts, (bx, by, bz), path, pr, i, max(1, len(sl)))
+
+    def show_gathered(self, *_):
+        i = self.cb_preview.findData('gathered')
+        if self.cb_preview.currentIndex() != i:
+            self._bed_view = 0
+            self.cb_preview.setCurrentIndex(i)          # redraws by itself
+        else:
+            self._bed_view = getattr(self, '_bed_view', 0) + 1   # the next slicer's bed
+            self.refresh_preview()
+        if not self.cb_pv.isChecked():
+            self.cb_pv.setChecked(True)
+
+    def send_bed(self, button=None):
+        """Every object gathered on the bed, laid out side by side and opened at once: one bed (and
+        one window) for each slicer the pieces go to."""
+        if not self._bed:
+            self.report("The bed's empty: set 'Scale + next' to 'Adds it to one bed', then select each object "
+                        "and press Scale + next.", bad=True)
+            return False
+        if any(not self.norm_target(d) for _n, _s, _p, ds in self._bed for d in ds) and \
+                not self.pick_slicer(button):
+            return False
+        default = self.ed_slicer.text().strip()
+        scales = sorted(set(sc for _n, sc, _p, _d in self._bed))
+        words = scales[0] if len(scales) == 1 else "mixed scales"
+        n_obj = len(self._bed)
+        sl = self.bed_slicers(default)
+        lines, sent, bad = [], 0, False
+        for key in sl:
+            path, pr = self.target(key)
+            nm = (pr.get('name') if pr else "") or (os.path.splitext(os.path.basename(path))[0] if path else "") \
+                or "usual program"
+
+            def one(key=key, nm=nm):
+                o = self.for_slicer(self.print_opts(), path, pr)
+                uniq = self.bed_items(o, dest=key, default=default)
+                o.update({'parts': uniq, 'apply_fixes': False, 'scale_words': words,
+                          'name': "Bed of %d - %s%s" % (n_obj, words.replace(":", "-").replace("%", "pc").replace(
+                              " ", ""), (" - " + nm) if len(sl) > 1 else "")})
+                ok = self.export(o, to_path=self.print_path, open_it=False)
+                return ok, self._last, list(getattr(self, '_last_files', []) or []), len(uniq)
+            ok, text, files, n_p = self.run_as_printer(pr, path, one)
+            if not ok:
+                bad = True
+                lines.append("%s: %s" % (nm, text))
+                continue
+            sent += 1
+            note = open_in_slicer(files, path)
+            lines.append("%s: %d piece%s%s. %s" % (nm, n_p, "" if n_p == 1 else "s",
+                                                  (" on %s's bed" % pr.get('name')) if pr else "", note))
+        if sent:
+            del self._bed[:]
+            self._bed_view = 0
+            self._done = 0
+            self.bed_buttons()
+            self.lbl_count.setText("Sent %d object%s to %d slicer%s. The bed's empty again." % (
+                n_obj, "" if n_obj == 1 else "s", sent, "" if sent == 1 else "s"))
+        self.report("Sent the gathered bed (%d object%s) - one bed for each slicer:\n" % (
+            n_obj, "" if n_obj == 1 else "s") + "\n".join(lines), bad)
+        return sent > 0
 
     # ------------------------------------------------------------------ checking and repairing
     def check_now(self, *_):
@@ -5453,15 +7380,16 @@ class StudioDialog(QDialog):
         save box. open_it: open it afterwards (None: as ticked). Returns True if it was saved."""
         from PySide6.QtWidgets import QFileDialog, QApplication
         from PySide6.QtCore import Qt
-        if not self.ents:
-            self.report("Select the object (a group, or its faces) first.", bad=True)
-            return False
         o = self.export_opts()
         o.update(override or {})
+        self._last_files = []
+        if not self.ents and o.get('parts') is None:
+            self.report("Select the object (a group, or its faces) first.", bad=True)
+            return False
         fmt = FMT.get(o['format'], FORMATS[0])
         key, label, ext, writer, kind = fmt[0], fmt[1], fmt[2], fmt[3], fmt[4]
-        safe = "".join(ch for ch in self.name() if ch not in '\\/:*?"<>|').strip() or "model"
-        if o.get('use_scale') and kind != 'picture':
+        safe = "".join(ch for ch in (o.get('name') or self.name()) if ch not in '\\/:*?"<>|').strip() or "model"
+        if o.get('use_scale') and kind != 'picture' and not o.get('name'):
             safe += " " + self.describe().replace(":", "-").replace("%", "pc").replace(" ", "")
         folder = self.st.get('last_folder') or os.path.join(os.path.expanduser("~"), "Downloads")
         if not os.path.isdir(folder):
@@ -5542,8 +7470,10 @@ class StudioDialog(QDialog):
             self.report("Couldn't export it: %s" % e, bad=True)
             return False
         QApplication.restoreOverrideCursor()
+        self._last_files = list(files)
         msg = "Saved %s, %s mm (%s):\n%s" % (what, " x ".join(_fmt_mm(v) for v in size),
-                                              self.describe() if o.get('use_scale') else "full size", path)
+                                              o.get('scale_words') or (self.describe() if o.get('use_scale')
+                                                                       else "full size"), path)
         for ln in notes:
             msg += "\n" + ln
         if self.cb_open.isChecked() if open_it is None else open_it:

@@ -64,7 +64,7 @@ EDDY_TIPS = {
 
 
 def load_settings():
-    s = {'visible': True, 'labels': True, 'names': {}, 'auto_every': 25, 'keep_auto': 20,
+    s = {'visible': True, 'labels': True, 'names': {}, 'auto_every': 0, 'keep_auto': 20,
          'keep_list': True}
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -1382,7 +1382,22 @@ def _remember_visible(win, on):
         save_settings(s)
 
 
-LOG_FILE = os.path.join(os.path.expanduser("~"), "ingetrazo_timeline_log.txt")
+def _log_file():
+    """Where the error log goes: the app's own data folder, not the home folder."""
+    try:
+        from PySide6.QtCore import QStandardPaths
+        base = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+    except Exception:
+        base = ""
+    base = base or os.path.expanduser("~")
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(base, "ingetrazo_timeline_log.txt")
+
+
+LOG_FILE = _log_file()
 
 
 def _try(parent, fn):
