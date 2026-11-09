@@ -29,6 +29,8 @@ One window with pages (tabs) and a live 3D preview of what's selected:
              (DXF / SVG outlines), and a picture (PNG).
 
 Scale + next can gather objects onto one bed and send them to the slicer together.
+Scale & Print  click an object, see it on the print bed, add it, click the next - then send
+             the bed to your printer. Coloured buttons pick the printer.
 
 Ctrl+Alt+K opens the window. The quick converter bar along the top of the main window is
 still there (turn it on or off on the Converter page).
@@ -1238,9 +1240,12 @@ def plan_parts(leaves, plan, with_piece=False):
     with_piece: (name, tris, the plan's piece it is - "" for a part on its own)."""
     pieces = list(plan.get('pieces', [])) if plan else []
     keys = plan.get('keys', {}) if plan else {}
+    skip = set(plan.get('skip', [])) if plan else set()
     merged = dict((p, []) for p in pieces)
     alone = []
     for key, name, kind, tris in leaves:
+        if key in skip:
+            continue                             # taken out of the print
         p = keys.get(key)
         if p in merged:
             merged[p] += tris
@@ -2724,7 +2729,7 @@ class PieceCanvas(QWidget):
         mode = 'only'
         try:
             mods = ev.modifiers()
-            if mods & Qt.ShiftModifier:
+            if mods & (Qt.ShiftModifier | Qt.AltModifier):
                 mode = 'remove'
             elif mods & Qt.ControlModifier:
                 mode = 'add'
@@ -2752,6 +2757,8 @@ class PiecesDialog(QDialog):
         self.slicer_of = dict((plan or {}).get('printer', {}))
         # [(printer key, "Printer - Slicer")] - the printer on the 3D print page first (key "")
         self.targets = list(targets or []) or [("", "This printer")]
+        # parts you've taken out of the print (still in your model): their keys
+        self.skip = set(k for k in (plan or {}).get('skip', []) if k in known)
         self.by_printer = bool(self.slicer_of)
         self._state = {}
         self._undo, self._redo, self._restoring = [], [], False
@@ -2967,7 +2974,8 @@ class PiecesDialog(QDialog):
         self.b_redo.clicked.connect(self.redo)
         try:
             from PySide6.QtGui import QShortcut, QKeySequence
-            for seq, fn in (("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo)):
+            for seq, fn in (("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
+                            ("Delete", self.delete_key)):
                 sc = QShortcut(QKeySequence(seq), self)
                 sc.activated.connect(fn)
         except Exception:
@@ -2996,6 +3004,7 @@ class PiecesDialog(QDialog):
         self.piece_list.itemSelectionChanged.connect(self.piece_list_picked)
         try:
             self.table.viewport().installEventFilter(self)
+            self.piece_list.viewport().installEventFilter(self)
         except Exception:
             pass
         self.table.itemChanged.connect(self.part_ticked)
@@ -3020,11 +3029,13 @@ class PiecesDialog(QDialog):
         if self.cb_obj is not None:
             self.fill_objects()
             self.cb_obj.currentIndexChanged.connect(self.object_picked)
-            self.cb_obj.setCurrentIndex(1)                # start with the first object on its own
+            self.cb_obj.setCurrentIndex(0)                # start with all of them (pick one to work on it alone)
         self.refresh()
 
     # ---- the plan
     def colour_of(self, i):
+        if self.leaves[i][0] in getattr(self, 'skip', ()):
+            return (95, 95, 95)                  # left out of the print: dark grey
         p = self.keys.get(self.leaves[i][0])
         if getattr(self, 'by_printer', False):
             return self.printer_colour(self.slicer_of.get(p if p in self.pieces else "", ""))
@@ -3067,15 +3078,27 @@ class PiecesDialog(QDialog):
             if obj is self.table.viewport() and ev.type() == QEvent.MouseButtonPress and \
                     ev.button() == Qt.LeftButton:
                 mods = ev.modifiers()
-                if mods & (Qt.ShiftModifier | Qt.ControlModifier):
+                if mods & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier):
                     try:
                         pos = ev.position().toPoint()
                     except Exception:
                         pos = ev.pos()
                     r = self.table.rowAt(pos.y())
                     if r >= 0:
-                        self.pick_part(r, 'remove' if mods & Qt.ShiftModifier else 'add')
+                        self.pick_part(r, 'remove' if mods & (Qt.ShiftModifier | Qt.AltModifier) else 'add')
                     return True
+            # the pieces list: Alt+click (or Shift+click) un-picks a piece, Ctrl+click picks more
+            if obj is self.piece_list.viewport() and ev.type() == QEvent.MouseButtonPress and \
+                    ev.button() == Qt.LeftButton and ev.modifiers() & (Qt.AltModifier | Qt.ShiftModifier):
+                try:
+                    pos = ev.position().toPoint()
+                except Exception:
+                    pos = ev.pos()
+                it = self.piece_list.itemAt(pos)
+                if it is not None:
+                    it.setSelected(False)
+                    self.piece_list_picked()
+                return True
         except Exception:
             pass
         return super().eventFilter(obj, ev)
@@ -3217,7 +3240,9 @@ class PiecesDialog(QDialog):
             light = QColor(int(col[0] * 0.35 + 255 * 0.65), int(col[1] * 0.35 + 255 * 0.65),
                            int(col[2] * 0.35 + 255 * 0.65))
             got = self.slicer_of.get(p if p in self.pieces else "", "")
-            on = self.slicer_name(got) if got else ""
+            on = ("\u2714 " + self.slicer_name(got)) if got else ""
+            if key in self.skip:
+                on = "\u2716 not printed"
             for c, txt in enumerate((name, kind, p or "(on its own)", on)):
                 it = QTableWidgetItem(("■ " + txt) if (c == 2 and p) or (c == 3 and txt) else txt)
                 if c == 0:
@@ -3233,7 +3258,20 @@ class PiecesDialog(QDialog):
                         it.setIcon(QIcon(part_thumbnail(self.canvas.prep[i], col, 64, self.canvas.az)))
                     except Exception:
                         pass
-                it.setBackground(QBrush(light))
+                told = self.slicer_of.get(p if p in self.pieces else "", "")
+                if told:
+                    # given a printer: the row in that printer's colour, bold, so you can see it's done
+                    pc_ = self.printer_colour(told)
+                    it.setBackground(QBrush(QColor(int(pc_[0] * 0.3 + 255 * 0.7), int(pc_[1] * 0.3 + 255 * 0.7),
+                                                   int(pc_[2] * 0.3 + 255 * 0.7))))
+                    try:
+                        f_ = it.font()
+                        f_.setBold(True)
+                        it.setFont(f_)
+                    except Exception:
+                        pass
+                else:
+                    it.setBackground(QBrush(light))
                 if c == 2 and p:
                     it.setForeground(QBrush(QColor(*col).darker(130)))
                 if c == 3:
@@ -3337,6 +3375,13 @@ class PiecesDialog(QDialog):
         a_out = m.addAction("Print on their own")
         a_out.setEnabled(n > 0 and any(self.leaves[r][0] in self.keys for r in rows))
         m.addSeparator()
+        a_del = m.addAction("\u2716 Don't print picked (Delete)")
+        a_del.setEnabled(n > 0 and any(self.leaves[r][0] not in self.skip for r in rows))
+        a_del.triggered.connect(lambda _=False: self.leave_out([self.leaves[r][0] for r in rows], True))
+        a_back = m.addAction("Print picked again")
+        a_back.setEnabled(n > 0 and any(self.leaves[r][0] in self.skip for r in rows))
+        a_back.triggered.connect(lambda _=False: self.leave_out([self.leaves[r][0] for r in rows], False))
+        m.addSeparator()
         a_only = m.addAction("Show only picked")
         a_only.setEnabled(n > 0)
         a_show = m.addAction("Show all")
@@ -3372,6 +3417,13 @@ class PiecesDialog(QDialog):
         a_ren.setEnabled(bool(name))
         a_free = m.addAction("Break up (each part on its own)")
         a_free.setEnabled(bool(name))
+        m.addSeparator()
+        keys_ = [self.leaves[i][0] for i in range(len(self.leaves)) if self.piece_of(i) in names]
+        all_out = bool(keys_) and all(k in self.skip for k in keys_)
+        a_del = m.addAction("Print %s again" % ("these" if len(names) > 1 else "it") if all_out else
+                            "\u2716 Don't print %s (Delete)" % ("these" if len(names) > 1 else "it"))
+        a_del.setEnabled(bool(keys_))
+        a_del.triggered.connect(lambda _=False: self.leave_out(keys_, not all_out))
         m.addSeparator()
         st_ = self.state_of(name)
         a_close = m.addAction("Close its holes when printing")
@@ -3508,13 +3560,13 @@ class PiecesDialog(QDialog):
 
     def plan(self):
         return {'pieces': list(self.pieces), 'keys': dict(self.keys), 'close': sorted(self.close),
-                'printer': dict(self.slicer_of)}
+                'printer': dict(self.slicer_of), 'skip': sorted(self.skip)}
 
     # ---- undo and redo (Ctrl+Z, Ctrl+Y)
     def snapshot(self):
         return (tuple(self.pieces), tuple(sorted(self.keys.items())), tuple(sorted(self.close)),
                 tuple(sorted(self.slicer_of.items())), tuple(sorted(self.hidden_pieces)),
-                tuple(sorted(self.hidden_parts)))
+                tuple(sorted(self.hidden_parts)), tuple(sorted(self.skip)))
 
     def remember(self):
         """Called after every change (refresh): keeps the state so Ctrl+Z can go back to it."""
@@ -3535,8 +3587,8 @@ class PiecesDialog(QDialog):
             pass
 
     def restore(self, snap):
-        pcs, keys, close, sl, hp, hparts = snap
-        self.pieces, self.keys, self.close = list(pcs), dict(keys), set(close)
+        pcs, keys, close, sl, hp, hparts, skip = snap
+        self.pieces, self.keys, self.close, self.skip = list(pcs), dict(keys), set(close), set(skip)
         self.slicer_of, self.hidden_pieces, self.hidden_parts = dict(sl), set(hp), set(hparts)
         self._restoring = True
         try:
@@ -3634,6 +3686,10 @@ class PiecesDialog(QDialog):
 
     def piece_note(self, name):
         bits = []
+        rows_ = [i for i in range(len(self.leaves)) if self.piece_of(i) == name]
+        out_ = sum(1 for i in rows_ if self.leaves[i][0] in self.skip)
+        if out_:
+            bits.append("\u2716 not printed" if out_ == len(rows_) else "%d left out" % out_)
         st = self.state_of(name)
         if name in self.close:
             bits.append("holes closed")
@@ -3708,6 +3764,13 @@ class PiecesDialog(QDialog):
         their parts light up in the picture."""
         names = self.selected_pieces()
         if not names:
+            if getattr(self, '_pick_source', '') == 'list':
+                self._syncing = True
+                try:
+                    self.table.clearSelection()
+                finally:
+                    self._syncing = False
+                self.canvas.update()
             return
         self._pick_source = 'list'
         self._syncing = True
@@ -3858,6 +3921,32 @@ class PiecesDialog(QDialog):
         self.lbl_sl.setText("\u2714 Kept - this plan is in use now (the preview behind shows it).   %s   Next: "
                             "'Scale & next' puts this object on the gathered bed, or 'Done' to close." %
                             self.printer_summary())
+
+    def leave_out(self, keys, out=True):
+        """Takes parts out of the print (they stay in your model), or puts them back. Ctrl+Z undoes."""
+        keys = [k for k in keys if k]
+        if not keys:
+            return
+        if out:
+            self.skip |= set(keys)
+        else:
+            self.skip -= set(keys)
+        self.table.clearSelection()
+        self.refresh()
+        n = len(keys)
+        self.lbl.setText(("\u2716 %d part%s won't be printed (still in your model) - right-click > 'Print picked "
+                          "again', or Ctrl+Z, to put %s back." % (n, "" if n == 1 else "s", "it" if n == 1 else "them"))
+                         if out else "%d part%s will be printed again." % (n, "" if n == 1 else "s"))
+
+    def delete_key(self, *_):
+        """The Delete key: the picked parts (or pieces picked in the pieces list) aren't printed."""
+        rows = self.picked_rows()
+        if rows:
+            self.leave_out([self.leaves[r][0] for r in rows], True)
+            return
+        names = self.selected_pieces()
+        if names:
+            self.leave_out([self.leaves[i][0] for i in range(len(self.leaves)) if self.piece_of(i) in names], True)
 
     def use_and_send(self, *_):
         self.send_after = True
@@ -4397,6 +4486,10 @@ INFO_TEXT = (
     "it gathers them and <i>Send the bed to slicer</i> opens them all in one slicer window, on one bed. "
     "IngeTrazo treats points closer than 0.1 mm as one, so details that small are lost when a "
     "model is made very small in the work area - the Export page keeps every detail.<br>"
+    "<b>Scale &amp; Print</b>: the quick way to fill a print bed. Click an object in the work area and it shows "
+    "on the bed in yellow, where it will go; <i>Add to bed</i> puts it there at the scale picked; click the "
+    "next one and add it too. The coloured printer buttons pick whose bed it goes on; <i>Send</i> opens "
+    "that bed in its slicer. It's the same bed as Scale + next. Your model isn't changed.<br>"
     "<b>Pieces</b>: splits what's selected into pieces - one per group, or your own plan - each "
     "in its own colour in the preview. Laid flat and side by side on the bed for printing. In "
     "<i>Plan the pieces</i>, <i>Everything left: new piece and hide</i> puts every grey part still "
@@ -4467,6 +4560,16 @@ class _ModePages(QWidget):
     def setCurrentIndex(self, i):
         for j, w in enumerate(self._pages):
             w.setVisible(j == i)
+
+
+def colour_button_style(col):
+    """The big coloured buttons: white bold words on a colour, darker when pressed."""
+    col = tuple(col)
+    return ("QPushButton{background:rgb(%d,%d,%d);color:white;font-weight:bold;"
+            "padding:8px 14px;border-radius:4px}"
+            "QPushButton:pressed{background:rgb(%d,%d,%d)}"
+            "QPushButton:disabled{background:rgb(200,200,200);color:rgb(245,245,245)}"
+            % (col + tuple(int(c * 0.75) for c in col)))
 
 
 class StudioDialog(QDialog):
@@ -4576,8 +4679,9 @@ class StudioDialog(QDialog):
         self.cb_preview = QComboBox()
         self.cb_preview.addItem("As in the model", 'model')
         self.cb_preview.addItem("On the print bed", 'bed')
-        self.cb_preview.addItem("The gathered bed (Scale + next)", 'gathered')
         self.cb_preview.setCurrentIndex(max(0, self.cb_preview.findData(st['preview'])))
+        self._gathered_on = False       # 'Preview the bed' (Scale page) shows the gathered bed until you pick here
+        self.cb_preview.activated.connect(self.preview_picked)
         self.cb_preview.setToolTip("As in the model: the object (or its pieces in colour) where they are. "
                                    "Laid out on the print bed: the pieces scaled, laid flat and side by side, the "
                                    "way they'll print, on your bed.")
@@ -4611,11 +4715,19 @@ class StudioDialog(QDialog):
 
         self.build_converter_page()
         self.build_scale_page()
+        self.build_print_next_page()
         self.build_pieces_page()
         self.build_print_page()
         self.build_repair_page()
         self.build_export_page()
-        self.tabs.setCurrentIndex(int(st.get('tab', 1)) if 0 <= int(st.get('tab', 1)) < self.tabs.count() else 1)
+        self.pn_ready()
+        # the page you were on last time - by its name, so a new page doesn't change which one opens
+        names = [self.tabs.tabText(i) for i in range(self.tabs.count())]
+        want = st.get('tab_name')
+        if want in names:
+            self.tabs.setCurrentIndex(names.index(want))
+        else:
+            self.tabs.setCurrentIndex(int(st.get('tab', 1)) if 0 <= int(st.get('tab', 1)) < self.tabs.count() else 1)
 
         self.lbl_report = QLabel()
         self.lbl_report.setWordWrap(True)
@@ -4636,33 +4748,36 @@ class StudioDialog(QDialog):
         # the buttons that do the work: they change with the page you're on, always in view
         self.page_buttons = {}
 
-        def btn(page, text, tip, fn, default=False):
+        def btn(page, text, tip, fn, default=False, colour=None):
             b = QPushButton(text)
             b.setToolTip(tip)
+            if colour:
+                b.setStyleSheet(colour_button_style(colour))
             b.clicked.connect(lambda *_: fn())
             brow.addWidget(b)
             self.page_buttons.setdefault(page, []).append(b)
             return b
-        btn(2, "Plan the pieces...", "Pick parts and put them into pieces of your own.", self.plan_pieces)
-        btn(2, "Scale + next", "The same as Scale + next on the Scale page (at the scale set there - it shows "
-            "over the preview): does what 'Scale + next' is set to, then gets ready for the next object.",
-            self.scale_and_next)
-        self.b_send2 = btn(2, "Send to the printers", "Saves the pieces at the new size (no save box) and opens them: "
-                           "each piece in the slicer your plan gives it (see the Printing column) - each slicer "
-                           "opens once, with its own pieces on one bed. Your model isn't changed.",
-                           lambda: self.send_to_slicer_pick(self.b_send2))
-        self.b_send3 = btn(3, "Send to slicer", "Saves it at the new size (no save box) and opens it in this "
+        btn(3, "Plan the pieces...", "Pick parts and put them into pieces of your own.", self.plan_pieces)
+        self.b_send2 = btn(3, "Send to printer", "Saves the pieces at the new size (no save box - into the folder "
+                           "on the 3D print page) and opens them: each piece in the slicer your plan gives it (see "
+                           "the Printing column) - each slicer opens once, with its own pieces on one bed. Your "
+                           "model isn't changed.", lambda: self.send_to_slicer_pick(self.b_send2),
+                           colour=(41, 128, 185))
+        self.b_save2 = btn(3, "Save and send to printer...", "The same as 'Send to printer', but you pick where "
+                           "the print files are saved first (a save box), then they open in the slicer.",
+                           lambda: self.send_to_slicer_pick(self.b_save2, save_as=True), colour=(142, 68, 173))
+        self.b_send3 = btn(4, "Send to slicer", "Saves it at the new size (no save box) and opens it in this "
                            "printer's slicer - with more than one, you pick which suits this model. Your model "
                            "isn't changed.", lambda: self.send_to_slicer_pick(self.b_send3))
-        btn(3, "Export for printing...", "Saves it for printing: at the new size, in mm, repaired, the pieces laid "
+        btn(4, "Export for printing...", "Saves it for printing: at the new size, in mm, repaired, the pieces laid "
             "out on the bed - you pick where. Your model isn't changed.", self.export_print, True)
-        btn(4, "Check", "Checks what's selected at the new size, without saving anything. Gaps left after the "
+        btn(5, "Check", "Checks what's selected at the new size, without saving anything. Gaps left after the "
             "repairs show red in the preview.", self.check_now, True)
-        btn(4, "Repaired copy", "Puts a mended copy (as triangles, full size) beside the original in the work "
+        btn(5, "Repaired copy", "Puts a mended copy (as triangles, full size) beside the original in the work "
             "area.", self.repaired_copy)
-        btn(5, "Export...", "Saves what's selected with these settings. Your model isn't changed.",
+        btn(6, "Export...", "Saves what's selected with these settings. Your model isn't changed.",
             self.export, True)
-        btn(5, "Save pieces by slicer...", "Saves your planned pieces with these settings, one file for each "
+        btn(6, "Save pieces by slicer...", "Saves your planned pieces with these settings, one file for each "
             "slicer, and sends each to its slicer if ticked.", self.export_by_slicer)
         brow.addWidget(b_close)
         lay.addLayout(brow)
@@ -4705,6 +4820,7 @@ class StudioDialog(QDialog):
         self.watch_selection(force=True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.watch_selection)
+        self._timer.timeout.connect(self._pn_tick)
         self._timer.start(800)
 
     # ------------------------------------------------------------------ pages
@@ -5377,7 +5493,7 @@ class StudioDialog(QDialog):
     def save_now(self):
         st = self.st
         st.update({
-            'tab': self.tabs.currentIndex(), 'unit': self.cb_unit.currentData(),
+            'tab': self.tabs.currentIndex(), 'tab_name': self.tabs.tabText(self.tabs.currentIndex()), 'unit': self.cb_unit.currentData(),
             'show_unit': self.cb_show.currentData(), 'mode': self.cb_mode.currentData(),
             'scale': self.sp_scale.value(), 'percent': self.sp_pct.value(),
             'from_scale': self.sp_from.value(), 'to_scale': self.sp_to.value(),
@@ -5721,7 +5837,7 @@ class StudioDialog(QDialog):
         self.ed_slicer.setText(str(chosen.data()))
         return True
 
-    def send_to_slicer_pick(self, button=None):
+    def send_to_slicer_pick(self, button=None, save_as=False):
         """'Send to slicer' button: asks which slicer first when this printer has more than one
         (not when your plan already says where every piece goes)."""
         own = ((self.plan or {}).get('printer') or {}) if self.plan_on() else {}
@@ -5729,7 +5845,7 @@ class StudioDialog(QDialog):
         all_set = bool(pcs) and all(pc is not None and self.norm_target(own.get(pc or "", "")) for pc in pcs)
         if not all_set and not self.pick_slicer(button):
             return False
-        return self.send_to_slicer()
+        return self.send_to_slicer(save_as)
 
     # ------------------------------------------------------------------ the selection
     def selection(self):
@@ -5931,8 +6047,9 @@ class StudioDialog(QDialog):
         planned = self.plan_on()
         self.cb_split.setEnabled(not planned)
         self.b_unplan.setEnabled(bool(self.plan and self.plan.get('pieces')))
+        on_pn = getattr(self, '_pn_index', -1) == self.tabs.currentIndex()
         self.canvas.overlay = (["Now: " + fmt_size(now, u), "New: %s  (%s)" % (fmt_size(new, u), self.describe())]
-                               if has else []) + list(getattr(self, '_bed_note', None) or [])
+                               if has and not (on_pn and self._waiting) else []) + list(getattr(self, '_bed_note', None) or [])
         self.canvas.update()
 
     def use_biggest(self, *_):
@@ -6294,7 +6411,15 @@ class StudioDialog(QDialog):
 
     # ------------------------------------------------------------------ preview
     def refresh_preview(self):
-        if self.cb_preview.currentData() == 'gathered':
+        if getattr(self, '_pn_index', -1) == self.tabs.currentIndex():
+            try:
+                self.preview_print_next()
+            except Exception as e:
+                self.canvas.set_parts([], None)
+                self.report("Couldn't draw the bed: %s" % e, bad=True)
+            self.update_info()
+            return
+        if getattr(self, '_gathered_on', False):
             self.preview_gathered()
             if self.ents:
                 try:
@@ -6377,7 +6502,8 @@ class StudioDialog(QDialog):
                             n, filled, "" if filled == 1 else "s",
                             (" (%d couldn't be - edges shared by more than two faces)" % left) if left else ""))
                 parts.append((n, c, tr))
-            if not o.get('per_piece', True) and len(parts) > 1:
+            if not o.get('per_piece', True) and len(parts) > 1 and o.get('layout', 'keep') != 'bed':
+                # all as one, where they are (on the bed they're laid out first, then joined - below)
                 parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
         if o.get('apply_fixes') and o.get('parts') is None:
             tot = {}
@@ -6391,6 +6517,10 @@ class StudioDialog(QDialog):
             notes += repair_lines(tot)
         if o.get('thin') and self.cb_thin.isChecked():
             nz = self.sp_nozzle.value()
+            resin = self.cb_kind.currentData() == 'resin'
+            if resin and nz >= 0.25:
+                nz = 0.05            # a resin printer saved with an FDM nozzle size: check against resin detail
+            what = "the %.2f mm smallest detail this resin printer does" % nz if resin else "the %.2f mm nozzle" % nz
             for n, c, tr in parts:
                 try:
                     th, share = thin_walls(tr, nz)
@@ -6398,14 +6528,14 @@ class StudioDialog(QDialog):
                     continue
                 if th is not None and share > 0.005:
                     warn = True
-                    notes.append("%s: %d%% of it is thinner than the %.2f mm nozzle (about %.2f mm thick)." % (
-                        n, int(round(share * 100)) or 1, nz, th))
+                    notes.append("%s: %d%% of it is thinner than %s (about %.2f mm thick)." % (
+                        n, int(round(share * 100)) or 1, what, th))
         parts = [p for p in parts if p[2]]
         lay = o.get('layout', 'keep')
         if lay == 'bed':
             parts = self.lay_on_bed(parts, flat=self.cb_flat.isChecked() and o.get('parts') is None)
-            if o.get('parts') is not None and not o.get('per_piece', True) and len(parts) > 1:
-                # one file holding them all (resin STL), laid out side by side first
+            if not o.get('per_piece', True) and len(parts) > 1:
+                # one file holding them all (resin STL): laid out side by side on the plate first
                 parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
         elif lay == 'centre' and parts:
             allt = stand_centred([t for _n, _c, tr in parts for t in tr])
@@ -6656,6 +6786,15 @@ class StudioDialog(QDialog):
                                                     (pr.get('name') if pr else self.target_name("").split(" - ")[0]))
                          for p_, idx, pr in groups) + "."
 
+    def ask_folder(self, title="Save the print files in"):
+        """A folder picked in a box (remembered for next time), or "" if you cancel."""
+        from PySide6.QtWidgets import QFileDialog
+        start = self.st.get('last_folder') or os.path.join(os.path.expanduser("~"), "Downloads")
+        d = QFileDialog.getExistingDirectory(self, title, start)
+        if d:
+            self.st['last_folder'] = d
+        return d or ""
+
     def folder_namer(self, d):
         def where(name, ext):
             path = os.path.join(d, name + ext)
@@ -6734,7 +6873,7 @@ class StudioDialog(QDialog):
             self.cb_preview.setCurrentIndex(self.cb_preview.findData('bed'))
         return sent > 0
 
-    def send_to_slicer(self):
+    def send_to_slicer(self, save_as=False):
         """Saves the object at its new size as a print file (no save box) and opens it in this
         printer's slicer. The model in the work area is left exactly as it is. With a plan that
         sends pieces to different slicers, each slicer gets its own pieces."""
@@ -6747,8 +6886,14 @@ class StudioDialog(QDialog):
         self.watch_selection(force=True)
         groups = self.planned_slicers()
         if groups:
-            return self.send_split(groups)
-        where = self.print_path
+            to = None
+            if save_as:
+                d = self.ask_folder()
+                if not d:
+                    return False
+                to = self.folder_namer(d)
+            return self.send_split(groups, to_path=to)
+        where = None if save_as else self.print_path       # None: a save box
         ok = self.export(self.for_slicer(self.print_opts(), self.ed_slicer.text().strip(), None),
                          to_path=where, open_it=True)
         if ok:
@@ -6851,8 +6996,15 @@ class StudioDialog(QDialog):
             else:
                 self.b_putback.setText("Put back \u21b6")
             self.b_seebed.setEnabled(n > 0)
-            if self.cb_preview.currentData() == 'gathered':
+            if getattr(self, '_gathered_on', False):
                 self._pv_timer.start(200)
+        except Exception:
+            pass
+        try:
+            self.pn_refresh_list()
+            if getattr(self, '_pn_index', -1) == self.tabs.currentIndex():
+                self._pn_cache = None
+                self._pv_timer.start(30)
         except Exception:
             pass
 
@@ -7119,7 +7271,7 @@ class StudioDialog(QDialog):
 
     def next_bed(self, *_):
         """The preview's 'Next bed' button: the next printer's bed."""
-        if self.cb_preview.currentData() == 'gathered':
+        if getattr(self, '_gathered_on', False):
             self._bed_view = getattr(self, '_bed_view', 0) + 1
         else:
             self._plan_view = getattr(self, '_plan_view', 0) + 1
@@ -7168,7 +7320,7 @@ class StudioDialog(QDialog):
         path, idx, pr = groups[i]
         _bx, _by, _bz, _gap, keep = self.printer_settings(pr)
         parts, _n, _w = self.make_parts({'use_scale': True, 'layout': 'keep', 'apply_fixes': False,
-                                         'per_piece': keep, 'only': set(idx)})
+                                         'per_piece': True, 'only': set(idx)})
         if self.cb_flat.isChecked():
             parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
         parts, bed = self.lay_for_printer(parts, pr)
@@ -7207,35 +7359,55 @@ class StudioDialog(QDialog):
         self._shown = None
         pr = _pr
         bx, by, bz, _g, _k = self.printer_settings(pr)
-        self._bed_note = ["The gathered bed (%d object%s)" % (len(self._bed), "" if len(self._bed) == 1 else "s")] + \
+        self._bed_note = ["The gathered bed (%d object%s) - pick under the preview to go back" % (
+            len(self._bed), "" if len(self._bed) == 1 else "s")] + \
             self.bed_note(parts, (bx, by, bz), path, pr, i, max(1, len(sl)))
 
-    def show_gathered(self, *_):
-        i = self.cb_preview.findData('gathered')
-        if self.cb_preview.currentIndex() != i:
-            self._bed_view = 0
-            self.cb_preview.setCurrentIndex(i)          # redraws by itself
-        else:
-            self._bed_view = getattr(self, '_bed_view', 0) + 1   # the next slicer's bed
+    def preview_picked(self, *_):
+        """Picking under the preview (even the one already showing) leaves the gathered bed."""
+        if getattr(self, '_gathered_on', False):
+            self._gathered_on = False
+            self._bed_note = []
             self.refresh_preview()
+
+    def show_gathered(self, *_):
+        """'Preview the bed': the gathered bed in the preview (pick anything under the preview to go back)."""
+        if not getattr(self, '_gathered_on', False):
+            self._gathered_on = True
+            self._bed_view = 0
+        else:
+            self._bed_view = getattr(self, '_bed_view', 0) + 1   # the next printer's bed
+        self.refresh_preview()
         if not self.cb_pv.isChecked():
             self.cb_pv.setChecked(True)
 
-    def send_bed(self, button=None):
+    def send_bed(self, button=None, only=None, save_as=False):
         """Every object gathered on the bed, laid out side by side and opened at once: one bed (and
-        one window) for each slicer the pieces go to."""
+        one window) for each slicer the pieces go to. only: just these printers' beds (keys) - the
+        rest stay on the bed."""
         if not self._bed:
             self.report("The bed's empty: set 'Scale + next' to 'Adds it to one bed', then select each object "
                         "and press Scale + next.", bad=True)
             return False
-        if any(not self.norm_target(d) for _n, _s, _p, ds in self._bed for d in ds) and \
-                not self.pick_slicer(button):
+        only = None if only is None else [self.norm_target(k) for k in only]
+        sl = [k for k in self.bed_slicers() if only is None or k in only]
+        if not sl:
+            self.report("Nothing on that printer's bed to send.", bad=True)
             return False
+        if "" in sl and not self.pick_slicer(button):
+            return False
+        to = self.print_path
+        if save_as:
+            d = self.ask_folder()
+            if not d:
+                return False
+            to = self.folder_namer(d)
         default = self.ed_slicer.text().strip()
-        scales = sorted(set(sc for _n, sc, _p, _d in self._bed))
+        going = [it for it in self._bed if any(self.norm_target(d) in sl for d in it[3])]
+        scales = sorted(set(sc for _n, sc, _p, _d in going))
         words = scales[0] if len(scales) == 1 else "mixed scales"
-        n_obj = len(self._bed)
-        sl = self.bed_slicers(default)
+        n_obj = len(going)
+        done_keys = []
         lines, sent, bad = [], 0, False
         for key in sl:
             path, pr = self.target(key)
@@ -7248,7 +7420,7 @@ class StudioDialog(QDialog):
                 o.update({'parts': uniq, 'apply_fixes': False, 'scale_words': words,
                           'name': "Bed of %d - %s%s" % (n_obj, words.replace(":", "-").replace("%", "pc").replace(
                               " ", ""), (" - " + nm) if len(sl) > 1 else "")})
-                ok = self.export(o, to_path=self.print_path, open_it=False)
+                ok = self.export(o, to_path=to, open_it=False)
                 return ok, self._last, list(getattr(self, '_last_files', []) or []), len(uniq)
             ok, text, files, n_p = self.run_as_printer(pr, path, one)
             if not ok:
@@ -7256,19 +7428,425 @@ class StudioDialog(QDialog):
                 lines.append("%s: %s" % (nm, text))
                 continue
             sent += 1
+            done_keys.append(key)
             note = open_in_slicer(files, path)
             lines.append("%s: %d piece%s%s. %s" % (nm, n_p, "" if n_p == 1 else "s",
                                                   (" on %s's bed" % pr.get('name')) if pr else "", note))
         if sent:
-            del self._bed[:]
+            if only is None and len(done_keys) == len(sl):
+                del self._bed[:]
+            else:
+                # just the pieces that went: the rest (other printers' beds) stay on
+                left = []
+                for name, sc, parts, dests in self._bed:
+                    kept = [(p, d) for p, d in zip(parts, dests) if self.norm_target(d) not in done_keys]
+                    if kept:
+                        left.append((name, sc, [p for p, _d in kept], [d for _p, d in kept]))
+                self._bed[:] = left
             self._bed_view = 0
             self._done = 0
             self.bed_buttons()
-            self.lbl_count.setText("Sent %d object%s to %d slicer%s. The bed's empty again." % (
-                n_obj, "" if n_obj == 1 else "s", sent, "" if sent == 1 else "s"))
+            self.lbl_count.setText("Sent %d object%s to %d slicer%s.%s" % (
+                n_obj, "" if n_obj == 1 else "s", sent, "" if sent == 1 else "s",
+                " The bed's empty again." if not self._bed else " %d still on the bed." % len(self._bed)))
         self.report("Sent the gathered bed (%d object%s) - one bed for each slicer:\n" % (
             n_obj, "" if n_obj == 1 else "s") + "\n".join(lines), bad)
         return sent > 0
+
+    # ------------------------------------------------------------------ Scale & Print page
+    # One page for the everyday job: click an object in the work area, it shows on the print bed
+    # (in yellow, where it will go), press Add to bed, click the next one ... then send the bed.
+    # It uses the same gathered bed as Scale + next, so the two work together.
+    PN_NEW_COLOUR = (250, 205, 20)        # the object selected now, not on the bed yet
+
+    def build_print_next_page(self):
+        from PySide6.QtWidgets import QListWidget
+        v = self._page("Scale && Print", "Click an object, see it on the print bed, add it - then the next one. "
+                                       "Send the bed to your printer when it's full.")
+        self._pn_index = self.tabs.count() - 1
+        self._pn_key = None
+        self._pn_cache = None
+        self._pn_targets = None
+        how = QLabel("<b>1.</b> Click an object in the work area - it shows on the bed in "
+                     "<span style='background:#fad014'>&nbsp;yellow&nbsp;</span>.<br>"
+                     "<b>2.</b> Press <b>Add to bed</b>. <b>3.</b> Click the next object, and again.<br>"
+                     "<b>4.</b> Press <b>Send</b> when the bed's full. Your model isn't changed.")
+        how.setWordWrap(True)
+        v.addWidget(how)
+
+        # the scale - the same as the Scale page
+        form = self._form()
+        self.pn_cb_scale, self.pn_sp_scale, r = self._scale_list(
+            self.sp_scale.value(), "The scale it prints at - the same as on the Scale page.")
+        form.addRow("Scale:", r)
+        v.addLayout(form)
+        self.pn_lbl_scale = QLabel()
+        self.pn_lbl_scale.setWordWrap(True)
+        v.addWidget(self.pn_lbl_scale)
+        self.pn_sp_scale.valueChanged.connect(self.pn_scale_typed)
+        self.sp_scale.valueChanged.connect(lambda *_: self.pn_sync_scale())
+        self.cb_mode.currentIndexChanged.connect(lambda *_: self.pn_sync_scale())
+
+        # the printer the next objects go on: one coloured button for each
+        v.addWidget(QLabel("<b>Print on:</b>"))
+        self.pn_prow = flow_layout()
+        v.addLayout(self.pn_prow)
+        self.pn_pbuttons = []
+
+        # the big coloured buttons
+        def big(text, col, tip, fn):
+            b_ = QPushButton(text)
+            b_.setStyleSheet(colour_button_style(col))
+            b_.setToolTip(tip)
+            b_.clicked.connect(lambda *_a: fn())
+            return b_
+        crow = QHBoxLayout()
+        crow.addWidget(QLabel("How many:"))
+        self.pn_sp_copies = QSpinBox()
+        self.pn_sp_copies.setRange(1, 200)
+        self.pn_sp_copies.setValue(1)
+        self.pn_sp_copies.setToolTip("How many of the selected object 'Add to bed' puts on the bed - 4 for four "
+                                     "of the same chimney, say. Each is laid out on its own.")
+        crow.addWidget(self.pn_sp_copies)
+        crow.addStretch(1)
+        v.addLayout(crow)
+        self.pn_sp_copies.valueChanged.connect(lambda *_: self._pv_timer.start(250))
+        row1 = flow_layout()
+        self.pn_b_add = big("➕ Add to bed", (46, 139, 87),
+                            "Puts the object selected in the work area on the bed at this scale (your model "
+                            "isn't changed), then gets ready for the next one: click it and press this again.",
+                            self.pn_add)
+        self.pn_b_dup = big("⧉ Duplicate", (60, 140, 220),
+                            "Puts one more of the object picked in the list below on the bed (or of the "
+                            "last one added, if none is picked).", self.pn_duplicate)
+        self.pn_b_off = big("Take off", (211, 120, 20),
+                            "Takes the object picked in the list below off the bed (or the last one added, "
+                            "if none is picked).", self.pn_take_off)
+        self.pn_b_back = big("Put back ↶", (120, 130, 140),
+                             "Puts back the last object taken off (or the whole bed after 'Empty').",
+                             self.put_back)
+        self.pn_b_empty = big("Empty", (150, 150, 150), "Takes everything off the bed (nothing is sent). "
+                              "'Put back' brings it back.", self.empty_bed)
+        for b_ in (self.pn_b_add, self.pn_b_dup, self.pn_b_off, self.pn_b_back, self.pn_b_empty):
+            row1.addWidget(b_)
+        v.addLayout(row1)
+        row2 = flow_layout()
+        self.pn_b_send = big("Send to printer", (41, 128, 185),
+                             "Lays out this printer's bed and opens it in its slicer - one window, one bed. "
+                             "Then those objects come off the bed, ready for the next lot.",
+                             lambda: self.pn_send(False))
+        self.pn_b_sendall = big("Send every printer's bed", (142, 68, 173),
+                                "Sends each printer's bed to its own slicer, all at once.",
+                                lambda: self.pn_send(True))
+        self.pn_b_save = big("Save and send...", (40, 160, 150),
+                             "The same as Send, but you pick where the print file is saved first (a "
+                             "folder box), then it opens in the slicer.", lambda: self.pn_send(False, True))
+        row2.addWidget(self.pn_b_send)
+        row2.addWidget(self.pn_b_save)
+        row2.addWidget(self.pn_b_sendall)
+        v.addLayout(row2)
+
+        # what's on the bed
+        self.pn_lbl_fit = QLabel()
+        self.pn_lbl_fit.setWordWrap(True)
+        v.addWidget(self.pn_lbl_fit)
+        self.pn_list = QListWidget()
+        self.pn_list.setToolTip("Everything on the bed, in the colour it has in the preview. Pick one and "
+                                "press 'Take off' to take it off.")
+        self.pn_list.setMinimumHeight(120)
+        v.addWidget(self.pn_list, 1)
+
+    def pn_ready(self):
+        """Once every page is built: the printer buttons, the scale and the list."""
+        self._pn_ok = True
+        self.pn_fill_printers()
+        self.pn_sync_scale()
+        self.pn_refresh_list()
+
+    # ---- the scale, kept the same as the Scale page
+    def pn_scale_typed(self, val):
+        if self._busy:
+            return
+        i = self.cb_mode.findData('scale')
+        if self.cb_mode.currentIndex() != i:
+            self.cb_mode.setCurrentIndex(i)
+        if abs(self.sp_scale.value() - val) > 1e-9:
+            self.sp_scale.setValue(val)
+        self.pn_sync_scale()
+
+    def pn_sync_scale(self):
+        if not hasattr(self, 'pn_sp_scale'):
+            return
+        val = self.sp_scale.value()
+        if abs(self.pn_sp_scale.value() - val) > 1e-9:
+            self.pn_sp_scale.blockSignals(True)
+            self.pn_sp_scale.setValue(val)
+            self.pn_sp_scale.blockSignals(False)
+            j = next((i for i, (_t, x) in enumerate(SCALES) if x is not None and abs(x - val) < 1e-9),
+                     len(SCALES) - 1)
+            self.pn_cb_scale.blockSignals(True)
+            self.pn_cb_scale.setCurrentIndex(j)
+            self.pn_cb_scale.blockSignals(False)
+        if self.cb_mode.currentData() == 'scale':
+            self.pn_lbl_scale.setText("")
+            self.pn_lbl_scale.setVisible(False)
+        else:
+            self.pn_lbl_scale.setText("<span style='color:#b35900'>The Scale page is set to %s - that's what "
+                                      "'Add to bed' uses. Pick a scale here to use a model scale instead.</span>"
+                                      % self.describe())
+            self.pn_lbl_scale.setVisible(True)
+
+    # ---- the printers
+    def pn_fill_printers(self):
+        """One coloured button for each printer (the one on the 3D print page first)."""
+        from PySide6.QtWidgets import QButtonGroup
+        targets = [(k, lab) for k, lab, _p, _pr in self.printer_targets()]
+        if targets == self._pn_targets and self.pn_pbuttons:
+            return
+        self._pn_targets = targets
+        for b_ in self.pn_pbuttons:
+            self.pn_prow.removeWidget(b_)
+            b_.deleteLater()
+        self.pn_pbuttons = []
+        self.pn_group = QButtonGroup(self)
+        self.pn_group.setExclusive(True)
+        want = self.norm_target(self.st.get('pn_printer', ""))
+        for i, (key, lab) in enumerate(targets):
+            col = PRINTER_COLOURS[i % len(PRINTER_COLOURS)]
+            b_ = QPushButton(lab)
+            b_.setCheckable(True)
+            b_.setAutoDefault(False)
+            b_.setStyleSheet("QPushButton{padding:6px 10px;border-radius:4px;border:2px solid rgb(%d,%d,%d);"
+                             "color:rgb(%d,%d,%d);font-weight:bold;background:white}"
+                             "QPushButton:checked{background:rgb(%d,%d,%d);color:white}" % (col + col + col))
+            b_.setToolTip("Objects you add go on %s's bed, and the preview shows that bed." % lab.split(" - ")[0])
+            b_.setProperty('pn_key', key)
+            b_.setChecked(key == want)
+            b_.clicked.connect(lambda *_a: self.pn_printer_picked())
+            self.pn_group.addButton(b_)
+            self.pn_prow.addWidget(b_)
+            self.pn_pbuttons.append(b_)
+        if self.pn_pbuttons and not any(b_.isChecked() for b_ in self.pn_pbuttons):
+            self.pn_pbuttons[0].setChecked(True)
+
+    def pn_printer(self):
+        """The printer key picked on this page ("" = the one on the 3D print page)."""
+        for b_ in getattr(self, 'pn_pbuttons', []):
+            if b_.isChecked():
+                return self.norm_target(b_.property('pn_key') or "")
+        return ""
+
+    def pn_printer_picked(self):
+        self.st['pn_printer'] = self.pn_printer()
+        self._save_timer.start(1200)
+        self.pn_refresh_list()
+        self.refresh_preview()
+
+    # ---- adding, taking off, sending
+    def pn_add(self):
+        live = self.selection()
+        if not live:
+            self.report("Click an object in the work area first (a group, or its faces), then press Add to bed.",
+                        bad=True)
+            return
+        key = tuple(id(e) for e in live)
+        if self._waiting and key == self._done_key:
+            self.report("That one's on the bed already - click the next object, then press Add to bed.", bad=True)
+            return
+        n_before = len(self._bed)
+        if not self.add_to_bed():
+            return
+        dest = self.pn_printer()
+        if len(self._bed) > n_before:
+            name, sc, parts, dests = self._bed[-1]
+            if all(not self.norm_target(d) for d in dests):     # no plan saying where pieces go
+                self._bed[-1] = (name, sc, parts, [dest] * len(parts))
+                self._bed_split = self.split_words(self._bed[-1][3])
+            many = max(1, int(self.pn_sp_copies.value()))
+            for _k in range(many - 1):
+                self._bed.append(self._bed[-1])
+        name = self._bed[-1][0]
+        many = len(self._bed) - n_before
+        self._done += 1
+        self._done_key = key
+        self.tool.clear_selection(self.viewport)
+        try:
+            self._sel_key = tuple(id(e) for e in self.selection())
+        except Exception:
+            self._sel_key = ()
+        self._waiting = True
+        self._sel_text = "Added %s to the bed. Click the next object." % name
+        self._pn_key = None
+        self.bed_buttons()
+        self.update_info()
+        n = len(self._bed)
+        self.report("Put %s'%s' on the bed at %s (%d on it) - %s. Click the next object and press Add to bed, "
+                    "or Send when the bed's full." % ("%d x " % many if many > 1 else "", name, self.describe(), n,
+                                                      getattr(self, '_bed_split', "")))
+        self.refresh_preview()
+
+    def pn_duplicate(self):
+        """One more of the object picked in the list (or the last one added), right after it."""
+        if not self._bed:
+            self.report("The bed's empty - add an object first.", bad=True)
+            return
+        row = self.pn_list.currentRow()
+        i = row if 0 <= row < len(self._bed) else len(self._bed) - 1
+        self._bed.insert(i + 1, self._bed[i])
+        self.bed_buttons()
+        self.pn_list.setCurrentRow(i + 1)
+        self.report("One more '%s' on the bed (%d on it)." % (self._bed[i][0], len(self._bed)))
+
+    def pn_take_off(self):
+        if not self._bed:
+            self.report("The bed's empty.")
+            return
+        row = self.pn_list.currentRow()
+        self.take_off(row if 0 <= row < len(self._bed) else len(self._bed) - 1)
+        self.refresh_preview()
+
+    def pn_send(self, every, save_as=False):
+        if not self._bed:
+            self.report("The bed's empty - click an object in the work area and press Add to bed first.", bad=True)
+            return
+        if every:
+            self.send_bed(self.pn_b_sendall, save_as=save_as)
+        else:
+            key = self.pn_printer()
+            if key not in self.bed_slicers():
+                self.report("Nothing's on %s's bed yet." % self.target_name(key).split(" - ")[0], bad=True)
+                return
+            self.send_bed(self.pn_b_save if save_as else self.pn_b_send, only=[key], save_as=save_as)
+        self.refresh_preview()
+
+    # ---- the list, the buttons, the bed in the preview
+    def pn_refresh_list(self):
+        if not getattr(self, '_pn_ok', False):
+            return
+        from PySide6.QtGui import QPixmap, QColor, QIcon
+        self.pn_fill_printers()
+        keep = self.pn_list.currentRow()
+        self.pn_list.clear()
+        many = len(self.bed_slicers()) > 1 or len(self._pn_targets or []) > 1
+        for k, (name, sc, parts, dests) in enumerate(self._bed):
+            sz = tris_size([t for _n, _c, tr in parts for t in tr])
+            where = ""
+            if many:
+                where = "  -  " + ", ".join(sorted(set(self.target_name(d).split(" - ")[0] for d in dests)))
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(*piece_colour(k)))
+            self.pn_list.addItem("%d. %s  -  %s, %s mm%s" % (k + 1, name, sc, " x ".join(_fmt_mm(x) for x in sz),
+                                                             where))
+            self.pn_list.item(k).setIcon(QIcon(pm))
+        if 0 <= keep < self.pn_list.count():
+            self.pn_list.setCurrentRow(keep)
+        n = len(self._bed)
+        key = self.pn_printer()
+        on_this = sum(1 for _n, _s, _p, ds in self._bed if any(self.norm_target(d) == key for d in ds))
+        who = self.target_name(key).split(" - ")[0]
+        self.pn_b_send.setText("Send to %s (%d)" % (who, on_this) if on_this else "Send to %s" % who)
+        self.pn_b_send.setEnabled(on_this > 0)
+        self.pn_b_save.setEnabled(on_this > 0)
+        sl = self.bed_slicers()
+        self.pn_b_sendall.setText("Send every printer's bed (%d)" % len(sl))
+        self.pn_b_sendall.setVisible(len(sl) > 1)
+        self.pn_b_off.setEnabled(n > 0)
+        self.pn_b_empty.setEnabled(n > 0)
+        self.pn_b_back.setEnabled(bool(StudioDialog._taken))
+        try:
+            t, fits = self.bed_fit_words(key) if on_this else ("", True)
+        except Exception as e:
+            t, fits = "Couldn't lay out the bed: %s" % e, False
+        if n:
+            head = "<b>On the bed: %d object%s</b>" % (n, "" if n == 1 else "s")
+            self.pn_lbl_fit.setText(head + (("<br><span style='color:%s'>%s</span>" % (
+                "#2e7d32" if fits else "#c0392b", t)) if t else ""))
+        else:
+            self.pn_lbl_fit.setText("<b>The bed's empty.</b>")
+
+    def pn_ghost(self):
+        """The object selected now, scaled and laid flat the way 'Add to bed' would put it: [(name,
+        colour, tris)] - or [] when nothing new is selected."""
+        live = self.selection()
+        if not live or not self.ents:
+            return []
+        key = tuple(id(e) for e in live)
+        if key != self._sel_key or (self._waiting and key == self._done_key):
+            return []
+        ck = (key, self.describe(), self.unit_mm(), self.cb_flat.isChecked(), len(self._marks),
+              id(self.plan), self.cb_split.currentData())
+        if self._pn_cache and self._pn_cache[0] == ck:
+            return self._pn_cache[1]
+        parts, _n, _w = self.make_parts({'use_scale': True, 'layout': 'keep', 'apply_fixes': False,
+                                         'per_piece': True})
+        if self.cb_flat.isChecked():
+            parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
+        parts = [(n, self.PN_NEW_COLOUR, tr) for n, _c, tr in parts]
+        self._pn_cache = (ck, parts)
+        return parts
+
+    def preview_print_next(self):
+        """This page's preview: the picked printer's bed - what's on it in colour, the object selected
+        now in yellow, all laid out the way they'll be sent."""
+        self.b_nextbed.setVisible(False)
+        key = self.pn_printer()
+        _path, pr = self.target(key)
+        bx, by, bz, gap, keep = self.printer_settings(pr)
+        items = self.bed_items(colour_each=True, dest=key, per_piece=keep)
+        try:
+            ghost = self.pn_ghost()
+        except Exception as e:
+            ghost = []
+            self.report("Couldn't read the selected object: %s" % e, bad=True)
+        if ghost and not keep and len(ghost) > 1:
+            ghost = [(ghost[0][0], self.PN_NEW_COLOUR, [t for _n, _c, tr in ghost for t in tr])]
+        many = max(1, int(self.pn_sp_copies.value())) if ghost else 0
+        ghost = [("NEW: " + n, c, tr) for n, c, tr in ghost] * many
+        allp = items + ghost
+        who = pr.get('name') if pr else self.target_name("").split(" - ")[0]
+        if not allp:
+            self._bed_note = ["%s's bed (%s x %s mm) - empty" % (who, _fmt_mm(bx), _fmt_mm(by))]
+            self.canvas.empty_text = "Click an object in the work area - it shows here, on the bed, ready to add."
+            self.canvas.set_parts([], (bx, by) if self.cb_bed.isChecked() else None)
+            self._shown = None
+            return
+        use_bed = self.cb_bed.isChecked()
+        if len(allp) > 1:
+            placed, _s = lay_out_packed([(n, tr) for n, _c, tr in allp], bx if use_bed else 0.0,
+                                        by if use_bed else 0.0, max(0.2, gap))
+            allp = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, allp)]
+        else:
+            allp = [(allp[0][0], allp[0][1], stand_centred(allp[0][2]))]
+        s = tris_size([t for _n, _c, tr in allp for t in tr])
+        fits = (not use_bed) or (s[0] <= bx + 1e-6 and s[1] <= by + 1e-6 and s[2] <= bz + 1e-6)
+        shown = (bx, by) if use_bed else (s[0] * 1.15 + 10, s[1] * 1.15 + 10)
+        self.canvas.empty_text = "Nothing to show"
+        self.canvas.set_parts(allp, shown, None)
+        self._shown = None
+        n_on = len(set(i for i, (_n, _s, _p, ds) in enumerate(self._bed)
+                       if any(self.norm_target(d) == key for d in ds)))
+        self._bed_note = ["%s's bed (%s x %s mm): %d on it%s" % (
+            who, _fmt_mm(bx), _fmt_mm(by), n_on, ("  + %d to add (yellow)" % many) if ghost else ""),
+            "%s mm altogether - %s" % (" x ".join(_fmt_mm(v) for v in s),
+                                       "fits" if fits else "TOO BIG for this bed")]
+
+    def _pn_tick(self):
+        """Every moment while this page shows: the preview follows what's selected, even with
+        'Follow selection' off, and clears when you click off."""
+        if getattr(self, '_pn_index', -1) != self.tabs.currentIndex() or not self.right.isVisible():
+            return
+        try:
+            live = self.selection()
+        except Exception:
+            return
+        key = tuple(id(e) for e in live)
+        if key == self._pn_key:
+            return
+        self._pn_key = key
+        if live and key != self._sel_key:
+            self.watch_selection(force=True)
+        else:
+            self._pv_timer.start(60)
 
     # ------------------------------------------------------------------ checking and repairing
     def check_now(self, *_):
