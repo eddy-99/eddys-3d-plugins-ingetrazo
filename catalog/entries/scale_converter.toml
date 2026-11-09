@@ -13,11 +13,11 @@ ingetrazo = "0.5.11"
 tags = ["productivity"]
 
 [name]
-es = "Conversor de escala 3D"
-en = "3D Scale Converter"
-pt = "Conversor de escala 3D"
+es = "Estudio de escala 3D"
+en = "3D Scale Studio"
+pt = "Estúdio de escala 3D"
 
 [summary]
-es = "Una barra que convierte medidas reales (pies, pulgadas, mm) en medidas de maqueta a cualquier escala."
-en = "A toolbar that turns real sizes (ft / in / mm) into model sizes at any scale."
-pt = "Uma barra que converte medidas reais (pés, polegadas, mm) em medidas de maqueta a qualquer escala."
+es = "Convierte medidas reales a cualquier escala, escala objetos, los divide en piezas, los repara y los exporta listos para imprimir en 3D."
+en = "Turn real sizes into any model scale, then scale, split, repair and export your model ready for 3D printing."
+pt = "Converte medidas reais para qualquer escala, escala objetos, divide-os em peças, repara-os e exporta-os prontos para impressão 3D."
