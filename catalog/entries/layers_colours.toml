@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "layers_colours"
+source = "plugins/3D_Eddys/ed3d_layers_colours.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity", "architecture"]
+
+[name]
+es = "Capas y colores 3D"
+en = "3D Layers & Colours"
+pt = "Camadas e cores 3D"
+
+[summary]
+en = "Puts everything the building plugins make on a layer for its kind of work (chimneys, windows, canopies...) and colours each part by what it is: brick, slate, glass, ironwork. Apply to selected organises older groups in one undo step."
+es = "Pone todo lo que crean los complementos de construcción en una capa según su tipo (chimeneas, ventanas, marquesinas...) y colorea cada pieza según lo que es: ladrillo, pizarra, vidrio, hierro. Aplicar a la selección organiza grupos anteriores en un solo paso de deshacer."
+pt = "Coloca tudo o que os plugins de construção criam numa camada conforme o tipo (chaminés, janelas, coberturas...) e colore cada peça pelo que é: tijolo, ardósia, vidro, ferro. Aplicar à seleção organiza grupos antigos num só passo de desfazer."
