@@ -18,6 +18,6 @@ en = "3D Layers & Colours"
 pt = "Camadas e cores 3D"
 
 [summary]
-en = "Puts everything the building plugins make on a layer for its kind of work (chimneys, windows, canopies...) and colours each part by what it is: brick, slate, glass, ironwork. Apply to selected organises older groups in one undo step."
-es = "Pone todo lo que crean los complementos de construcción en una capa según su tipo (chimeneas, ventanas, marquesinas...) y colorea cada pieza según lo que es: ladrillo, pizarra, vidrio, hierro. Aplicar a la selección organiza grupos anteriores en un solo paso de deshacer."
-pt = "Coloca tudo o que os plugins de construção criam numa camada conforme o tipo (chaminés, janelas, coberturas...) e colore cada peça pelo que é: tijolo, ardósia, vidro, ferro. Aplicar à seleção organiza grupos antigos num só passo de desfazer."
+en = "Puts what the building plugins make on a layer for each kind of work (chimneys, windows...) and colours each part by what it is: brick, slate, glass, ironwork. Can also tidy older groups."
+es = "Pone lo que crean los complementos de construcción en una capa por tipo (chimeneas, ventanas...) y colorea cada pieza según lo que es: ladrillo, pizarra, vidrio, hierro. También ordena grupos antiguos."
+pt = "Coloca o que os plugins de construção criam numa camada por tipo (chaminés, janelas...) e colore cada peça pelo que é: tijolo, ardósia, vidro, ferro. Também arruma grupos antigos."
