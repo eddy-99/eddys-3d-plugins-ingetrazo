@@ -1293,16 +1293,21 @@ def _qt(group, name):
     return v if v is not None else getattr(getattr(Qt, group), name)
 
 
-def _prep_part(tris, limit=9000):
+def _prep_part(tris, limit=200000):
     """A part's triangles ready to draw: [(tri, normal, edge flags)] - an edge is drawn as a line
-    where the surface folds (or ends), so the part's shape reads clearly, not its triangles."""
+    where the surface folds (or ends), so the part's shape reads clearly, not its triangles.
+    Every triangle is kept (leaving some out makes holes and stripes in the picture), up to a very
+    big model. A part whose faces don't all agree which way is out (an STL with faces written the
+    wrong way round) gets each face both ways round, so none goes missing from the picture."""
     import math
-    step = max(1, len(tris) // limit)
-    tris = tris[::step]
+    step = max(1, int(math.ceil(len(tris) / float(limit))))
+    if step > 1:
+        tris = tris[::step]
     out, edges = [], {}
 
     def k(p):
         return (round(p[0], 7), round(p[1], 7), round(p[2], 7))
+    directed = {}
     for t in tris:
         a, b, c = t
         u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
@@ -1314,9 +1319,13 @@ def _prep_part(tris, limit=9000):
         n = (n[0] / L, n[1] / L, n[2] / L)
         idx = len(out)
         out.append([t, n, [False, False, False]])
+        ks = (k(a), k(b), k(c))
         for e in range(3):
-            key = tuple(sorted((k(t[e]), k(t[(e + 1) % 3]))))
-            edges.setdefault(key, []).append((idx, e))
+            p_, q_ = ks[e], ks[(e + 1) % 3]
+            edges.setdefault(tuple(sorted((p_, q_))), []).append((idx, e))
+            directed[(p_, q_)] = directed.get((p_, q_), 0) + 1
+    # do the faces agree? each edge run one way by one face and back the other way by the next
+    mixed = any(directed.get((q_, p_), 0) != n_ for (p_, q_), n_ in directed.items())
     for lst in edges.values():
         if len(lst) != 2:
             for idx, e in lst:
@@ -1324,9 +1333,12 @@ def _prep_part(tris, limit=9000):
             continue
         (i1, e1), (i2, e2) = lst
         n1, n2 = out[i1][1], out[i2][1]
-        if n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2] < 0.94:      # a fold of more than ~20 degrees
+        d = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]
+        if (abs(d) if mixed else d) < 0.94:      # a fold of more than ~20 degrees
             out[i1][2][e1] = True
             out[i2][2][e2] = True
+    if mixed:
+        out += [[(t[0], t[2], t[1]), (-n[0], -n[1], -n[2]), [fl[2], fl[1], fl[0]]] for t, n, fl in out]
     return out
 
 
@@ -2593,7 +2605,10 @@ class PieceCanvas(QWidget):
         picked = set(self.dlg.picked_rows())
         edge = QPen(QColor(35, 35, 35), 0.9)
         edge_pick = QPen(QColor(0, 0, 0), 1.6)
-        for _d, i, pts, sh, ed in self.items:
+        quick = max(1, len(self.items) // 25000) if self.moving else 1
+        for n_, (_d, i, pts, sh, ed) in enumerate(self.items):
+            if quick > 1 and n_ % quick:
+                continue
             if not self.dlg.shown(i):
                 continue
             base = self.dlg.colour_of(i)
@@ -4210,9 +4225,9 @@ class PreviewCanvas(QWidget):
         self.marks = marks or []
         self.picked = None
         total = sum(len(t) for _n, _c, t in self.parts) or 1
-        limit = max(300, int(40000 * 1.0 / max(1, len(self.parts))))
-        limit = min(limit, max(300, int(9000 * 40000 / max(total, 40000))))
-        prep = [_prep_part(t, limit) for _n, _c, t in self.parts]
+        # every triangle drawn (thinning them out made holes and stripes), up to a very big model
+        keep = min(1.0, 250000.0 / total)
+        prep = [_prep_part(t, max(1, int(len(t) * keep) + 1)) for _n, _c, t in self.parts]
         pts = [q for pp in prep for t, _n, _f in pp for q in t]
         if self.bed:
             bx, by = self.bed[0] / 2.0, self.bed[1] / 2.0
@@ -4306,7 +4321,10 @@ class PreviewCanvas(QWidget):
             p.setPen(QColor(90, 90, 90))
             p.drawText(self.rect(), Qt.AlignCenter, self.empty_text)
         edge = QPen(QColor(35, 35, 35), 0.9)
-        for _d, i, pts, sh, ed in self.items:
+        quick = max(1, len(self.items) // 25000) if self.moving else 1
+        for n_, (_d, i, pts, sh, ed) in enumerate(self.items):
+            if quick > 1 and n_ % quick:
+                continue
             base = self.parts[i][1] if i < len(self.parts) else (180, 180, 180)
             if i == self.picked:
                 base = (255, 225, 40)

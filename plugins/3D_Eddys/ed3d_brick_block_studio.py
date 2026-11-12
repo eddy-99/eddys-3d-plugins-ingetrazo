@@ -3712,6 +3712,14 @@ class BrickDialog(QDialog):
         self.cb_cstyle.setEnabled(v['copings'])
         self.lst_open.setEnabled(True)
         what = 'pile' if self.tabs.currentIndex() == TABS.index("Rubble pile") else 'wall'
+        # Enter runs the button for the tab you're on: the rubble pile on its tab, walling elsewhere
+        try:
+            self.btn_apply.setAutoDefault(False)
+            self.btn_pile.setAutoDefault(False)
+            self.btn_apply.setDefault(what != 'pile')
+            self.btn_pile.setDefault(what == 'pile')
+        except Exception:
+            pass
         pv = self.preview_values(v)
         self.preview.set_values(pv, what)
         self.sizes.set_values(pv, what)

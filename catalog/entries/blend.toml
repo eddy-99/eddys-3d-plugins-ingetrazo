@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "blend"
+source = "plugins/3D_Eddys/ed3d_blend.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["drawing", "fabrication"]
+
+[name]
+es = "Fusión 3D"
+en = "3D Blend"
+pt = "Fusão 3D"
+
+[summary]
+es = "Une un objeto con otro de forma suave donde se tocan, como una cúpula sobre una caldera o un poste sobre un pedestal, o pone un collarín redondo o cuadrado con tuercas y pernos. Se imprime como una sola pieza."
+en = "Blends one object smoothly into another where they meet, like a dome into a boiler or a post into a plinth, or puts a round or square collar with nuts and bolts round the join. Prints as one piece."
+pt = "Une um objeto a outro de forma suave onde se encontram, como uma cúpula numa caldeira ou um poste num pedestal, ou põe um colar redondo ou quadrado com porcas e parafusos. Imprime-se numa só peça."

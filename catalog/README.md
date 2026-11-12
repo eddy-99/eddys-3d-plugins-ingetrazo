@@ -44,7 +44,9 @@ GitHub needs permission to open pull requests on the catalog as you.
    **Settings** ▸ **Developer settings** ▸ **Personal access tokens** ▸
    **Tokens (classic)** ▸ **Generate new token (classic)**.
 2. Note: `IngeTrazo catalog`. Expiration: whatever you like (a year, say).
-   Tick **public_repo** only. **Generate token**, and copy it.
+   Tick **public_repo** and **workflow**. (**workflow** is needed because the
+   catalog's own workflow files change from time to time, and GitHub won't let
+   the token push them to your fork without it.) **Generate token**, and copy it.
 3. Go to this repository on github.com ▸ **Settings** ▸ **Secrets and
    variables** ▸ **Actions** ▸ **New repository secret**. Name:
    `CATALOG_TOKEN`, Secret: paste the token. **Add secret**.

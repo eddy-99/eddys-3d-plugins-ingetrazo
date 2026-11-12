@@ -13,7 +13,7 @@
 """
 3D Plugins Toolbar - one-click icons for your IngeTrazo plugins
 A toolbar along the top of the IngeTrazo window with a button for each of the
-3D plugins (Print Scaler, Brick & Block Studio, Loft, Gutters & Downpipes,
+3D plugins (Print Scaler, Part Splitter, Brick & Block Studio, Loft, Gutters & Downpipes,
 Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
 that plugin. Right-click the toolbar to pick which buttons it shows, and whether
 they have labels. Ctrl+Alt+B shows or hides the toolbar.
@@ -36,6 +36,7 @@ PLUGINS = [
     ("3D Soil & Waste Pipes", "Ctrl+Alt+W", "Soil pipes", "soil"),
     ("3D Loft", "Ctrl+Alt+L", "Loft", "loft"),
     ("3D Print Scaler", "Ctrl+Alt+P", "Scaler", "scaler"),
+    ("3D Part Splitter", "Ctrl+Alt+Z", "Splitter", "splitter"),
     ("3D Scale Studio", "Ctrl+Alt+K", "Scale studio", "ruler"),
     ("3D Roof Tiles", "Ctrl+Alt+R", "Roof", "roof"),
     ("3D Notepad", "Ctrl+Alt+J", "Notes", "note"),
@@ -52,6 +53,8 @@ PLUGINS = [
     ("3D Find & Replace", "Ctrl+Alt+X", "Swap parts", "swap"),
     ("3D Place Along Line", "Ctrl+Alt+S", "Along line", "along"),
     ("3D Layers & Colours", "Ctrl+Alt+V", "Layers", "layers"),
+    ("3D Pieces In", "Ctrl+Alt+E", "Pieces in", "piecesin"),
+    ("3D Blend", "Ctrl+Shift+B", "Blend", "blend"),
 ]
 
 
@@ -164,6 +167,21 @@ def make_icon(kind):
         p.setPen(QPen(QColor(30, 60, 120), 1.6))
         p.drawEllipse(QRectF(10, 3, 12, 6))
         p.drawRect(QRectF(4, 25, 24, 5))
+    elif kind == "blend":
+        # a post standing on a block, a curved fillet blending one into the other
+        p.setPen(dark)
+        p.setBrush(QColor(200, 205, 212))
+        p.drawRect(QRectF(3, 22, 26, 7))                            # the base
+        p.setBrush(QColor(235, 120, 30))
+        f = QPainterPath()
+        f.moveTo(6, 22)
+        f.quadTo(12, 22, 12, 15)
+        f.lineTo(20, 15)
+        f.quadTo(20, 22, 26, 22)
+        f.closeSubpath()
+        p.drawPath(f)                                               # the blend
+        p.setBrush(QColor(60, 140, 220))
+        p.drawRect(QRectF(12, 3, 8, 19))                            # the post
     elif kind == "scaler":
         p.setPen(dark)
         p.setBrush(QColor(225, 120, 40))
@@ -369,6 +387,30 @@ def make_icon(kind):
         for a in (25, 57, 90, 123, 155):                            # rivets along it
             r = _m.radians(a)
             p.drawEllipse(QPointF(16 + 10.5 * _m.cos(r), 29 - 17.5 * _m.sin(r)), 2.2, 2.2)
+    elif kind == "splitter":
+        # a block cut in two, the halves pulled apart, the cut line between them
+        p.setPen(dark)
+        p.setBrush(QColor(225, 120, 40))
+        p.drawRect(QRectF(3, 9, 10, 18))
+        p.setBrush(QColor(60, 140, 220))
+        p.drawRect(QRectF(19, 5, 10, 18))
+        p.setPen(QPen(QColor(200, 30, 30), 1.6, Qt.DashLine))
+        p.drawLine(QPointF(16, 2), QPointF(16, 30))
+    elif kind == "piecesin":
+        # coloured pieces dropping into a tray, an arrow bringing them in
+        p.setPen(dark)
+        p.setBrush(QColor(200, 205, 212))
+        p.drawRect(QRectF(3, 22, 26, 7))                            # the tray
+        p.setBrush(QColor(230, 90, 70))
+        p.drawRect(QRectF(5, 15, 8, 7))
+        p.setBrush(QColor(60, 140, 220))
+        p.drawRect(QRectF(13, 15, 7, 7))
+        p.setBrush(QColor(90, 180, 80))
+        p.drawRect(QRectF(20, 12, 7, 10))
+        p.setPen(QPen(QColor(235, 120, 30), 2.2))
+        p.drawLine(QPointF(16, 2), QPointF(16, 10))                 # the arrow coming in
+        p.setBrush(QColor(235, 120, 30))
+        p.drawPolygon(QPolygonF([QPointF(11.5, 8), QPointF(20.5, 8), QPointF(16, 13)]))
     elif kind == "layers":
         p.setPen(dark)
         for i, col in enumerate(((168, 80, 56), (84, 90, 102), (46, 92, 68))):   # brick, slate, ironwork
@@ -497,16 +539,20 @@ def run_plugin(win, name, shortcut):
 
 
 def refresh_buttons(tb):
-    """Greys out the buttons of plugins that aren't installed."""
+    """Hides the buttons of plugins that aren't installed or are switched off (.off), so
+    only working buttons show. They come back by themselves when the plugin is switched on."""
     win = tb.parent()
+    hidden = set(load_settings().get('hidden') or [])
     for act in tb.actions():
         info = getattr(act, '_plugin', None)
         if not info:
             continue
         name, shortcut = info
         found = find_tool_class(name) is not None or find_plugin_action(win, name, shortcut) is not None
-        act.setEnabled(True)            # stays clickable, so it can say what's missing
-        act.setToolTip("%s  (%s)%s" % (name, shortcut, "" if found else "\nNot installed"))
+        act._missing = not found
+        act.setEnabled(True)
+        act.setToolTip("%s  (%s)" % (name, shortcut))
+        act.setVisible(found and name not in hidden)
 
 
 # ---------------------------------------------------------------------------
@@ -538,8 +584,8 @@ GROUPS = [
     ("Doors & windows", ["3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
-    ("Shaping tools", ["3D Loft", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
-    ("Scale & print", ["3D Scale Studio", "3D Print Scaler"]),
+    ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
+    ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In"]),
     ("Notes & set-up", ["3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
 MAIN_ID = "main"
@@ -1062,7 +1108,7 @@ def choose_buttons(tb, where=None):
     menu.addSection("Buttons on this toolbar")
     for act in tb.actions():
         info = getattr(act, '_plugin', None)
-        if not info:
+        if not info or getattr(act, '_missing', False):
             continue
         item = menu.addAction(act.icon(), info[0])
         item.setCheckable(True)
@@ -1092,7 +1138,7 @@ def choose_buttons(tb, where=None):
         for _b, t in all_toolbars(tb.parent()):
             for act in t.actions():
                 if getattr(act, '_plugin', None):
-                    act.setVisible(True)
+                    act.setVisible(not getattr(act, '_missing', False))
 
     def set_labels(on):
         for _b, t in all_toolbars(tb.parent()):
@@ -1134,10 +1180,10 @@ def _install_when_ready(tries=0):
 # ---------------------------------------------------------------------------
 EDDY_MENU_TITLE = "3D Plugins by Eddy"
 EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil_waste_pipes",
-              "loft", "print_scaler", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
+              "loft", "print_scaler", "part_splitter", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
-              "plugins_toolbar")
+              "pieces_in", "blend", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 

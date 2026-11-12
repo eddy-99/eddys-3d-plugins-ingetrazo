@@ -1,1 +1,8 @@
+# Kept out of GitHub for now: plugins that are switched off, and working files
+plugins/3D_Eddys/ed3d_part_splitter.py
+plugins/3D_Eddys/ed3d_pieces_in.py
+plugins/3D_Eddys/*.off
+catalog/entries/part_splitter.toml
+catalog/screenshots/part_splitter.webp
 Claude outputs/
+pictures/Screenshot 2026-11-11 204848.png
