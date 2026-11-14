@@ -18,6 +18,6 @@ en = "3D Subframe"
 pt = "Subestrutura 3D"
 
 [summary]
-es = "Pone un armazón de refuerzo detrás de las paredes y bajo el tejado, a cualquier escala: soleras, postes, dinteles y alféizares en los huecos, montantes, riostras, cabios y correas en tejados de cualquier forma. O dibuja líneas y las barras las siguen. Cada barra es una pieza aparte, lista para tumbar en la cama de impresión."
-en = "Puts a strengthening frame behind the walls and under the roof, at any scale: plates, posts, lintels and sills round openings, studs, braces, rafters and purlins on roofs of any shape. Or draw lines and bars follow them. Every bar is its own piece, ready to lay flat on the print bed."
-pt = "Coloca uma estrutura de reforço atrás das paredes e sob o telhado, a qualquer escala: soleiras, postes, padieiras e peitoris nas aberturas, montantes, travamentos, caibros e madres em telhados de qualquer forma. Ou desenhe linhas e as barras seguem-nas. Cada barra é uma peça à parte, pronta a deitar na mesa de impressão."
+es = "Pone un armazón de refuerzo tras las paredes y bajo el tejado, a cualquier escala: soleras, postes, dinteles, montantes, riostras, cabios y correas, o barras que siguen tus líneas. Cada barra es una pieza que se imprime tumbada."
+en = "Puts a strengthening frame behind walls and under roofs of any shape, at any scale: plates, posts, lintels, studs, braces, rafters and purlins, or bars that follow lines you draw. Every bar is its own piece that prints flat."
+pt = "Coloca uma estrutura de reforço atrás das paredes e sob o telhado, a qualquer escala: soleiras, postes, padieiras, montantes, travamentos, caibros e madres, ou barras que seguem as suas linhas. Cada barra imprime-se deitada."
