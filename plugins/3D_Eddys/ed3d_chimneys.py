@@ -13,7 +13,7 @@
 """
 3D Chimneys - brick chimney stacks, industrial chimneys and chimney pots for IngeTrazo
 House stack: select a roof face (or the two faces either side of the ridge) and click
-Build. The stack stands on the roof, every brick and its core cut exactly to the slope, in
+Build - or click the whole building and the ridge is found for you. The stack stands on the roof, every brick and its core cut exactly to the slope, in
 bonded brickwork with oversailing courses at the top, a sloping mortar flaunching and a
 row of chimney pots.
 Industrial chimney: a tall mill, factory or engine-house chimney - square, octagonal or
@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Chimneys"
-VERSION = "1"
+VERSION = "3"
 
 
 def _ed3d_organise(scene, group):
@@ -1115,6 +1115,7 @@ def house_stack(v, roof, frame):
     across = (-along[1], along[0])
     if npots:
         k_ = 0
+        each = []
         for r in range(rows):
             n_r = min(per_row, npots - r * per_row)
             off = (r - (rows - 1) / 2.0) * 2 * row_off
@@ -1123,10 +1124,13 @@ def house_stack(v, roof, frame):
                 u = -sp * n_r / 2.0 + sp * (k + 0.5)
                 px = cx + along[0] * u + across[0] * off
                 py = cy + along[1] * u + across[1] * off
-                pots += pot_solids(v['pot_style'], px, py, z_top + max(0.0, fl_h * 0.6),
-                                   v['pot_h'] * S, pot_d, v['pot_wall'] * S)
+                one = pot_solids(v['pot_style'], px, py, z_top + max(0.0, fl_h * 0.6),
+                                 v['pot_h'] * S, pot_d, v['pot_wall'] * S)
+                pots += one
+                each.append(one)
                 k_ += 1
-        parts['Pots'] = pots
+        for i_, one in enumerate(each):          # each pot a piece of its own, to print upright
+            parts['Pot %d' % (i_ + 1)] = one
     rep = {'bricks': len(bricks), 'courses': n_courses, 'above': (z_top - z_high) / S,
            'oversail': n_over, 'width': W / S, 'depth': Dp / S, 'widened': widened, 'rows': rows}
     return parts, rep
@@ -1572,6 +1576,233 @@ PRESETS = [
 PRESETS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Chimneys")
 
 
+# ---------------------------------------------------------------------------
+# Finding the roof in a picked group (the building)
+# ---------------------------------------------------------------------------
+# never used as the roof when a whole group is picked: chimneys and the like made before,
+# tiles and sheets, and Subframe's bars
+GROUP_SKIP = ("Chimney", "Industrial chimney", "Roof vent", "Doig", "Weather vane", "Roof - ", "Sheeting - ",
+              "Subframe", "Roof truss", "Glazing frames", "Fascia and barge boards")
+
+
+class WorldFace:
+    """A face from inside a group, its corners already where they really are (moved groups
+    and copies come through their placement)."""
+    def __init__(self, pts, holes):
+        self.vertices = pts
+        self.holes = holes
+
+
+def _is_face(e):
+    return hasattr(e, 'loop') or 'face' in type(e).__name__.lower()
+
+
+def selected_groups(scene):
+    return [e for e in _items(getattr(scene, 'selection', None))
+            if getattr(e, 'mesh', None) is not None and not _is_face(e)]
+
+
+def _kids(g):
+    return [c for c in _items(getattr(g, 'children', None)) + _items(getattr(g, 'groups', None))
+            if not _is_face(c)]
+
+
+def _placements(top):
+    """(group, world matrix or None) for a group and every group inside it - the same way
+    Scale Studio finds where each piece really is."""
+    try:
+        from core.group import iter_placements
+        return list(iter_placements(top))
+    except Exception:
+        pass
+    out = []
+
+    def walk(g, base, depth):
+        m = getattr(g, 'xform', None)
+        if base is not None:
+            m = base if m is None else base * m
+        out.append((g, m))
+        if depth < 12:
+            for c in _kids(g):
+                walk(c, m, depth + 1)
+    walk(top, None, 0)
+    return out
+
+
+def faces_in_groups(groups):
+    """Every face inside the picked groups, in world space: ([WorldFace], [names left out])."""
+    out, skipped = [], []
+    for top in groups:
+        place = {}
+        for g, m in _placements(top):
+            place.setdefault(id(g), m)
+
+        def wpos(q, m):
+            p = _pos(q)
+            if p is None or m is None:
+                return p
+            try:
+                r = m.map(QVector3D(*p))
+                return (float(r.x()), float(r.y()), float(r.z()))
+            except Exception:
+                return p
+
+        def walk(g, lvl):
+            nm = str(getattr(g, 'name', '') or '')
+            if nm.startswith(GROUP_SKIP):
+                skipped.append(nm)
+                return
+            m = place.get(id(g))
+            for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                pts = [p for p in (wpos(q, m) for q in _items(getattr(f, 'vertices', None))) if p is not None]
+                if len(pts) < 3:
+                    continue
+                hs = []
+                for h in _items(getattr(f, 'holes', None)):
+                    hp = [p for p in (wpos(q, m) for q in _items(h)) if p is not None]
+                    if len(hp) >= 3:
+                        hs.append(hp)
+                out.append(WorldFace(pts, hs))
+            if lvl < 12:
+                for c in _kids(g):
+                    walk(c, lvl + 1)
+        walk(top, 0)
+    return out, skipped
+
+
+def _area3(pts):
+    nx = ny = nz = 0.0
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    return 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
+
+
+def _join(A, B, tol):
+    """Two outlines (both counter-clockwise) sharing an edge, joined into one - or None."""
+    na, nb = len(A), len(B)
+    same = lambda p, q: abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+    for i in range(na):
+        P, Q = A[i], A[(i + 1) % na]
+        for k in range(nb):
+            if same(B[k], Q) and same(B[(k + 1) % nb], P):
+                pa = [A[(i + 1 + j) % na] for j in range(na)]          # Q ... P
+                pb = [B[(k + 1 + j) % nb] for j in range(nb)]          # P ... Q
+                return clean(pa + pb[1:-1])
+    return None
+
+
+def merge_coplanar(slopes, tol=1.0):
+    """A roof slope drawn as several faces (say two triangles) is joined back into one, so its
+    courses run straight across it. slopes: [[tw, outline, holes, up]] - changed in place."""
+    merged = True
+    while merged:
+        merged = False
+        for i, a in enumerate(slopes):
+            O = a[0]((0.0, 0.0, 0.0))
+            Uu = v_norm(v_sub(a[0]((1.0, 0.0, 0.0)), O))
+            Vu = v_norm(v_sub(a[0]((0.0, 1.0, 0.0)), O))
+            Na = v_norm(v_sub(a[0]((0.0, 0.0, 1.0)), O))
+
+            def to_a(P, O=O, Uu=Uu, Vu=Vu):
+                d = v_sub(P, O)
+                return (v_dot(d, Uu) / SCALE, v_dot(d, Vu) / SCALE)
+            for b in slopes[i + 1:]:
+                Ob = b[0]((0.0, 0.0, 0.0))
+                Nb = v_norm(v_sub(b[0]((0.0, 0.0, 1.0)), Ob))
+                if v_dot(Na, Nb) < 0.9999 or abs(v_dot(v_sub(Ob, O), Na)) / SCALE > tol:
+                    continue
+                bo = clean([to_a(b[0]((x, y, 0.0))) for x, y in b[1]])
+                if not bo:
+                    continue
+                u = _join(a[1], bo, tol)
+                if u is None:
+                    continue
+                a[1] = u
+                a[2] = list(a[2]) + [h for h in (clean([to_a(b[0]((x, y, 0.0))) for x, y in hl])
+                                                 for hl in b[2]) if h]
+                slopes.remove(b)
+                merged = True
+                break
+            if merged:
+                break
+    return slopes
+
+
+def ridge_faces(faces):
+    """The roof faces of a picked building to stand a stack on: the two slopes either side of
+    its ridge (the pair meeting along their top edge, the biggest pair if there are several),
+    or the biggest slope when there's no ridge (a lean-to). [] if there's no roof at all."""
+    roofs = []
+    for f in faces:
+        pts = f.vertices
+        n = _newell(pts)
+        if not (0.05 < n[2] < 0.995):
+            continue
+        area = _area3(pts) / (SCALE * SCALE)
+        longest = max(v_len(v_sub(pts[(i + 1) % len(pts)], pts[i])) for i in range(len(pts))) / SCALE
+        if area < 1.0 or longest < 1e-6 or area / longest < 300.0:
+            continue                       # the thin edges of a thick roof or roof panel
+        roofs.append((area, pts, n))
+    if not roofs:
+        return []
+    key = lambda q: (round(q[0], 5), round(q[1], 5), round(q[2], 5))
+    best = None
+    for i in range(len(roofs)):
+        a_, pa, na = roofs[i]
+        ka = {key(q) for q in pa}
+        ta = max(q[2] for q in pa)
+        for j in range(i + 1, len(roofs)):
+            b_, pb, nb = roofs[j]
+            shared = [q for q in pb if key(q) in ka]
+            if len(shared) < 2 or na[0] * nb[0] + na[1] * nb[1] >= 0:
+                continue                   # not meeting, or both sloping the same way
+            tb = max(q[2] for q in pb)
+            if abs(ta - tb) > 1e-4 or any(abs(q[2] - ta) > 1e-4 for q in shared):
+                continue                   # they meet, but not along the top (a valley)
+            if best is None or a_ + b_ > best[0]:
+                best = (a_ + b_, [pa, pb])
+    if best is not None:
+        return best[1]
+    return [max(roofs, key=lambda r: r[0])[1]]
+
+
+# what you last used and the order of your presets - kept between sessions
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_chimneys.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception as e:
+        print("%s: could not keep your settings: %s" % (PLUGIN_NAME, e))
+
+
+def remember_last(values):
+    keep = {k: val for k, val in values.items()
+            if not k.startswith('_') and isinstance(val, (bool, int, float, str, type(None)))}
+    _ui_settings_save(last=keep)
+
+
+def last_used():
+    d = _ui_settings().get('last')
+    return d if isinstance(d, dict) else {}
+
+
 def load_presets():
     out = list(PRESETS)
     try:
@@ -1619,48 +1850,48 @@ def _form(page):
 
 # (tab, key, label, low, high, decimals, suffix, tip)
 FIELDS = [
-    ("Stack", 'width', "Width (along ridge)", 200.0, 10000.0, 0, " mm",
+    ("Stack", 'width', "A   Width (along ridge)", 200.0, 10000.0, 0, " mm",
      "How long the stack is, along the ridge (or along the roof). 900 = 4 bricks."),
-    ("Stack", 'depth', "Depth (front to back)", 200.0, 5000.0, 0, " mm",
+    ("Stack", 'depth', "B   Depth (front to back)", 200.0, 5000.0, 0, " mm",
      "How deep the stack is, front to back. 450 = 2 bricks."),
-    ("Stack", 'height', "Height above roof", 100.0, 10000.0, 0, " mm",
+    ("Stack", 'height', "C   Height above roof", 100.0, 10000.0, 0, " mm",
      "How far the brickwork stands above the highest point of the roof under it (to the top course)."),
-    ("Stack", 'along', "Along the roof", 0.0, 100.0, 0, " %",
+    ("Stack", 'along', "D   Along the roof", 0.0, 100.0, 0, " %",
      "Where it stands along the ridge (two faces) or along the face: 0 = one end, 50 = the middle, "
      "100 = the other end."),
-    ("Stack", 'up', "Up the slope", 0.0, 100.0, 0, " %",
+    ("Stack", 'up', "E   Up the slope", 0.0, 100.0, 0, " %",
      "One roof face only: how far up the slope, 0 = the eaves, 100 = against the top edge."),
     ("Stack", 'oversail', "Oversailing courses", 0, 6, None, "",
      "Courses at the top that stand out, each one further than the one below (the corbelled top)."),
-    ("Stack", 'oversail_out', "Each stands out", 0.0, 200.0, 0, " mm",
+    ("Stack", 'oversail_out', "F   Each stands out", 0.0, 200.0, 0, " mm",
      "How much further each oversailing course stands out. A quarter brick is about 56 mm."),
-    ("Stack", 'flaunch', "Flaunching height", 0.0, 400.0, 0, " mm",
+    ("Stack", 'flaunch', "G   Flaunching height", 0.0, 400.0, 0, " mm",
      "The sloping mortar cap on top, round the pots. 0 = none."),
     ("Pots", 'pots', "Pots", 0, 12, None, "", "How many chimney pots, in a row along the stack. 0 = none."),
     ("Pots", 'pot_rows', "Pot rows", 1, 2, None, "",
      "One row of pots along the stack, or two rows side by side (a deeper stack, for lots of pots)."),
-    ("Pots", 'pot_h', "Pot height", 100.0, 3000.0, 0, " mm", "How tall each pot is."),
-    ("Pots", 'pot_dia', "Pot width", 80.0, 1000.0, 0, " mm", "Across the foot of each pot."),
-    ("Pots", 'pot_wall', "Pot wall", 5.0, 200.0, 0, " mm",
+    ("Pots", 'pot_h', "H   Pot height", 100.0, 3000.0, 0, " mm", "How tall each pot is."),
+    ("Pots", 'pot_dia', "J   Pot width", 80.0, 1000.0, 0, " mm", "Across the foot of each pot."),
+    ("Pots", 'pot_wall', "K   Pot wall", 5.0, 200.0, 0, " mm",
      "How thick the pot's wall is at the top. For 1:80 printing keep it at least 32 mm (0.4 mm)."),
-    ("Industrial", 'ind_bottom', "Size at the bottom", 500.0, 20000.0, 0, " mm",
+    ("Industrial", 'ind_bottom', "Q   Size at the bottom", 500.0, 20000.0, 0, " mm",
      "Across the bottom of the shaft (across the flats of a square or octagon), bricks included."),
-    ("Industrial", 'ind_top', "Size at the top", 300.0, 20000.0, 0, " mm",
+    ("Industrial", 'ind_top', "R   Size at the top", 300.0, 20000.0, 0, " mm",
      "Across the top of the shaft. Smaller than the bottom for a taper."),
-    ("Industrial", 'ind_height', "Height", 2000.0, 200000.0, 0, " mm", "How tall the chimney is."),
-    ("Industrial", 'plinth_h', "Plinth height", 0.0, 20000.0, 0, " mm",
+    ("Industrial", 'ind_height', "S   Height", 2000.0, 200000.0, 0, " mm", "How tall the chimney is."),
+    ("Industrial", 'plinth_h', "T   Plinth height", 0.0, 20000.0, 0, " mm",
      "A thicker base at the bottom. 0 = none."),
-    ("Industrial", 'plinth_out', "Plinth stands out", 0.0, 500.0, 0, " mm", "How far the plinth stands out."),
-    ("Industrial", 'band_every', "Bands every", 0.0, 50000.0, 0, " mm",
+    ("Industrial", 'plinth_out', "U   Plinth stands out", 0.0, 500.0, 0, " mm", "How far the plinth stands out."),
+    ("Industrial", 'band_every', "V   Bands every", 0.0, 50000.0, 0, " mm",
      "A projecting band of brick every so far up the shaft. 0 = none."),
     ("Industrial", 'band_courses', "Band courses", 1, 6, None, "", "How many courses deep each band is."),
-    ("Industrial", 'band_out', "Bands stand out", 0.0, 300.0, 0, " mm", "How far the bands stand out."),
+    ("Industrial", 'band_out', "W   Bands stand out", 0.0, 300.0, 0, " mm", "How far the bands stand out."),
     ("Industrial", 'cap_courses', "Cap courses", 0, 12, None, "",
      "Courses at the top that step out, each further than the one below (the corbelled cap)."),
-    ("Industrial", 'cap_out', "Each steps out", 0.0, 200.0, 0, " mm", "How much each cap course steps out."),
-    ("Industrial", 'coping_h', "Coping height", 0.0, 1000.0, 0, " mm",
+    ("Industrial", 'cap_out', "X   Each steps out", 0.0, 200.0, 0, " mm", "How much each cap course steps out."),
+    ("Industrial", 'coping_h', "Y   Coping height", 0.0, 1000.0, 0, " mm",
      "The stone or iron coping ring on top. 0 = none."),
-    ("Industrial", 'coping_over', "Coping overhang", 0.0, 500.0, 0, " mm", "How far the coping overhangs."),
+    ("Industrial", 'coping_over', "Z   Coping overhang", 0.0, 500.0, 0, " mm", "How far the coping overhangs."),
     ("Vent", 'vent_w', "Ventilator width", 300.0, 10000.0, 0, " mm",
      "Across the louvred box (it's square), outside the corner posts."),
     ("Vent", 'vent_h', "Louvred height", 200.0, 10000.0, 0, " mm", "How tall the louvred part is."),
@@ -1698,11 +1929,11 @@ FIELDS = [
     ("Vane", 'vane_rod', "Rod thickness", 10.0, 300.0, 0, " mm", "Across the upright rod."),
     ("Vane", 'vane_arms', "Arms across", 100.0, 10000.0, 0, " mm", "End to end of the N-S (and E-W) arms."),
     ("Vane", 'vane_letter', "Letter height", 60.0, 2000.0, 0, " mm", "How tall the N, E, S and W letters are."),
-    ("Bricks", 'brick_l', "Length", 50.0, 1000.0, 1, " mm", "The length of a brick. No brick is longer."),
-    ("Bricks", 'brick_h', "Height", 20.0, 500.0, 1, " mm", "The height of a brick (one course)."),
-    ("Bricks", 'brick_d', "Depth", 20.0, 500.0, 1, " mm",
+    ("Bricks", 'brick_l', "L   Length", 50.0, 1000.0, 1, " mm", "The length of a brick. No brick is longer."),
+    ("Bricks", 'brick_h', "M   Height", 20.0, 500.0, 1, " mm", "The height of a brick (one course)."),
+    ("Bricks", 'brick_d', "N   Depth", 20.0, 500.0, 1, " mm",
      "How far the bricks stand out from the core (the core shows between them as mortar)."),
-    ("Bricks", 'joint', "Mortar joint", 1.0, 100.0, 1, " mm",
+    ("Bricks", 'joint', "P   Mortar joint", 1.0, 100.0, 1, " mm",
      "The gap between bricks. For 1:80 printing use about 16-32 mm (0.2-0.4 mm)."),
 ]
 
@@ -2076,6 +2307,211 @@ class ChimneyPreview(QWidget):
         return out, cap
 
 
+class _KeyBase(QWidget):
+    """Shared drawing helpers for the lettered key pages."""
+    H_ = 600
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, self.H_)
+
+    def begin(self):
+        from PySide6.QtGui import QPainter, QColor
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / float(self.H_))
+        p.scale(k, k)
+        return p
+
+    def poly(self, p, pts, col):
+        from PySide6.QtGui import QPen, QPolygonF
+        from PySide6.QtCore import QPointF
+        p.setPen(QPen(col.darker(160), 0.8))
+        p.setBrush(col)
+        p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+    def box(self, p, x, y, w, h, col):
+        self.poly(p, [(x, y), (x + w, y), (x + w, y + h), (x, y + h)], col)
+
+    def dim(self, p, x1, y1, x2, y2, letter, tx, ty):
+        from PySide6.QtGui import QPen, QColor
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        red = QColor(200, 40, 40)
+        p.setPen(QPen(red, 1.1))
+        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        ang = math.atan2(y2 - y1, x2 - x1)
+        for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + math.pi)):
+            for s_ in (0.45, -0.45):
+                p.drawLine(QPointF(x, y), QPointF(x + 6 * math.cos(a + s_), y + 6 * math.sin(a + s_)))
+        p.setPen(red)
+        p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+    def guide(self, p, x1, y1, x2, y2):
+        from PySide6.QtGui import QPen, QColor
+        from PySide6.QtCore import QPointF, Qt
+        p.setPen(QPen(QColor(150, 150, 150), 0.6, Qt.DashLine))
+        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+    def title(self, p, x, y, text):
+        from PySide6.QtGui import QFont, QColor
+        from PySide6.QtCore import QRectF, Qt
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+        p.setPen(QColor(60, 60, 60))
+        p.drawText(QRectF(x, y, 350, 18), Qt.AlignLeft, text)
+
+    def notes(self, p, notes, y0, split):
+        from PySide6.QtGui import QFont, QColor
+        from PySide6.QtCore import QRectF, Qt
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        for i, t in enumerate(notes):
+            p.drawText(QRectF(10 if i < split else 185, y0 + (i % split) * 14, 175, 14),
+                       Qt.AlignLeft | Qt.AlignVCenter, t)
+
+
+class KeyStack(_KeyBase):
+    """The first key: the house stack, its pots and the bricks (A to P)."""
+    H_ = 730
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QColor
+        p = self.begin()
+        brick, mortar = QColor(168, 80, 56), QColor(200, 194, 178)
+        roofc, potc = QColor(110, 112, 120), QColor(184, 108, 72)
+        # ---- the stack from the side: on a roof slope, oversailing top, flaunching, pots
+        self.title(p, 10, 4, "The stack from the side")
+        sx0, sx1 = 110.0, 230.0                 # the stack's sides
+        yr = lambda x: 300.0 - (x - 40.0) * 0.32     # the roof line, rising to the right
+        self.poly(p, [(30, yr(30)), (340, yr(340)), (340, yr(340) + 14), (30, yr(30) + 14)], roofc)
+        ztop = 120.0                            # top of the brickwork
+        self.poly(p, [(sx0, ztop), (sx1, ztop), (sx1, yr(sx1)), (sx0, yr(sx0))], brick)
+        for i in range(1, 9):                   # courses
+            y = ztop + i * 16
+            self.guide(p, sx0, y, sx1, y)
+        ov = 7.0
+        for i in range(2):                      # two oversailing courses at the top
+            o = ov * (i + 1)
+            self.box(p, sx0 - o, ztop - 16 * (i + 1), sx1 - sx0 + 2 * o, 16, brick)
+        tb = ztop - 32
+        self.poly(p, [(sx0 - 2 * ov, tb), (sx1 + 2 * ov, tb), (sx1 - 20, tb - 14), (sx0 + 20, tb - 14)], mortar)
+        for px in (140.0, 185.0):               # two pots
+            self.poly(p, [(px, tb - 8), (px + 24, tb - 8), (px + 21, tb - 58), (px + 3, tb - 58)], potc)
+        # A: width; C: top of the brickwork above the highest point of the roof under it
+        self.dim(p, sx0, yr(sx0) + 26, sx1, yr(sx0) + 26, "A", (sx0 + sx1) / 2, yr(sx0) + 38)
+        self.guide(p, sx1, yr(sx1), sx1 + 60, yr(sx1))
+        self.guide(p, sx1 + 2 * ov, ztop, sx1 + 60, ztop)
+        self.dim(p, sx1 + 52, yr(sx1), sx1 + 52, ztop, "C", sx1 + 64, (yr(sx1) + ztop) / 2)
+        self.dim(p, sx0 - ov, ztop - 22, sx0 - 2 * ov, ztop - 22, "F", sx0 - 2 * ov - 12, ztop - 28)
+        self.dim(p, sx1 + 2 * ov + 6, tb, sx1 + 2 * ov + 6, tb - 14, "G", sx1 + 2 * ov + 18, tb - 7)
+        # pots: H height, J width (at the foot), K wall (at the top)
+        self.dim(p, 130, tb - 8, 130, tb - 58, "H", 120, tb - 33)
+        self.dim(p, 185, tb + 4, 209, tb + 4, "J", 197, tb + 14)
+        self.dim(p, 188, tb - 66, 194, tb - 66, "K", 202, tb - 74)
+
+        # ---- from above: where it stands
+        self.title(p, 10, 335, "From above - where it stands")
+        rx0, rx1, ry0, ry1 = 30.0, 330.0, 360.0, 480.0
+        ymid = (ry0 + ry1) / 2.0
+        self.box(p, rx0, ry0, rx1 - rx0, ymid - ry0, QColor(130, 132, 140))
+        self.box(p, rx0, ymid, rx1 - rx0, ry1 - ymid, QColor(118, 120, 128))
+        self.guide(p, rx0, ymid, rx1, ymid)
+        cx = rx0 + 0.35 * (rx1 - rx0)
+        self.box(p, cx - 30, ymid - 15, 60, 30, brick)
+        self.dim(p, cx - 30, ymid - 24, cx + 30, ymid - 24, "A", cx, ymid - 36)
+        self.dim(p, cx + 40, ymid - 15, cx + 40, ymid + 15, "B", cx + 52, ymid)
+        self.dim(p, rx0, ry1 + 10, cx, ry1 + 10, "D", (rx0 + cx) / 2, ry1 + 22)
+        from PySide6.QtGui import QFont
+        from PySide6.QtCore import QRectF, Qt
+        p.setFont(QFont())
+        p.setPen(QColor(235, 235, 235))
+        p.drawText(QRectF(rx1 - 120, ymid - 14, 116, 12), Qt.AlignRight, "ridge")
+        # E: one face only - up the slope from the eaves
+        self.dim(p, rx1 - 30, ry1, rx1 - 30, ymid + 4, "E", rx1 - 18, (ymid + ry1) / 2 + 6)
+
+        # ---- the bricks
+        self.title(p, 10, 512, "Bricks, and one seen end on")
+        bx, by = 30.0, 555.0
+        self.box(p, bx, by, 200, 40, mortar)
+        for r in range(2):
+            off = 25.0 if r else 0.0
+            x = bx - off
+            while x < bx + 200:
+                xa, xb = max(bx, x + 2), min(bx + 200, x + 48)
+                if xb > xa:
+                    self.box(p, xa, by + 2 + r * 20, xb - xa, 16, brick)
+                x += 50
+        self.dim(p, bx + 2, by - 8, bx + 48, by - 8, "L", bx + 25, by - 18)
+        self.dim(p, bx + 210, by + 2, bx + 210, by + 18, "M", bx + 222, by + 10)
+        self.dim(p, bx + 48, by + 46, bx + 52, by + 46, "P", bx + 50, by + 58)
+        self.box(p, 280, by, 16, 40, mortar)            # the core, end on
+        self.box(p, 296, by + 2, 14, 16, brick)
+        self.box(p, 296, by + 22, 14, 16, brick)
+        self.dim(p, 296, by + 46, 310, by + 46, "N", 303, by + 58)
+        self.notes(p, ["A  width (along the ridge)", "B  depth (front to back)", "C  height above the roof",
+                       "D  along the roof (%)", "E  up the slope (%, one face)", "F  each oversail stands out",
+                       "G  flaunching height", "H  pot height", "J  pot width", "K  pot wall",
+                       "L  brick length", "M  brick height", "N  brick depth", "P  mortar joint"], 625, 7)
+        p.end()
+
+
+class KeyIndustrial(_KeyBase):
+    """The second key: the industrial chimney (Q to Z)."""
+    H_ = 590
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QColor
+        p = self.begin()
+        brick, stone = QColor(168, 80, 56), QColor(204, 196, 178)
+        self.title(p, 10, 4, "An industrial chimney")
+        cx, yb, yt = 170.0, 470.0, 100.0         # middle, foot, top of the shaft
+        wb, wt = 120.0, 70.0                     # widths at the bottom and the top
+        w = lambda y: wt + (wb - wt) * (y - yt) / (yb - yt)
+        ph, po = 50.0, 10.0                      # plinth
+        yp = yb - ph
+        self.box(p, cx - wb / 2 - po, yp, wb + 2 * po, ph, brick)
+        self.poly(p, [(cx - w(yp) / 2, yp), (cx + w(yp) / 2, yp), (cx + wt / 2, yt), (cx - wt / 2, yt)], brick)
+        bo = 6.0
+        for yband in (360.0, 250.0):             # bands
+            ww = w(yband)
+            self.box(p, cx - ww / 2 - bo, yband - 10, ww + 2 * bo, 10, brick.lighter(110))
+        co = 6.0
+        for i in range(3):                       # the corbelled cap, each course out further
+            o = co * (i + 1)
+            self.box(p, cx - wt / 2 - o, yt - 10 * (i + 1), wt + 2 * o, 10, brick)
+        yc = yt - 30
+        ch, cov = 14.0, 8.0
+        self.box(p, cx - wt / 2 - 3 * co - cov, yc - ch, wt + 6 * co + 2 * cov, ch, stone)
+        # Q bottom, R top, S height
+        self.dim(p, cx - w(yp) / 2, yp - 8, cx + w(yp) / 2, yp - 8, "Q", cx, yp - 20)
+        self.dim(p, cx - wt / 2, yt + 12, cx + wt / 2, yt + 12, "R", cx, yt + 24)
+        self.guide(p, cx + wb / 2 + po, yb, 320, yb)
+        self.guide(p, cx + 40, yc - ch, 320, yc - ch)
+        self.dim(p, 312, yb, 312, yc - ch, "S", 324, (yb + yc) / 2)
+        # T plinth height, U plinth out
+        self.dim(p, cx - wb / 2 - po - 12, yb, cx - wb / 2 - po - 12, yp, "T", cx - wb / 2 - po - 24, yb - ph / 2)
+        self.dim(p, cx + w(yp) / 2, yp + 12, cx + w(yp) / 2 + po, yp + 12, "U", cx + w(yp) / 2 + po + 12, yp + 20)
+        # V bands every, W bands stand out
+        self.dim(p, cx - 70, 360, cx - 70, 250, "V", cx - 82, 305)
+        self.dim(p, cx + w(250) / 2, 235, cx + w(250) / 2 + bo, 235, "W", cx + w(250) / 2 + bo + 12, 228)
+        # X cap steps out, Y coping height, Z coping overhang
+        self.dim(p, cx + wt / 2 + 2 * co, yt - 34, cx + wt / 2 + 3 * co, yt - 34, "X",
+                 cx + wt / 2 + 3 * co + 22, yt - 26)
+        self.dim(p, cx - wt / 2 - 3 * co - cov - 10, yc, cx - wt / 2 - 3 * co - cov - 10, yc - ch, "Y",
+                 cx - wt / 2 - 3 * co - cov - 22, yc - ch / 2)
+        self.dim(p, cx - wt / 2 - 3 * co - cov, yc - ch - 10, cx - wt / 2 - 3 * co, yc - ch - 10, "Z",
+                 cx - wt / 2 - 3 * co - cov / 2, yc - ch - 22)
+        self.notes(p, ["Q  size at the bottom", "R  size at the top", "S  height", "T  plinth height",
+                       "U  plinth stands out", "V  bands every", "W  bands stand out", "X  each cap course steps out",
+                       "Y  coping height", "Z  coping overhang"], 505, 5)
+        p.end()
+
+
 class ChimneyDialog(QDialog):
     def __init__(self, viewport, tool, cur):
         super().__init__(viewport)
@@ -2084,10 +2520,18 @@ class ChimneyDialog(QDialog):
         self.viewport = viewport
         self.tool = tool
         lay = QVBoxLayout(self)
-        intro = QLabel("Select a roof face (or both faces at the ridge) for a stack, or a flat face for a "
-                       "chimney, pots, vent or vane, then Build. Sizes in real mm.")
-        intro.setWordWrap(True)
-        lay.addWidget(intro)
+        # how to use it: only shows when the Info button (bottom of the window) is pressed
+        self.info_box = QLabel("Select a roof face (or both faces at the ridge) for a stack - or click the "
+                               "whole building and the ridge is found for you - or a flat face for a "
+                               "chimney, pots, vent or vane, then Build. Sizes are real-world mm: Scale "
+                               "Studio takes it down to your model scale. The letters by the sizes are "
+                               "on the Key pages.")
+        self.info_box.setWordWrap(True)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
+        self.lbl_report = QLabel()
+        self.lbl_report.setWordWrap(True)
+        lay.addWidget(self.lbl_report)
         top = QFormLayout()
         self.cb_kind = QComboBox()
         for k, t in KINDS:
@@ -2099,21 +2543,23 @@ class ChimneyDialog(QDialog):
                                 "a vane on its own.")
         _narrow(self.cb_kind, 14)
         top.addRow("Make", self.cb_kind)
-        self.cb_preset = QComboBox()
-        _narrow(self.cb_preset, 14)
-        self.cb_preset.setToolTip("Ready-made chimneys. Pick one and the window is filled in; your own "
-                                  "presets are in the list too.")
-        prow = QHBoxLayout()
-        prow.addWidget(self.cb_preset, 1)
-        b_save = QPushButton("Save as...")
-        b_save.setToolTip("Saves everything in this window as your own preset.")
-        prow.addWidget(b_save)
-        top.addRow("Preset", prow)
         lay.addLayout(top)
 
         self.preview = ChimneyPreview()
         self.preview.setToolTip("A front view of what will be built. It changes as you change the settings.")
-        lay.addWidget(self.preview)
+        from PySide6.QtWidgets import QScrollArea
+        self.views = QTabWidget()
+        self.views.addTab(self.preview, "Preview")
+        for w_, t_, tip_ in ((KeyStack(), "Key (A - P)", "What each lettered size of the stack, pots and bricks is."),
+                             (KeyIndustrial(), "Key (Q - Z)", "What each lettered size of an industrial chimney is.")):
+            sa_ = QScrollArea()
+            sa_.setWidgetResizable(True)
+            sa_.setWidget(w_)
+            self.views.addTab(sa_, t_)
+            self.views.setTabToolTip(self.views.count() - 1, tip_)
+        row = QHBoxLayout()
+        lay.addLayout(row)
+        row.addWidget(self.views, 1)
         self.tabs = QTabWidget()
         pages = {}
         for title in ("Stack", "Pots", "Industrial", "Bricks", "Vent", "Kiln", "Vane"):
@@ -2127,7 +2573,7 @@ class ChimneyDialog(QDialog):
         self.tabs.setTabToolTip(4, "The roof ventilator: louvred box, cap and finial.")
         self.tabs.setTabToolTip(5, "The distillery kiln's steep swept roof the Doig ventilator stands on.")
         self.tabs.setTabToolTip(6, "The weather vane.")
-        lay.addWidget(self.tabs)
+        row.addWidget(self.tabs, 1)
         self.w = {}
         for tab, key, label, lo, hi, dec, suf, tip in FIELDS:
             if dec is None:
@@ -2198,22 +2644,57 @@ class ChimneyDialog(QDialog):
                                  "the one below, like a real one. Untick to tilt the bricks to the slope.")
         pages["Bricks"].addRow(self.cb_level)
 
-        self.lbl_report = QLabel()
-        self.lbl_report.setWordWrap(True)
-        lay.addWidget(self.lbl_report)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Preset:"))
+        self.cb_preset = QComboBox()
+        _narrow(self.cb_preset, 14)
+        self.cb_preset.setToolTip("Ready-made chimneys. Pick one and the window is filled in; your own "
+                                  "presets are in the list too.")
+        prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
+        b_save = QPushButton("Save")
+        b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
+        self.btn_preset_save = b_save
+        b_saveas = QPushButton("Save as...")
+        b_saveas.setToolTip("Saves everything in this window as a new preset, under a name you type.")
+        b_del = QPushButton("Delete")
+        b_del.setToolTip("Deletes the preset you have open (your own presets only).")
+        b_dir = QPushButton("Folder")
+        b_dir.setToolTip("Opens the folder your presets are saved in.")
+        for b_ in (b_save, b_saveas, b_del, b_dir):
+            prow.addWidget(b_)
+        lay.addLayout(prow)
         brow = QHBoxLayout()
         b_go = QPushButton("Build")
         b_go.setDefault(True)
-        b_go.setToolTip("Builds it on the selected face(s), as one group with a group for each part.")
+        b_go.setToolTip("Builds it on the selected face(s) - or, for a stack or roof vent, on the ridge of the "
+                        "building you clicked. One group, with the brickwork in a group of its own and each "
+                        "pot a separate piece for printing.")
         b_close = QPushButton("Close")
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page (Stack, Pots, Bricks...) you had open last time.")
         brow.addWidget(b_go)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setChecked(False)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
-        try:
-            self.setMaximumWidth(400)
-        except Exception:
-            pass
+        b_saveas.clicked.connect(self.save_as)
+        b_del.clicked.connect(self.delete_preset)
+        b_dir.clicked.connect(self.open_folder)
         self.set_values(cur)
         self.fill_presets()
         self.cb_kind.currentIndexChanged.connect(self.changed)
@@ -2227,15 +2708,109 @@ class ChimneyDialog(QDialog):
             self.cb_preset.activated.connect(self.preset_picked)
         except Exception:
             self.cb_preset.currentIndexChanged.connect(self.preset_picked)
-        b_save.clicked.connect(self.save_as)
+        b_save.clicked.connect(self.save_preset)
         b_go.clicked.connect(lambda: self.tool.build(self))
         b_close.clicked.connect(self.close)
         self.changed()
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                i_ = int(st.get('tab', -1))
+                if i_ >= 0 and self.tabs.isTabEnabled(i_):
+                    self.tabs.setCurrentIndex(i_)
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def _own_file(self, name):
+        """The file of one of your own presets, or None for a built-in one."""
+        if not name or name in dict(PRESETS):
+            return None
+        fn = os.path.join(PRESETS_DIR, name + ".json")
+        return fn if os.path.exists(fn) else None
+
+    def save_preset(self, *_):
+        """Save: updates the preset you have open, with no typing. A built-in one (or none
+        picked) asks for a name instead."""
+        name = self.cb_preset.currentData()
+        if self._own_file(name):
+            save_preset(name, self.values())
+            self._presets = dict(load_presets())
+            try:
+                from PySide6.QtCore import QTimer
+                self.btn_preset_save.setText("Saved")
+                QTimer.singleShot(1500, lambda: self.btn_preset_save.setText("Save"))
+            except Exception:
+                pass
+        else:
+            self.save_as()
+
+    def delete_preset(self, *_):
+        name = self.cb_preset.currentData()
+        fn = self._own_file(name)
+        if not fn:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick one of your own presets to delete "
+                                    "(built-in presets can't be deleted).")
+            return
+        if QMessageBox.question(self, PLUGIN_NAME, "Delete preset '%s'?" % name) != QMessageBox.Yes:
+            return
+        try:
+            os.remove(fn)
+        except Exception as e:
+            QMessageBox.warning(self, PLUGIN_NAME, "Could not delete it:\n%s" % e)
+            return
+        self.fill_presets()
+
+    def open_folder(self, *_):
+        try:
+            os.makedirs(PRESETS_DIR, exist_ok=True)
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(PRESETS_DIR))
+        except Exception as e:
+            QMessageBox.information(self, PLUGIN_NAME, "Presets folder:\n%s\n\n(%s)" % (PRESETS_DIR, e))
+
+    def preset_order(self):
+        """Every preset's name, in the order you've put them (new ones go at the bottom)."""
+        names = []
+        for name, _vals in load_presets():
+            if name not in names:
+                names.append(name)
+        order = [n for n in (_ui_settings().get('order') or []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick a preset first, then move it up or down.")
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = max(0, min(len(order) - 1, i + step))
+        if i == j:
+            return
+        order[i], order[j] = order[j], order[i]
+        _ui_settings_save(order=order)
+        self.fill_presets()
+        for k in range(self.cb_preset.count()):
+            if self.cb_preset.itemData(k) == name:
+                self.cb_preset.blockSignals(True)
+                self.cb_preset.setCurrentIndex(k)
+                self.cb_preset.blockSignals(False)
 
     def fill_presets(self):
         self.cb_preset.clear()
         self.cb_preset.addItem("(pick a preset)", None)
-        for name, vals in load_presets():
+        for name in self.preset_order():
             self.cb_preset.addItem(name, name)
         self._presets = dict(load_presets())
 
@@ -2329,6 +2904,9 @@ class VertexWrapper(QVector3D):
 # ---------------------------------------------------------------------------
 # Tool
 # ---------------------------------------------------------------------------
+BRICKWORK = ('Bricks', 'Core', 'Flaunching', 'Coping')
+
+
 class ChimneysTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+H"
@@ -2348,10 +2926,15 @@ class ChimneysTool(Tool):
                     return
             except Exception:
                 pass
-        dlg = ChimneyDialog(viewport, self, dict(DEFAULTS, **(ChimneysTool._saved or {})))
+        dlg = ChimneyDialog(viewport, self, dict(DEFAULTS, **(ChimneysTool._saved or last_used())))
         ChimneysTool._dialog = dlg
 
         def closed(*_):
+            try:
+                ChimneysTool._saved = dict(dlg.values())
+                remember_last(ChimneysTool._saved)
+            except Exception:
+                pass
             ChimneysTool._dialog = None
         dlg.finished.connect(closed)
         eddy_window(dlg, PLUGIN_NAME, EDDY_TIPS, place=True)  # eddy-window
@@ -2373,8 +2956,24 @@ class ChimneysTool(Tool):
     def build(self, dlg):
         v = dlg.values()
         ChimneysTool._saved = dict(v)
+        remember_last(v)
         polys = self._picked(dlg.viewport)
         kind = v['kind']
+        from_group = ""
+        if not polys and kind in ('house', 'vent'):
+            # a whole building clicked: stand it on its ridge
+            scene = getattr(dlg.viewport, 'scene', None)
+            groups = selected_groups(scene) if scene is not None else []
+            if groups:
+                wf, _skipped = faces_in_groups(groups)
+                polys = ridge_faces(wf)
+                if not polys:
+                    QMessageBox.information(dlg, PLUGIN_NAME, "No sloping roof found in the group you picked.")
+                    return
+                from_group = (" Stood on the ridge of '%s'." % (getattr(groups[0], 'name', '') or "the building")
+                              if len(polys) == 2 else
+                              " No ridge in '%s', so it's on its biggest roof slope." % (
+                                  getattr(groups[0], 'name', '') or "the building"))
         try:
             if kind == 'house':
                 if not polys or len(polys) > 2:
@@ -2458,7 +3057,7 @@ class ChimneysTool(Tool):
         nf = self.add_to_scene(dlg.viewport, name, parts)
         if nf is None:
             return
-        msg += " %d faces." % nf
+        msg += from_group + " %d faces." % nf
         if self._errors[0]:
             msg += "\n%d faces could not be made: %s" % self._errors
         dlg.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if self._errors[0] else "#2e7d32"))
@@ -2512,9 +3111,29 @@ class ChimneysTool(Tool):
             g.component = False
             return g
 
+        def holder(Group, nm, kids):
+            try:
+                h = Group(name=nm)
+                if hasattr(h, 'adopt'):
+                    h.adopt(kids)
+                else:
+                    h.children = kids
+                h.component = False
+                return h
+            except Exception:
+                return None
+
         def mutate(scene):
             from core.group import Group
             kids = [make_group(Group, mesh_of(sol), nm) for nm, sol in parts.items() if sol]
+            # the bricks, the core they sit on and the flaunching (or coping) together in a group
+            # of their own, so 'Groups 1 level in' prints the brickwork as one piece and each pot
+            # on its own; 'smallest pieces' still has every part apart
+            body = [g for g in kids if getattr(g, 'name', '') in BRICKWORK]
+            if len(body) > 1 and len(body) < len(kids):
+                h = holder(Group, "Brickwork", body)
+                if h is not None:
+                    kids = [h] + [g for g in kids if g not in body]
             if stats['faces'] == 0:
                 raise RuntimeError("No faces could be made (%s)." % stats['err'])
             top = None

@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPu
                                QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "1"
+VERSION = "2"
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -63,6 +63,7 @@ DEFAULT_LAYERS = {
 # (material, colour 0-255, opacity, words in a part's name that pick it, only for these plugins)
 # The first one whose word is in the part's name wins, so the narrow ones come first.
 DEFAULT_PALETTE = [
+    ("Fascia & barge boards", (240, 230, 200), 1.0, "fascia, barge, soffit", ""),
     ("Glass", (176, 196, 206), 0.35, "glass, pane, light", ""),
     ("Ironmongery", (40, 40, 42), 1.0, "handle, hinge, knob, latch, letter, knocker, vane, finial", ""),
     ("Chimney pot", (184, 108, 72), 1.0, "pot", "3D Chimneys"),
@@ -79,6 +80,9 @@ DEFAULT_PALETTE = [
     ("Stone", (204, 196, 178), 1.0, "block, stone, coping, cill, sill, lintel, plinth, cap, quoin, kerb, string, band, base", ""),
     ("Timber", (140, 102, 66), 1.0, "plank, board, timber, fence, gate, picket, post, rail, weather, cladding, batten", ""),
 ]
+
+# rows added since version 1: put into a palette you saved before they were there
+NEW_ROWS = ("Fascia & barge boards",)
 
 # What a part is painted with when none of the words fit, by plugin
 PLUGIN_FALLBACK = {
@@ -128,6 +132,11 @@ def load_settings():
                 except Exception:
                     pass
             if pal:
+                # rows added in a newer version go in too (at the place they have in the list)
+                have = {r[0] for r in pal}
+                for i, r in enumerate(DEFAULT_PALETTE):
+                    if r[0] not in have and r[0] in NEW_ROWS:
+                        pal.insert(min(i, len(pal)), list(r))
                 s['palette'] = pal
     except Exception:
         pass

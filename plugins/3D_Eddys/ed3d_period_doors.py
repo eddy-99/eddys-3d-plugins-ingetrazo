@@ -22,6 +22,11 @@ keystones, strap hinges and a door knob.
 
 Like 3D Period Windows it cuts right through a solid wall, prints flat (everything down to
 the back), and can join it all into one clean solid. Ctrl+Alt+D.
+
+Whole building page: select a building and click Find - every opening in the outside walls
+lights up and is listed. Build puts a door in each ticked doorway and joins it into its own wall
+section, flat with the back of the wall, so each wall lays flat and prints as one piece. Find
+picks built doors up again later, to change them or take them out.
 """
 
 import os
@@ -36,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "2"             # shown in the window title, so you can tell which file is loaded
+VERSION = "6"             # shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -67,6 +72,7 @@ FANLIGHTS = [("none", "No fanlight"), ("plain", "Plain glass"), ("bars", "Uprigh
 ARCH_BARS = [("grid", "Grid carries on into the arch"), ("fan", "Fan bars in the arch"),
              ("plain", "Plain glass in the arch")]
 STEPS = [("stone", "Stone doorstep"), ("brick", "Brick-on-edge step"), ("none", "No step")]
+FLIGHT_TO = [("wall", "The bottom of the wall"), ("ground", "The ground (0 in the model)")]
 HEADS = [("stone", "Stone lintel / stone arch"), ("brick", "Brick soldier course / brick arch"),
          ("none", "No head")]
 
@@ -87,14 +93,15 @@ DEFAULTS = {
     'fanlight': 'none', 'fan_h': 400.0, 'transom_w': 75.0, 'fan_cols': 3,
     'slide_over': 100.0, 'rail_h': 60.0,
     'step': 'stone', 'step_h': 150.0, 'step_p': 250.0, 'horn': 100.0,
+    'flight': True, 'flight_to': 'wall', 'rise_max': 180.0, 'going': 280.0,
     'head': 'brick', 'head_h': 215.0, 'head_p': 10.0, 'bearing': 100.0,
     'keystone': False, 'key_w': 150.0, 'key_up': 40.0, 'key_p': 15.0,
     'brick_w': 102.5, 'brick_t': 65.0, 'joint': 10.0,
 }
 INT_KEYS = ('cols', 'rows', 'cols_b', 'rows_b', 'leaves', 'fan_cols')
-CHOICE_KEYS = ('style', 'top', 'panel', 'hinge', 'fanlight', 'arch_bars', 'step', 'head')
+CHOICE_KEYS = ('style', 'top', 'panel', 'hinge', 'fanlight', 'arch_bars', 'step', 'head', 'flight_to')
 BOOL_KEYS = ('flip', 'flat', 'bars_back', 'remove_face', 'join', 'cut', 'open', 'glass', 'ledges',
-             'braces', 'straps', 'knob', 'keystone')
+             'braces', 'straps', 'knob', 'keystone', 'flight')
 PRESET_KEYS = tuple(DEFAULTS)
 
 BUILTIN_PRESETS = {
@@ -955,6 +962,65 @@ def build_step(sh, v, fd):
     return out
 
 
+def flight_count(v):
+    """(how many steps, each one's rise) to get from the bottom of the door down v['_drop'] mm."""
+    d = float(v.get('_drop', 0.0) or 0.0)
+    if not v.get('flight', True) or d < 10.0:
+        return 0, 0.0
+    n = max(1, int(math.ceil(d / max(20.0, v.get('rise_max', 180.0)) - 1e-9)))
+    return n, d / n
+
+
+def build_flight(sh, v, fd):
+    """Steps down from the doorstep to the ground, when the door is above it: one solid, as wide
+    as the doorstep, each step 'going' deeper than the one above."""
+    n, r = flight_count(v)
+    if n == 0:
+        return []
+    x0, x1, y0, _ = sh['box']
+    F = fd + v['step_p']
+    g = max(50.0, v.get('going', 280.0))
+    xa, xb = x0 - v['horn'], x1 + v['horn']
+    b = v.get('_base_sh', v.get('_base', 0.0))
+    yg = y0 - n * r
+    sec = [(b, yg), (F + n * g, yg)]
+    for i in range(n, 0, -1):
+        top = y0 - (i - 1) * r
+        sec += [(F + i * g, top), (F + (i - 1) * g, top)]
+    sec.append((b, y0))
+    so = along_x(clean(sec) or sec, xa, xb)
+    if so is not None:
+        so.kind = "steps (%d)" % n
+    return [so] if so is not None else []
+
+
+def _mesh_low_z(mesh):
+    zs = [q[2] for q in (_pos(p) for p in _items(getattr(mesh, 'vertices', None))) if q is not None]
+    if not zs:
+        for f in _items(getattr(mesh, 'faces', None)):
+            zs += [q[2] for q in (_pos(p) for p in _items(getattr(f, 'vertices', None))) if q is not None]
+    return min(zs) if zs else None
+
+
+def door_drop(frame, poly, mesh, v):
+    """How far (mm) the bottom of the door is above the bottom of its wall (or the ground)."""
+    try:
+        O, U, V, N = frame
+        if abs(N[2]) > 0.5 or V[2] < 0.5:
+            return 0.0                             # not on an upright wall
+        y0 = min(q[1] for q in poly)
+        zdoor = O[2] + V[2] * y0 * SCALE
+        if v.get('flight_to') == 'ground':
+            zlow = 0.0
+        else:
+            zlow = _mesh_low_z(mesh) if mesh is not None else None
+            if zlow is None:
+                return 0.0
+        return max(0.0, (zdoor - zlow) / SCALE / V[2])
+    except Exception:
+        return 0.0
+
+
 def build_door(sh, v):
     """Returns {'door': [...], 'glass': [...], 'step': [...], 'head': [...], 'info': {...}} in local mm."""
     P = sh['poly']
@@ -971,7 +1037,7 @@ def build_door(sh, v):
     hs = (v['step_h'] if v['step'] == 'stone' else v['brick_w']) if has_step else 0.0
     if hs >= y1 - y0 - 50:
         raise ValueError("The step is taller than the door opening.")
-    info = {'fd': fd, 'hs': hs}
+    info = {'fd': fd, 'hs': hs, 'flight': flight_count(v)}
 
     if style == 'sliding':
         # in front of the wall: a framed, boarded door hanging from a rail over the opening
@@ -1003,6 +1069,8 @@ def build_door(sh, v):
         info.update({'O': (x0, x1, y0 + hs, y1), 'L': bbox(R), 'leaf_z': (z0, z1), 'boarded': binfo,
                      'zf': z1})
         step = build_step(sh, v, 0.0) if has_step else []
+        if sh.get('flat_bottom'):
+            step += build_flight(sh, v, 0.0)
         # the head stays flush with the wall, behind the door
         head = build_head(sh, dict(v, head_p=zh, key_p=0.0), 0.0) if v['head'] != 'none' else []
         return {'door': [s for s in door if s], 'glass': [], 'step': [s for s in step if s],
@@ -1111,6 +1179,8 @@ def build_door(sh, v):
         glass += gl
 
     step = build_step(sh, v, fd) if has_step else []
+    if sh.get('flat_bottom'):
+        step += build_flight(sh, v, fd)            # down to the ground, if the door is above it
     head = build_head(sh, v, fd) if v['head'] != 'none' else []
     # small blocks bridging the frame to the step and head, so they overlap instead of
     # meeting face to face (these sit inside both, so they don't show)
@@ -2134,6 +2204,56 @@ def delete_preset_file(name):
         os.remove(path)
 
 
+LAST_FILE = os.path.join(PRESET_DIR, "_last_used.cfg")     # the preset and settings you used last
+ORDER_FILE = os.path.join(PRESET_DIR, "_order.json")    # the order you've arranged the presets in
+
+
+def load_order():
+    try:
+        with open(ORDER_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [str(n) for n in data] if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def QTimer_remember(dlg):
+    """Remembers the settings just after a preset has been loaded into the boxes."""
+    try:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, dlg.remember)
+    except Exception:
+        dlg.remember()
+
+
+def load_last():
+    try:
+        with open(LAST_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_last(preset, values):
+    try:
+        os.makedirs(PRESET_DIR, exist_ok=True)
+        with open(LAST_FILE, "w", encoding="utf-8") as f:
+            json.dump({'preset': preset, 'values': {k: values[k] for k in PRESET_KEYS if k in values}},
+                      f, indent=1)
+    except Exception as e:
+        print("%s: could not remember the last settings: %s" % (PLUGIN_NAME, e))
+
+
+def save_order(names):
+    try:
+        os.makedirs(PRESET_DIR, exist_ok=True)
+        with open(ORDER_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(names), f, indent=1)
+    except Exception as e:
+        print("%s: could not save the preset order: %s" % (PLUGIN_NAME, e))
+
+
 # ---------------------------------------------------------------------------
 # Live preview
 # ---------------------------------------------------------------------------
@@ -2156,6 +2276,8 @@ def _door_rgb(v, so):
 def preview_items(sh, v):
     """[(layer, depth, [(x, y)...], (r, g, b), alpha)]: layer 0 behind the wall face,
     1 the wall, 2 in front."""
+    if v.get('flight', True) and '_drop' not in v:
+        v = dict(v, _drop=2.5 * max(20.0, v.get('rise_max', 180.0)))   # a sample flight to show
     parts = build_door(sh, v)
     right = v_norm(v_cross(VIEW_DIR, (0.0, 1.0, 0.0)))
     up = v_cross(right, VIEW_DIR)
@@ -2377,7 +2499,7 @@ EDDY_TIPS = {'Glass thickness': 'How thick the glass is. For printing use your n
  'Keystone sticks out more': 'How much further the keystone stands out than the head.',
  'Mortar joint': 'The joint round the stone sill / step and head, where they meet the wall.',
  '3D view': "A 3D look at what you'll get.",
- 'Sizes (A, B, C ...)': 'A drawing showing what each lettered size (A, B, C ...) measures.',
+ 'Key (A, B, C...)': 'A drawing showing what each lettered size (A, B, C ...) measures, with what each is set to now.',
  'Sizes': 'The lettered sizes, A, B, C ... (see the Sizes drawing).',
  'Preview selected face': "Shows the selected face's shape in the preview, without adding "
                           'anything.',
@@ -2722,11 +2844,752 @@ class SizesDiagram(QWidget):
         p.end()
 
 
+# ---- what this plugin builds into the walls (used by the Whole building part below)
+WB_KIND = 'door'
+
+
+def _raised_door(op):
+    """A tall opening that doesn't reach the bottom of its wall: maybe a door up some steps (doors only;
+    listed, but not ticked unless you tick it)."""
+    return (WB_KIND == 'door' and not op.get('door') and not op.get('built') and op.get('h', 0) >= 1500.0
+            and op.get('up', 0.0) > 15.0)
+WB_WORDS = {'n': 'door', 'N': 'Door', 'ns': 'doors', 'o': 'window', 'os': 'windows',
+            'other_plugin': '3D Period Windows', 'sill': 'step'}
+
+
+def fit_kind_shape(poly, v):
+    return fit_door(poly, v)
+
+
+def kind_parts(sh, vv):
+    built = build_door(sh, vv)
+    return built['door'] + built['step'] + built['head']
+
+
+# ---------------------------------------------------------------------------
+# Whole building: find every opening in the walls and build the windows / doors into
+# their wall sections, so each wall prints flat as one piece with them.
+# (This part is the same in 3D Period Windows and 3D Period Doors: they share what's kept on a wall.)
+# ---------------------------------------------------------------------------
+WB_DEFAULT_OVERLAP = 10.0      # mm: how far each window or door reaches into the wall round it, so they join
+
+
+def _kids_of(g):
+    out = []
+    for attr in ('children', 'groups'):
+        out += _items(getattr(g, attr, None))
+    return out
+
+
+def _as_matrix(m):
+    """A group's placement as a QMatrix4x4 (or None for 'where it is')."""
+    if m is None:
+        return None
+    if hasattr(m, 'map'):
+        return m
+    try:
+        from PySide6.QtGui import QMatrix4x4
+        vals = [float(x) for x in m]
+        if len(vals) == 16:
+            return QMatrix4x4(*vals).transposed()       # stored column by column
+    except Exception:
+        pass
+    return None
+
+
+def _placements(top):
+    """(group, world matrix or None) for a group and every group inside it."""
+    try:
+        from core.group import iter_placements
+        return [(g, _as_matrix(m)) for g, m in iter_placements(top)]
+    except Exception:
+        pass
+    out = []
+
+    def walk(g, base, depth):
+        m = _as_matrix(getattr(g, 'xform', None))
+        if base is not None:
+            m = base if m is None else base * m
+        out.append((g, m))
+        if depth < 30:
+            for c in _kids_of(g):
+                walk(c, m, depth + 1)
+    walk(top, None, 0)
+    return out
+
+
+def _wmap(m, p):
+    if m is None:
+        return p
+    q = m.map(QVector3D(*p))
+    return (q.x(), q.y(), q.z())
+
+
+def _wvec(m, d):
+    if m is None:
+        return d
+    try:
+        q = m.mapVector(QVector3D(*d))
+        return v_norm((q.x(), q.y(), q.z()))
+    except Exception:
+        a, b = _wmap(m, (0.0, 0.0, 0.0)), _wmap(m, d)
+        return v_norm(v_sub(b, a))
+
+
+def _in_tree(top, g):
+    seen = []
+    _walk_groups([top], seen)
+    return any(x is g for x in seen)
+
+
+def _tops_for(scene, picked):
+    """The top-level groups holding what's picked (the whole building each one is part of)."""
+    tops = _items(getattr(scene, 'groups', None))
+    if not picked:
+        return tops
+    out = []
+    for t in tops:
+        if any(_in_tree(t, g) for g in picked) and all(t is not o for o in out):
+            out.append(t)
+    return out
+
+
+def _picked_groups(scene):
+    return [e for e in _items(getattr(scene, 'selection', None)) if hasattr(e, 'mesh')]
+
+
+def _wall_meshes(scene):
+    """[(group, mesh, world matrix)] for every group with faces in what's picked
+    (or the whole model when nothing is picked), and the middle of the building(s)."""
+    picked = _picked_groups(scene)
+    tops = _tops_for(scene, picked)
+    skip = _plugin_built(tops)
+    every = []
+    for t in tops:
+        for g, m in _placements(t):
+            if id(g) in skip:
+                continue
+            mesh = getattr(g, 'mesh', None)
+            if mesh is not None and _items(getattr(mesh, 'faces', None)):
+                every.append((g, mesh, m))
+    if picked:
+        want = []
+        for p in picked:
+            want += [g for g in ([p] + _walk_seen(p))]
+        use = [x for x in every if any(x[0] is w for w in want)]
+    else:
+        use = every
+    # the middle of the whole building(s), from every corner of every face
+    pts = []
+    for g, mesh, m in every:
+        for f in _items(getattr(mesh, 'faces', None)):
+            for v in _items(getattr(f, 'vertices', None)):
+                p = _pos(v)
+                if p is not None:
+                    pts.append(_wmap(m, p))
+    if pts:
+        xs, ys, zs = [p[0] for p in pts], [p[1] for p in pts], [p[2] for p in pts]
+        centre = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, (min(zs) + max(zs)) / 2)
+    else:
+        centre = (0.0, 0.0, 0.0)
+    return use, centre
+
+
+# groups the plugins build (and everything inside them) aren't walls: the subframe and its glazing
+# frames and trusses, windows, doors and so on - their holes aren't openings to fill
+NOT_WALLS = ("subframe", "glazing", "truss", "window", "door", "gutter", "downpipe", "chimney",
+             "canopy", "fence", "gate", "pipe")
+
+
+def _plugin_built(tops):
+    skip = set()
+
+    def walk(g, inside, depth):
+        nm = (getattr(g, 'name', '') or '').lower()
+        inside = inside or any(w in nm for w in NOT_WALLS)
+        if inside:
+            skip.add(id(g))
+        if depth < 30:
+            for c in _kids_of(g):
+                walk(c, inside, depth + 1)
+    for t in tops:
+        walk(t, False, 0)
+    return skip
+
+
+def _walk_seen(g):
+    seen = []
+    _walk_groups(_kids_of(g), seen)
+    return seen
+
+
+def _group_of_mesh(scene, mesh):
+    gs = []
+    _walk_groups(getattr(scene, 'groups', None), gs)
+    for g in gs:
+        if getattr(g, 'mesh', None) is mesh:
+            return g
+    return None
+
+
+# what's kept on a wall group (saved with the model) once windows or doors are built into it: the plain
+# wall as it was before (so it can be built again), and each window's / door's opening, settings and
+# shape. Both plugins use the same record, so each one keeps the other's work when it builds a wall again.
+REC_KEY = "ed3d_openings"
+OLD_REC_KEYS = ("ed3d_period_windows",)
+
+
+def wall_record(g):
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        return None
+    rec = ext.get(REC_KEY)
+    if isinstance(rec, dict) and rec.get('orig'):
+        return rec
+    for old in OLD_REC_KEYS:                      # kept by an earlier version (windows only)
+        o = ext.get(old)
+        if isinstance(o, dict) and o.get('orig'):
+            return {'orig': o['orig'], 'items': [dict(w, kind='window') for w in o.get('windows', [])]}
+    return None
+
+
+def set_wall_record(g, rec):
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        if rec is None:
+            return
+        try:
+            g.ext = {}
+        except Exception:
+            return
+        ext = g.ext
+    for old in OLD_REC_KEYS:
+        ext.pop(old, None)
+    if rec is None:
+        ext.pop(REC_KEY, None)
+    else:
+        ext[REC_KEY] = rec
+
+
+def solids_to_rec(solids):
+    return [[[[round(c, 7) for c in p] for p in f] for f in so.faces] for so in solids]
+
+
+def solids_from_rec(data):
+    out = []
+    for faces in data or []:
+        so = Solid()
+        so.faces = [[tuple(p) for p in f] for f in faces]
+        out.append(so)
+    return out
+
+
+def item_solids(item, own_kind):
+    """The solids of a window or door kept on a wall: made again from its settings if it's this
+    plugin's own kind, otherwise its shape as it was kept (or, failing that, made by the other plugin)."""
+    if item.get('kind') == own_kind:
+        vv = dict(DEFAULTS)
+        vv.update(item.get('values') or {})
+        sols, _t = build_into_wall(item, vv, item.get('overlap', WB_DEFAULT_OVERLAP))
+        item['solids'] = solids_to_rec(sols)
+        return sols
+    if item.get('solids'):
+        return solids_from_rec(item['solids'])
+    import sys as _sys
+    want = "ed3d_period_doors" if item.get('kind') == 'door' else "ed3d_period_windows"
+    for nm, mod in list(_sys.modules.items()):
+        if nm.endswith(want) and hasattr(mod, 'build_into_wall'):
+            vv = dict(mod.DEFAULTS)
+            vv.update(item.get('values') or {})
+            sols, _t = mod.build_into_wall(item, vv, item.get('overlap', WB_DEFAULT_OVERLAP))
+            return [solids_from_rec(solids_to_rec([so]))[0] for so in sols]
+    raise ValueError("it was made by %s, which isn't loaded" %
+                     ("3D Period Doors" if item.get('kind') == 'door' else "3D Period Windows"))
+
+
+class _PlainFace:
+    """A face of the plain wall kept in a record (points only)."""
+    def __init__(self, pts, holes):
+        self.vertices = [tuple(p) for p in pts]
+        self.holes = [[tuple(p) for p in h] for h in holes]
+
+
+class _PlainMesh:
+    def __init__(self, faces):
+        self.faces = faces
+
+
+def _numbered_faces(mesh):
+    """(index, face) for the faces of a mesh, numbered the same way as _faces_of_mesh."""
+    out = []
+    i = 0
+    for f in _items(getattr(mesh, 'faces', None)):
+        pts = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+        if len(pts) < 3:
+            continue
+        out.append((i, f))
+        i += 1
+    return out
+
+
+def _wall_faces(g, mesh):
+    """(mesh to look in, [(index, face)], record): a wall with windows already built into it is
+    looked at as it was before them (its openings are where they were), otherwise as it is."""
+    rec = wall_record(g) if g is not None else None
+    if rec:
+        faces = [_PlainFace(pts, hls) for pts, hls in rec['orig']]
+        return _PlainMesh(faces), list(enumerate(faces)), rec
+    return mesh, _numbered_faces(mesh), None
+
+
+def _group_of_mesh(scene, mesh):
+    gs = []
+    _walk_groups(getattr(scene, 'groups', None), gs)
+    for g in gs:
+        if getattr(g, 'mesh', None) is mesh:
+            return g
+    return None
+
+
+def find_building_openings(scene, flip=False, door_tol=15.0):
+    """Every opening in what's picked: [dict(group, mesh, face, fi, k, poly (mm, on the face), frame,
+    depth (m), door, w, h, name, built)]. Picked faces (a wall face, even one inside a group): just
+    their openings, the window going on that face. Otherwise every hole in the outside faces of the
+    walls of the picked building (or groups). Doors are the openings that reach the bottom of their
+    wall. 'built' is the window already built into an opening (its settings), or None."""
+    found = []
+    faces = selected_faces(scene)
+    if faces:
+        done = []
+        for i, face in enumerate(faces):
+            mesh = mesh_of_face(scene, face)
+            if mesh is None:
+                continue
+            g = _group_of_mesh(scene, mesh)
+            gname = getattr(g, 'name', None) or ("Face %d" % (i + 1))
+            look, numbered, rec = _wall_faces(g, mesh)
+            if rec:
+                # windows are built into this wall already: show its openings as a whole
+                if any(d is g for d in done):
+                    continue
+                done.append(g)
+                count = [0]
+                for fi, f in numbered:
+                    if _is_wall_face(f, None):
+                        _face_openings_into(found, g, mesh, look, f, fi, rec, gname, door_tol, count,
+                                            only_built=True)
+                continue
+            fi = next((n for n, f in numbered if f is face), None)
+            _face_openings_into(found, g, mesh, look, face, fi, None, gname, door_tol, [0])
+        return found
+    use, centre = _wall_meshes(scene)
+    wall_no = 0
+    for g, mesh, m in use:
+        wall_no += 1
+        gname = getattr(g, 'name', None) or ("Wall %d" % wall_no)
+        count = [0]
+        look, numbered, rec = _wall_faces(g, mesh)
+        for fi, face in numbered:
+            pts = [p for p in (_pos(v) for v in _items(face.vertices)) if p is not None]
+            if len(pts) < 3:
+                continue
+            nw = _wvec(m, _newell(pts))
+            if abs(nw[2]) > 0.5:
+                continue                               # a roof or floor, not a wall
+            c = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts),
+                 sum(p[2] for p in pts) / len(pts))
+            cw = _wmap(m, c)
+            out = nw[0] * (cw[0] - centre[0]) + nw[1] * (cw[1] - centre[1])
+            if (out <= 0) != bool(flip) and not (rec and _built_on(rec, fi)):
+                continue                               # the inside face of the wall
+            _face_openings_into(found, g, mesh, look, face, fi, rec, gname, door_tol, count)
+    return found
+
+
+def _built_on(rec, fi):
+    return any(w.get('fi') == fi for w in (rec or {}).get('items', []))
+
+
+def _is_wall_face(face, m):
+    pts = [p for p in (_pos(v) for v in _items(face.vertices)) if p is not None]
+    return len(pts) >= 3 and abs(_wvec(m, _newell(pts))[2]) <= 0.5
+
+
+NOTCH_K = 1000          # openings cut up from the bottom edge of a wall (doorways) count from here
+
+
+def _bottom_notches(poly, tol):
+    """Doorways in a wall face's own outline: gaps in its bottom edge, where the outline goes up,
+    across and back down. [(outline of the opening, [indices of its corners in poly])]."""
+    n = len(poly)
+    if n < 6:
+        return []
+    ybot = min(p[1] for p in poly)
+    on = [abs(p[1] - ybot) < tol for p in poly]
+    spans = []
+    for i in range(n):
+        j = (i + 1) % n
+        if on[i] and on[j]:
+            spans.append((min(poly[i][0], poly[j][0]), max(poly[i][0], poly[j][0])))
+    if len(spans) < 2:
+        return []
+    spans.sort()
+    merged = [list(spans[0])]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1] + tol:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out = []
+    for (_a0, xa), (xb, _b1) in zip(merged, merged[1:]):
+        if xb - xa < tol:
+            continue
+        ia = next((i for i in range(n) if on[i] and abs(poly[i][0] - xa) < tol), None)
+        ib = next((i for i in range(n) if on[i] and abs(poly[i][0] - xb) < tol), None)
+        if ia is None or ib is None:
+            continue
+        best = None
+        for step in (1, -1):
+            path, i = [ia], ia
+            while i != ib and len(path) <= n:
+                i = (i + step) % n
+                path.append(i)
+            inner = path[1:-1]
+            if inner and all(xa - tol <= poly[q][0] <= xb + tol and poly[q][1] > ybot + tol * 0.5
+                             for q in inner):
+                if best is None or len(path) < len(best):
+                    best = path
+        if best is None:
+            continue
+        pts = [poly[q] for q in best]
+        if area2(pts) < 0:
+            pts = list(reversed(pts))
+        q = clean(pts)
+        if q:
+            out.append((q, best))
+    return out
+
+
+def _face_openings_into(found, g, mesh, look, face, fi, rec, gname, door_tol, count, only_built=False):
+    """Adds the openings (holes) of one face to `found`, the window to go on that face.
+    `look` is the mesh the face is in (the plain wall, for a wall with windows built in)."""
+    holes = _items(getattr(face, 'holes', None))
+    pts = [p for p in (_pos(v) for v in _items(face.vertices)) if p is not None]
+    if len(pts) < 3:
+        return
+    built_here = {w.get('k'): w for w in (rec or {}).get('items', []) if w.get('fi') == fi}
+    if only_built and not built_here:
+        return
+    try:
+        frame, _polys = face_openings(face, False)
+    except ValueError:
+        return
+    O, U, V, N = frame
+    ybot = min(v_dot(v_sub(p, O), V) / SCALE for p in pts)
+    tw0 = to_world(frame)
+    for k, h in enumerate(holes):
+        hp = [p for p in (_pos(v) for v in _items(h)) if p is not None]
+        if len(hp) < 3:
+            continue
+        poly = clean([(v_dot(v_sub(p, O), U) / SCALE, v_dot(v_sub(p, O), V) / SCALE) for p in hp])
+        if not poly:
+            continue
+        if area2(poly) < 0:
+            poly = list(reversed(poly))
+        x0, x1, y0, y1 = bbox(poly)
+        try:
+            back = _back_depth(look, [tw0((x, y, 0.0)) for x, y in poly], N, face)
+        except Exception:
+            back = None
+        count[0] += 1
+        door = (y0 - ybot) <= door_tol
+        found.append(dict(group=g, mesh=mesh, face=face if rec is None else None, fi=fi, k=k,
+                          up=y0 - ybot,
+                          poly=poly, frame=frame, depth=back[1] if back else None, door=door,
+                          w=x1 - x0, h=y1 - y0, built=built_here.get(k),
+                          name="%s - %s %d" % (gname, "Door" if door else "Window", count[0])))
+    # doorways: cut up from the bottom edge of the wall, so they're part of its outline, not holes
+    outline = [(v_dot(v_sub(p, O), U) / SCALE, v_dot(v_sub(p, O), V) / SCALE) for p in pts]
+    for j, (poly, path) in enumerate(_bottom_notches(outline, max(1.0, door_tol * 0.2))):
+        k = NOTCH_K + j
+        x0, x1, y0, y1 = bbox(poly)
+        try:
+            back = _back_depth(look, [tw0((x, y, 0.0)) for x, y in poly], N, face)
+        except Exception:
+            back = None
+        count[0] += 1
+        found.append(dict(group=g, mesh=mesh, face=face if rec is None else None, fi=fi, k=k,
+                          path=path, poly=poly, frame=frame, depth=back[1] if back else None,
+                          door=True, w=x1 - x0, h=y1 - y0, built=built_here.get(k),
+                          name="%s - Door %d" % (gname, count[0])))
+
+
+def _back_depth(mesh, pts, n, exclude):
+    """(face, depth): the back of the wall behind an opening - the nearest face facing the other
+    way whose outline goes round the middle of the opening (it has the same opening in it)."""
+    c = v_mul(tuple(sum(p[i] for p in pts) for i in range(3)), 1.0 / len(pts))
+    U = v_norm(v_sub(pts[1], pts[0]))
+    V = v_cross(n, U)
+    best = None
+    for f in _items(getattr(mesh, 'faces', None)):
+        if f is exclude:
+            continue
+        fp = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+        if len(fp) < 3 or v_dot(_newell(fp), n) > -0.999:
+            continue
+        depth = v_dot(v_sub(c, fp[0]), n)
+        if depth <= 1e-7 or depth > WALL_MAX or (best is not None and depth >= best[1]):
+            continue
+        q = v_sub(c, v_mul(n, depth))
+        if not _pip3(q, fp, U, V):
+            # a doorway's middle is in a gap in the outline: inside the face's extent will do
+            us = [v_dot(p, U) for p in fp]
+            vs = [v_dot(p, V) for p in fp]
+            if not (min(us) - 1e-6 <= v_dot(q, U) <= max(us) + 1e-6
+                    and min(vs) - 1e-6 <= v_dot(q, V) <= max(vs) + 1e-6):
+                continue
+        best = (f, depth)
+    return best
+
+
+def _world_matrix(scene, g):
+    for t in _items(getattr(scene, 'groups', None)):
+        for gg, m in _placements(t):
+            if gg is g:
+                return m
+    return None
+
+
+def _cam_eye(cam):
+    for name in ('eye', 'position', 'eye_position', 'eye_pos'):
+        a = getattr(cam, name, None)
+        if a is None:
+            continue
+        try:
+            a = a() if callable(a) else a
+        except Exception:
+            continue
+        p = _pos(a)
+        if p is not None:
+            return p
+    return None
+
+
+def zoom_to_opening(viewport, op):
+    """Turns the view to look at an opening from outside and comes in towards it - not all the way:
+    the window fills about a quarter of the view, with the wall round it."""
+    cam = getattr(viewport, 'camera', None)
+    scene = getattr(viewport, 'scene', None)
+    if cam is None or scene is None:
+        return
+    O, U, V, N = op['frame']
+    x0, x1, y0, y1 = bbox(op['poly'])
+    tw = to_world(op['frame'])
+    m = _world_matrix(scene, op['group'])
+    c = _wmap(m, tw(((x0 + x1) / 2, (y0 + y1) / 2, 0.0)))
+    nw = _wvec(m, tuple(N))
+    size = math.hypot(x1 - x0, y1 - y0) * SCALE
+    t = getattr(cam, 'target', None)
+    if t is not None and hasattr(t, 'setX'):
+        cam.target = QVector3D(*c)
+    elif isinstance(t, list):
+        cam.target = list(c)
+    else:
+        try:
+            cam.target = QVector3D(*c)
+        except Exception:
+            cam.target = tuple(c)
+    if hasattr(cam, 'distance'):
+        cam.distance = max(4.0 * size, 2.0)
+    # face it from outside, if the camera says where it is
+    yaw0 = getattr(cam, 'yaw', None)
+    if isinstance(yaw0, (int, float)) and _cam_eye(cam) is not None:
+        best = (None, yaw0)
+        for step in range(36):
+            cam.yaw = yaw0 + step * 10.0
+            e = _cam_eye(cam)
+            if e is None:
+                break
+            d = v_norm(v_sub(e, c))
+            score = d[0] * nw[0] + d[1] * nw[1]
+            if best[0] is None or score > best[0]:
+                best = (score, cam.yaw)
+        cam.yaw = best[1]
+    for nm in ('notify_scene_changed', 'update'):
+        f = getattr(viewport, nm, None)
+        if callable(f):
+            try:
+                f()
+            except Exception:
+                pass
+
+
+def opening_edges(op):
+    """The edges round an opening, to light it up."""
+    mesh, face, k = op['mesh'], op['face'], op['k']
+    if face is None:
+        return []                       # a wall with windows built in: its openings are filled
+    if op.get('path') is not None:
+        vs = _items(getattr(face, 'loop', None)) or _items(getattr(face, 'vertices', None))
+        lp = [vs[i] for i in op['path'] if i < len(vs)]
+        out = []
+        for i in range(len(lp) - 1):
+            try:
+                e = mesh.find_edge(lp[i], lp[i + 1])
+                if e is not None:
+                    out.append(e)
+            except Exception:
+                pass
+        return out
+    loops = _items(getattr(face, 'hole_loops', None))
+    if k >= len(loops):
+        return []
+    lp = _items(loops[k])
+    out = []
+    for i in range(len(lp)):
+        try:
+            e = mesh.find_edge(lp[i], lp[(i + 1) % len(lp)])
+            if e is not None:
+                out.append(e)
+        except Exception:
+            pass
+    return out
+
+
+def build_into_wall(op, v, overlap):
+    """The window or door for one opening, as solids in the wall's own (local) metres, made a little
+    bigger all round and sunk into the wall so it joins on. Flat at the back of the wall."""
+    if op['depth'] is None:
+        raise ValueError("no back of the wall found behind it (a wall needs a thickness)")
+    depth_mm = op['depth'] / SCALE
+    ov = max(0.0, min(overlap, 0.4 * depth_mm, 0.25 * v['frame_w']))
+    poly = [tuple(p) for p in op['poly']]
+    grown = clean(offset_poly(poly, -ov)) if ov > 0 else poly
+    grown = grown or poly
+    vv = dict(v)
+    vv['_drop'] = door_drop(op['frame'], poly, op.get('mesh'), v)
+    vv['flat'] = True                      # the back = the back of the wall
+    vv['_base'] = -depth_mm
+    vv['_base_sh'] = -min(max(ov, 1.0), 0.5 * depth_mm)   # sill / step and head sunk into the wall face
+    sh = fit_kind_shape(grown, v)
+    sols = kind_parts(sh, vv)
+    tw = to_world(op['frame'])
+    return [so.mapped(tw) for so in sols], describe(sh, v)
+
+
+def _mesh_from(faces_lists):
+    """A new mesh from [(outer points, [hole points])] in metres."""
+    from core.mesh import Mesh
+    mesh = Mesh()
+    tol = 1e-4 * 0.001
+    verts = {}
+    bad = [0]
+
+    def vx(p):
+        key = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
+        if key not in verts:
+            verts[key] = VertexWrapper(*p)
+        return verts[key]
+
+    for pts, hls in faces_lists:
+        try:
+            outer = [vx(p) for p in pts]
+            hs = [[vx(p) for p in h] for h in hls if len(h) >= 3]
+            if hs:
+                try:
+                    mesh.add_face(outer, hs)
+                except TypeError:
+                    f_ = mesh.add_face(outer)
+                    for h in hs:
+                        mesh.add_hole(f_, h)
+            else:
+                mesh.add_face(outer)
+        except Exception:
+            bad[0] += 1
+    return mesh, bad[0]
+
+
+def _faces_of_mesh(mesh):
+    out = []
+    for f in _items(getattr(mesh, 'faces', None)):
+        pts = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+        if len(pts) < 3:
+            continue
+        hls = []
+        for h in _items(getattr(f, 'holes', None)):
+            hp = [p for p in (_pos(v) for v in _items(h)) if p is not None]
+            if len(hp) >= 3:
+                hls.append(hp)
+        out.append((pts, hls))
+    return out
+
+
+def _faces_of_solids(solids):
+    return [(list(pts), []) for so in solids for pts in so.faces]
+
+
+def join_into_wall(mesh, solids):
+    """(new mesh for the wall, joined?) - the wall and its windows as one solid with IngeTrazo's
+    Solid Tools Union; if that can't be done, the windows simply go into the wall's piece."""
+    try:
+        from core import solids as solid_tools
+        from core.group import Group
+        pieces = []
+        g = Group("wall")
+        g.mesh, _ = _mesh_from(_faces_of_mesh(mesh))
+        pieces.append(g)
+        for so in solids:
+            gw = Group("window part")
+            gw.mesh, _ = _mesh_from(_faces_of_solids([so]))
+            pieces.append(gw)
+        _removed, created = solid_tools.run(solid_tools.UNION, pieces)
+        created = [c for c in (created or []) if c is not None and getattr(c, 'mesh', None) is not None]
+        if len(created) == 1 and _items(getattr(created[0].mesh, 'faces', None)):
+            return created[0].mesh, True, None
+        why = "the join came out as %d pieces" % len(created)
+    except Exception as e:
+        why = str(e) or e.__class__.__name__
+    new, _bad = _mesh_from(_faces_of_mesh(mesh) + _faces_of_solids(solids))
+    return new, False, why
+
+
+def wall_swap_command(swaps):
+    """One undo step that gives each wall group its new mesh (with its windows), and the record
+    of its windows: swaps = [(group, old mesh, new mesh, old record, new record)]."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+
+    class WallWindowsCommand(Command):
+        def _set(self, scene, which):
+            for g, old, new, old_rec, new_rec in swaps:
+                g.mesh = new if which else old
+                set_wall_record(g, json.loads(json.dumps(new_rec if which else old_rec))
+                                if (new_rec if which else old_rec) else None)
+            try:
+                scene.selection.clear()
+            except Exception:
+                pass
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def do(self, scene):
+            self._set(scene, True)
+
+        def undo(self, scene):
+            self._set(scene, False)
+
+    return WallWindowsCommand()
+
+
 # ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
 CHOICES = {'style': STYLES, 'top': TOPS, 'panel': PANELS, 'hinge': HINGES, 'fanlight': FANLIGHTS,
-           'arch_bars': ARCH_BARS, 'step': STEPS, 'head': HEADS}
+           'arch_bars': ARCH_BARS, 'step': STEPS, 'head': HEADS, 'flight_to': FLIGHT_TO}
 
 # key: (label, low, high, decimals, suffix, tip)
 FIELDS = {
@@ -2822,6 +3685,13 @@ FIELDS = {
     'step_h': ("Stone step height", 10.0, 1000.0, 0, " mm", ""),
     'step_p': ("Step sticks out", 0.0, 1000.0, 0, " mm", "How far the step stands out in front of the frame."),
     'horn': ("Step runs past opening", 0.0, 500.0, 0, " mm", "How far the step goes into the wall at each side."),
+    'flight': ("Steps down when the door is off the ground", "When the bottom of the door is above the "
+               "ground, a flight of steps goes down from the doorstep to it - as many as it needs, all the "
+               "same height, none taller than the most a step can rise (AA)."),
+    'flight_to': ("Steps go down to", "The bottom of the wall the door is in, or the ground (0 in the model)."),
+    'rise_max': ("Most a step can rise", 50.0, 500.0, 0, " mm", "The most each step can rise. The steps are "
+                                                                "evened out, so they may come out a bit less."),
+    'going': ("Step going (tread)", 100.0, 1000.0, 0, " mm", "How deep each step is, front to back."),
     'head': ("Head", "A lintel or soldier course over a square top; an arch of stones or bricks "
                      "over a round, segmental or pointed door."),
     'head_h': ("Head depth", 20.0, 1000.0, 0, " mm", "Height of the lintel or soldier course, or "
@@ -2843,7 +3713,7 @@ LETTERS = {'frame_w': 'A', 'frame_d': 'B', 'stile_w': 'C', 'leaf_t': 'D', 'botto
            'lock_w': 'F', 'top_rail': 'G', 'muntin_w': 'H', 'panel_d': 'J', 'board_w': 'K', 'rise': 'L',
            'step_h': 'M', 'step_p': 'N', 'horn': 'P', 'head_h': 'Q', 'head_p': 'R', 'bearing': 'S',
            'key_w': 'T', 'key_up': 'U', 'key_p': 'V', 'brick_w': 'W', 'brick_t': 'X', 'joint': 'Y',
-           'fan_h': 'Z'}
+           'fan_h': 'Z', 'rise_max': 'AA', 'going': 'AB'}
 
 TABS = [
     ("Door", ('style', 'top', 'rise', 'leaves', 'hinge', 'flat', 'bars_back', 'join', 'remove_face',
@@ -2853,10 +3723,209 @@ TABS = [
     ("Boards", ('board_w', 'board_gap', 'groove_d', 'board_set', 'ledges', 'ledge_h', 'ledge_t',
                 'braces', 'brace_w', 'straps', 'strap_w', 'strap_t', 'slide_over', 'rail_h')),
     ("Fanlight, knob", ('fanlight', 'fan_h', 'transom_w', 'fan_cols', 'knob', 'knob_d', 'knob_p')),
-    ("Step && head", ('step', 'step_h', 'step_p', 'horn', 'head', 'head_h', 'head_p', 'bearing',
+    ("Step && head", ('step', 'step_h', 'step_p', 'horn', 'flight', 'flight_to', 'rise_max', 'going', 'head', 'head_h', 'head_p', 'bearing',
                       'keystone', 'key_w', 'key_up', 'key_p')),
     ("Sizes", ('frame_w', 'frame_d', 'leaf_t', 'leaf_set', 'brick_w', 'brick_t', 'joint')),
 ]
+
+
+# ---------------------------------------------------------------------------
+# The key: what each lettered size (A, B, C ...) measures, drawn like the Subframe key,
+# with the size each one is set to now beside it
+# ---------------------------------------------------------------------------
+KEY_NOTES = [('A', 'frame_w', "frame width"), ('B', 'frame_d', "frame stands out from the wall"),
+             ('C', 'stile_w', "stiles"), ('D', 'leaf_t', "door thickness"),
+             ('E', 'bottom_rail', "bottom rail"), ('F', 'lock_w', "lock rail"),
+             ('G', 'top_rail', "top rail"), ('H', 'muntin_w', "muntins"),
+             ('J', 'panel_d', "panels sunk by"), ('K', 'board_w', "board width (boarded doors)"),
+             ('L', 'rise', "arch rise (segmental)"), ('M', 'step_h', "stone step height"),
+             ('N', 'step_p', "step sticks out"), ('P', 'horn', "step runs past the opening"),
+             ('Q', 'head_h', "head depth"), ('R', 'head_p', "head sticks out"),
+             ('S', 'bearing', "lintel runs past the opening"), ('T', 'key_w', "keystone width"),
+             ('U', 'key_up', "keystone rises above the head"), ('V', 'key_p', "keystone sticks out more"),
+             ('W', 'brick_w', "step brick height"), ('X', 'brick_t', "brick thickness"),
+             ('Y', 'joint', "mortar joint"), ('Z', 'fan_h', "fanlight height"),
+             ('AA', 'rise_max', "most a step can rise"), ('AB', 'going', "step going (tread)")]
+
+
+class DoorKey(QWidget):
+    """A drawing that shows what each lettered size is, with what it's set to now."""
+    W_, H_ = 360.0, 1125.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(int(self.W_), int(self.H_))
+        self.v = dict(DEFAULTS)
+        self.d, self.msg = None, ""
+
+    def show_door(self, sh, v):
+        self.v = dict(v)
+        self.update()
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / self.W_, float(self.height()) / self.H_)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        wallc, paint, glass = QColor(214, 196, 170), QColor(52, 96, 72), QColor(200, 225, 245)
+        frame, stone, brick = QColor(236, 234, 226), QColor(204, 196, 178), QColor(178, 90, 60)
+        wood, ink = QColor(150, 106, 66), QColor(60, 60, 60)
+        bold = QFont()
+        bold.setBold(True)
+        bold.setPointSizeF(9.5)
+        small = QFont()
+        small.setPointSizeF(8.5)
+
+        def poly(pts, col, pen=None):
+            p.setPen(pen or QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+        def box(x, y, w, h, col):
+            poly([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], col)
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setFont(bold)
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = math.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + math.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * math.cos(a + s_), y + 6 * math.sin(a + s_)))
+            p.setPen(red)
+            p.drawText(QRectF(tx - 10, ty - 9, 20, 18), Qt.AlignCenter, letter)
+
+        def title(y, text, x=10):
+            p.setFont(bold)
+            p.setPen(ink)
+            p.drawText(QRectF(x, y, 340, 18), Qt.AlignLeft, text)
+
+        def guide(x1, y1, x2, y2):
+            p.setPen(QPen(QColor(150, 150, 150), 0.6, Qt.DashLine))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+        # ---- 1. the door from the front: 4 panels, fanlight, lintel and keystone, stone step
+        title(4, "The door from the front")
+        box(20, 26, 320, 320, wallc)
+        ox0, ox1, oy0, oy1 = 115.0, 245.0, 92.0, 330.0
+        box(90, 64, 180, 28, stone)                              # lintel
+        poly([(169, 92), (191, 92), (194, 54), (166, 54)], stone.darker(108))   # keystone
+        box(ox0, oy0, ox1 - ox0, oy1 - oy0, frame)               # the frame (A)
+        box(125, 102, 110, 38, glass)                            # fanlight (Z)
+        for bx_ in (161.7, 198.3):
+            box(bx_ - 2, 102, 4, 38, frame)
+        lx0, lx1, ly0, ly1 = 125.0, 235.0, 148.0, 314.0          # the door leaf
+        box(lx0, ly0, lx1 - lx0, ly1 - ly0, paint)
+        C_, G_, F0, F1, E_, H0, H1 = 12.0, 12.0, 238.0, 252.0, 22.0, 176.0, 184.0
+        for (a, b_) in ((lx0 + C_, H0), (H1, lx1 - C_)):         # four raised panels
+            for (c, d) in ((ly0 + G_, F0), (F1, ly1 - E_)):
+                box(a, c, b_ - a, d - c, paint.darker(115))
+                box(a + 5, c + 5, b_ - a - 10, d - c - 10, paint.lighter(110))
+        poly([(222, 243), (228, 243), (228, 249), (222, 249)], QColor(200, 170, 60))   # knob
+        box(93, 314, 174, 16, stone)                             # the step
+        dim(ox0, 175, ox0 + 10, 175, "A", ox0 - 9, 175)
+        dim(lx0, 200, lx0 + C_, 200, "C", lx0 + 22, 205)
+        dim(150, ly0, 150, ly0 + G_, "G", 150 + 12, ly0 + 4)
+        dim(150, F0, 150, F1, "F", 162, F0 + 7)
+        dim(150, ly1 - E_, 150, ly1, "E", 162, ly1 - 11)
+        dim(H0, 222, H1, 222, "H", 180, 212)
+        dim(255, 102, 255, 140, "Z", 266, 121)
+        dim(276, 314, 276, 330, "M", 288, 322)
+        dim(ox1, 340, 267, 340, "P", 279, 340)
+        dim(83, 64, 83, 92, "Q", 71, 78)
+        dim(90, 100, ox0, 100, "S", 102, 110)
+        dim(166, 45, 194, 45, "T", 180, 35)
+        dim(204, 54, 204, 64, "U", 215, 55)
+
+        # ---- 2. seen end on
+        title(362, "Seen end on (outside on the left)")
+        fx, bk = 170.0, 212.0
+        box(fx, 386, bk - fx, 50, wallc)
+        p.setPen(ink)
+        p.setFont(small)
+        p.drawText(QRectF(fx, 388, bk - fx, 12), Qt.AlignCenter, "wall")
+        B_ = 34.0
+        front = fx - B_
+        poly([(bk, 420), (front - 6, 420), (front - 6, 436), (bk, 436)], stone)          # head (R)
+        poly([(bk, 408), (front - 12, 408), (front - 12, 420), (bk, 420)], stone.darker(108))   # keystone (V)
+        box(front, 436, bk - front, 10, frame)                   # frame head
+        lf, D_, J_ = front + 10, 14.0, 4.0                       # the door leaf, panels sunk J
+        box(lf, 446, D_, 114, paint)
+        for (y_a, y_b) in ((462, 505), (518, 548)):
+            box(lf, y_a, J_, y_b - y_a, QColor(250, 250, 246))
+        poly([(bk, 560), (front - 30, 560), (front - 30, 574), (bk, 574)], stone)        # step (N)
+        p.setPen(QPen(ink, 1.0))
+        p.drawLine(QPointF(60, 574), QPointF(300, 574))
+        p.setFont(small)
+        p.drawText(QRectF(230, 576, 80, 12), Qt.AlignLeft, "ground")
+        guide(front, 446, front, 600)
+        guide(fx, 436, fx, 600)
+        dim(front, 596, fx, 596, "B", (front + fx) / 2, 607)
+        dim(lf, 530, lf + D_, 530, "D", lf + D_ + 10, 530)
+        dim(lf, 484, lf + J_, 484, "J", lf - 10, 484)
+        dim(front - 30, 584, front, 584, "N", front - 15, 573 + 22)
+        dim(front - 6, 398, front, 398, "R", front - 3, 388)
+        guide(front - 6, 398, front - 6, 420)
+        guide(front, 398, front, 436)
+        dim(front - 12, 404, front - 6, 404, "V", front - 24, 404)
+        p.setPen(ink)
+        p.setFont(small)
+        p.drawText(QRectF(222, 450, 130, 90), Qt.AlignLeft | Qt.TextWordWrap,
+                   "With 'Flat back for 3D printing' everything goes down to the back, so the "
+                   "door prints flat with the wall.")
+
+        # ---- 3. a boarded door, a segmental arch, bricks
+        title(622, "Boarded (K)")
+        p.drawText(QRectF(135, 622, 100, 18), Qt.AlignLeft, "Arch (L)")
+        p.drawText(QRectF(250, 622, 110, 18), Qt.AlignLeft, "Bricks (W, X, Y)")
+        box(20, 648, 90, 112, wood)
+        for i in range(1, 6):
+            p.setPen(QPen(wood.darker(150), 1.0))
+            p.drawLine(QPointF(20 + i * 15, 648), QPointF(20 + i * 15, 760))
+        box(20, 664, 90, 12, wood.lighter(115))                  # ledges and a brace
+        box(20, 730, 90, 12, wood.lighter(115))
+        poly([(24, 730), (36, 730), (106, 676), (94, 676)], wood.lighter(115))
+        dim(35, 768, 50, 768, "K", 42, 779)
+        ax0, ax1, ay = 135.0, 225.0, 700.0
+        rise = 16.0
+        cx, half = (ax0 + ax1) / 2.0, (ax1 - ax0) / 2.0
+        R = (half * half + rise * rise) / (2 * rise)
+        a0 = math.asin(half / R)
+        pts = [(ax0, 760), (ax1, 760), (ax1, ay)]
+        for i in range(17):
+            a = a0 - 2 * a0 * i / 16.0
+            pts.append((cx + R * math.sin(a), ay + R - rise - R * math.cos(a)))
+        pts.append((ax0, ay))
+        poly(pts, paint, QPen(paint.darker(160), 1.0))
+        guide(ax0 - 8, ay, ax1 + 8, ay)
+        dim(ax1 + 12, ay, ax1 + 12, ay - rise, "L", ax1 + 24, ay - 8)
+        bx0, by = 250.0, 744.0
+        bw, bj = 12.0, 3.0
+        for i in range(6):
+            box(bx0 + i * (bw + bj), by, bw, 16, brick)
+            box(bx0 + i * (bw + bj), 648, bw, 26, brick)
+        box(bx0, 674, 6 * (bw + bj) - bj, 70, paint)
+        dim(bx0 - 8, by, bx0 - 8, by + 16, "W", bx0 - 18, by + 8)
+        dim(bx0, by + 24, bx0 + bw, by + 24, "X", bx0 + 6, by + 35)
+        dim(bx0 + bw, by + 24, bx0 + bw + bj, by + 24, "Y", bx0 + bw + bj + 12, by + 35)
+
+        # ---- the notes, with the size each one is set to now
+        title(790, "Sizes - set now (real-world mm)")
+        p.setFont(small)
+        for i, (letter, key, text) in enumerate(KEY_NOTES):
+            val = self.v.get(key)
+            sval = ("%g mm" % round(float(val), 1)) if isinstance(val, (int, float)) else ""
+            y = 812 + i * 11.2
+            p.setPen(red)
+            p.drawText(QRectF(8, y, 22, 12), Qt.AlignLeft | Qt.AlignVCenter, letter)
+            p.setPen(ink)
+            p.drawText(QRectF(30, y, 226, 12), Qt.AlignLeft | Qt.AlignVCenter, text)
+            p.drawText(QRectF(260, y, 90, 12), Qt.AlignLeft | Qt.AlignVCenter, sval)
+        p.end()
 
 
 class DoorsDialog(QDialog):
@@ -2892,9 +3961,13 @@ class DoorsDialog(QDialog):
         lay.addLayout(row)
         self.views = QTabWidget()
         self.preview = DoorPreview()
-        self.sizes = SizesDiagram()
+        self.sizes = DoorKey()
+        from PySide6.QtWidgets import QScrollArea
+        key_scroll = QScrollArea()
+        key_scroll.setWidget(self.sizes)
+        key_scroll.setWidgetResizable(True)
         self.views.addTab(self.preview, "3D view")
-        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        self.views.addTab(key_scroll, "Key (A, B, C...)")
         row.addWidget(self.views, 1)
         self.tabs = QTabWidget()
         row.addWidget(self.tabs, 1)
@@ -2935,6 +4008,9 @@ class DoorsDialog(QDialog):
                 self.w[k] = wdg
                 self.labels[k] = lab
             self.tabs.addTab(page, title)
+        self._add_building_page()
+        self.tabs.setUsesScrollButtons(False)
+        self.views.setUsesScrollButtons(False)
 
         # presets
         prow = QHBoxLayout()
@@ -2947,9 +4023,17 @@ class DoorsDialog(QDialog):
         self.btn_preset_save = b_save
         b_del = QPushButton("Delete")
         b_dir = QPushButton("Folder")
-        for b in (b_save, b_saveas, b_del, b_dir):
+        b_up = QPushButton("\u25b2")
+        b_down = QPushButton("\u25bc")
+        b_up.setToolTip("Move the preset you have open up the list.")
+        b_down.setToolTip("Move the preset you have open down the list.")
+        for b in (b_up, b_down):
+            b.setFixedWidth(30)
+        for b in (b_up, b_down, b_save, b_saveas, b_del, b_dir):
             prow.addWidget(b)
         lay.addLayout(prow)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_down.clicked.connect(lambda: self.move_preset(1))
         b_save.clicked.connect(self.save_preset)
         b_saveas.clicked.connect(lambda: self.save_preset_as())
         b_del.clicked.connect(self.delete_preset)
@@ -2973,6 +4057,259 @@ class DoorsDialog(QDialog):
         self.refresh_presets()
         self.set_values(cur)
         self.read_selection()
+
+    # ---- whole building ----
+    def _add_building_page(self):
+        from PySide6.QtWidgets import QListWidget
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        info = QLabel(("Select the building, some of its wall groups, or just a wall face (the outside "
+                       "face - the %(ns)s go on the face you pick), and click Find. Every opening in "
+                       "the outside of the walls lights up and is listed here. Untick any you don't "
+                       "want, then Build: each %(n)s, with its %(sill)s and head, is joined into its own "
+                       "wall section, flat with the back of the wall - so in Scale Studio's Pieces "
+                       "page each wall lays flat and prints as one piece, %(ns)s and all. The %(n)s "
+                       "is made from the settings on the other pages.") % WB_WORDS)
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        self.b_find = QPushButton("Find openings in the selected building, group or face")
+        self.b_find.setToolTip("Lights up every opening in the outside walls of the selected building "
+                               "or groups, or in the selected face(s) - or the whole model if nothing is "
+                               "selected - and lists them below.")
+        lay.addWidget(self.b_find)
+        self.lst_open = QListWidget()
+        self.lst_open.setToolTip(("Ticked openings get a %(n)s (%(os)s start unticked). Click a line to "
+                                  "light that opening up in the model and look at it; pick a wall in the "
+                                  "model and its openings light up here.") % WB_WORDS)
+        lay.addWidget(self.lst_open, 1)
+        row = QHBoxLayout()
+        b_all = QPushButton("Tick all empty %(n)s openings" % WB_WORDS)
+        b_none = QPushButton("Untick all")
+        row.addWidget(b_all)
+        row.addWidget(b_none)
+        lay.addLayout(row)
+        form = QFormLayout()
+        self.sp_overlap = QDoubleSpinBox()
+        self.sp_overlap.setDecimals(1)
+        self.sp_overlap.setRange(0.0, 200.0)
+        self.sp_overlap.setSuffix(" mm")
+        self.sp_overlap.setValue(WB_DEFAULT_OVERLAP)
+        self.sp_overlap.setToolTip(("How far each %(n)s reaches into the wall round the opening, so "
+                                    "they join into one solid. Real-world mm, like the other sizes. It "
+                                    "never goes more than a quarter of the frame width (A).") % WB_WORDS)
+        form.addRow("%(N)s reaches into the wall" % WB_WORDS, self.sp_overlap)
+        lay.addLayout(form)
+        self.b_build = QPushButton("Build %(ns)s into their walls" % WB_WORDS)
+        self.b_takeout = QPushButton("Take out ticked %(ns)s" % WB_WORDS)
+        self.b_takeout.setToolTip(("Takes the ticked %(ns)s (the ones marked 'has a %(n)s') out of their "
+                                   "walls again, leaving the openings as they were.") % WB_WORDS)
+        self.b_build.setToolTip(("Puts a %(n)s into every ticked opening and joins it into its wall "
+                                 "section. One Undo takes them all away again.") % WB_WORDS)
+        brow2 = QHBoxLayout()
+        brow2.addWidget(self.b_build, 2)
+        brow2.addWidget(self.b_takeout, 1)
+        lay.addLayout(brow2)
+        self.lbl_found = QLabel()
+        self.lbl_found.setWordWrap(True)
+        lay.addWidget(self.lbl_found)
+        self.found = []
+        self._sel_sig = None
+        self._syncing = False
+        from PySide6.QtWidgets import QAbstractItemView
+        from PySide6.QtCore import QTimer
+        self.lst_open.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.lst_open.itemSelectionChanged.connect(self._list_picked)
+        # keep an eye on what's selected in the model, to light up its openings in the list
+        self._sel_timer = QTimer(self)
+        self._sel_timer.setInterval(400)
+        self._sel_timer.timeout.connect(self._watch_selection)
+        self._sel_timer.start()
+        self.b_find.clicked.connect(self.find_openings)
+        self.b_build.clicked.connect(lambda: self.tool.build_into_walls(self))
+        self.b_takeout.clicked.connect(lambda: self.tool.build_into_walls(self, take_out=True))
+        b_all.clicked.connect(lambda: self._tick(True))
+        b_none.clicked.connect(lambda: self._tick(False))
+        self.tabs.addTab(page, "Whole building")
+
+    @staticmethod
+    def _wants(op):
+        """Is this an empty opening of the kind this plugin fills (a doorway for doors)?"""
+        return (not op.get('built') and op['depth'] is not None
+                and bool(op['door']) == (WB_KIND == 'door'))
+
+    def _tick(self, on):
+        from PySide6.QtCore import Qt
+        for i in range(self.lst_open.count()):
+            it = self.lst_open.item(i)
+            want = i < len(self.found) and self._wants(self.found[i])
+            it.setCheckState(Qt.Checked if (on and want) else Qt.Unchecked)
+
+    def find_openings(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QListWidgetItem
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        try:
+            self.found = find_building_openings(scene, self.w['flip'].isChecked())
+        except Exception as e:
+            self.found = []
+            QMessageBox.warning(self, PLUGIN_NAME, "Could not look for openings:\n%s" % e)
+            return
+        # this plugin only: door openings (and doors built in) for doors, the rest for windows
+        self.found = [op for op in self.found
+                      if (op['built'].get('kind', 'window') == WB_KIND if op.get('built')
+                          else (bool(op['door']) == (WB_KIND == 'door') or _raised_door(op)))]
+        self.lst_open.clear()
+        for op in self.found:
+            txt = "%s  -  %.0f x %.0f mm" % (op['name'], op['w'], op['h'])
+            if op.get('built'):
+                txt += "  - has a %s" % op['built'].get('kind', 'window')
+            elif op['depth'] is None:
+                txt += "  (no back of the wall found)"
+            elif _raised_door(op):
+                txt += "  - %.0f mm off the ground: tick it for a door with steps" % op.get('up', 0.0)
+            it = QListWidgetItem(txt)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            if op.get('built'):
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            it.setCheckState(Qt.Checked if self._wants(op) else Qt.Unchecked)
+            self.lst_open.addItem(it)
+        # light them up in the model
+        edges = []
+        for op in self.found:
+            edges += opening_edges(op)
+        try:
+            scene.selection.clear()
+            for e in edges:
+                scene.selection.add(e)
+        except Exception:
+            pass
+        try:
+            self.viewport.notify_scene_changed()
+        except Exception:
+            try:
+                self.viewport.update()
+            except Exception:
+                pass
+        self._sel_sig = self._selection_sig(scene)
+        mine = sum(1 for op in self.found if self._wants(op))
+        nb = sum(1 for op in self.found if op.get('built'))
+        if self.found:
+            pl = lambda n: "" if n == 1 else "s"
+            self.lbl_found.setText(("Found %d empty %s opening%s and %d %s%s already built in (in bold - "
+                                    "click one to load its settings, change them, tick it and Build to "
+                                    "make it again).")
+                                   % (mine, WB_WORDS['n'], pl(mine), nb, WB_WORDS['n'], pl(nb)))
+        else:
+            self.lbl_found.setText(("No %(n)s openings found. Select the building or its walls (groups), "
+                                    "with the openings already cut. If the %(ns)s would go on the "
+                                    "inside, tick '%(N)s faces the other way' on the %(N)s page and "
+                                    "Find again.") % WB_WORDS)
+
+    def _selection_sig(self, scene):
+        return frozenset(id(e) for e in _items(getattr(scene, 'selection', None)))
+
+    def _watch_selection(self):
+        """Something picked in the model (a wall, the building, a wall face or an opening's edges):
+        its openings are lit up in the list, and the list scrolls to the first one."""
+        if not self.found or not self.isVisible():
+            return
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        try:
+            sel = _items(scene.selection)
+            sig = frozenset(id(e) for e in sel)
+        except Exception:
+            return
+        if sig == self._sel_sig:
+            return
+        self._sel_sig = sig
+        groups = [e for e in sel if hasattr(e, 'mesh')]
+        ids = set(sig)
+        rows = []
+        for i, op in enumerate(self.found):
+            hit = id(op['face']) in ids or any(g is op['group'] or _in_tree(g, op['group']) for g in groups)
+            if not hit:
+                try:
+                    hit = any(id(e) in ids for e in opening_edges(op))
+                except Exception:
+                    hit = False
+            if hit:
+                rows.append(i)
+        self._syncing = True
+        try:
+            self.lst_open.clearSelection()
+            for i in rows:
+                if i < self.lst_open.count():
+                    self.lst_open.item(i).setSelected(True)
+            if rows and rows[0] < self.lst_open.count():
+                self.lst_open.scrollToItem(self.lst_open.item(rows[0]))
+        finally:
+            self._syncing = False
+
+    def _list_picked(self):
+        """Clicking openings in the list lights just those up in the model (and one is looked at)."""
+        if self._syncing or not self.found:
+            return
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        rows = sorted(self.lst_open.row(it) for it in self.lst_open.selectedItems())
+        if len(rows) == 1 and rows[0] < len(self.found) and self.found[rows[0]].get('built'):
+            item = self.found[rows[0]]['built']
+            if item.get('kind', 'window') == WB_KIND:
+                # one of ours already built in: its settings into the boxes, ready to change
+                vals = dict(DEFAULTS)
+                vals.update(item.get('values') or {})
+                self.cb_preset.blockSignals(True)
+                self.cb_preset.setCurrentIndex(0)
+                self.cb_preset.blockSignals(False)
+                self.set_values(vals)
+                self.sp_overlap.setValue(item.get('overlap', WB_DEFAULT_OVERLAP))
+                self.lbl_found.setText("Settings of %s loaded. Change them, tick it and click Build to make "
+                                       "it again." % self.found[rows[0]]['name'])
+            else:
+                self.lbl_found.setText("%s has a %s - open %s to change it (or tick it and Build to put a "
+                                       "%s there instead)." % (self.found[rows[0]]['name'], item.get('kind'),
+                                                               WB_WORDS['other_plugin'], WB_WORDS['n']))
+        edges = []
+        for i in rows:
+            if i < len(self.found):
+                op = self.found[i]
+                got = opening_edges(op)
+                # a window or door built into its wall has no opening edges left: light up its wall
+                edges += got if got else [op['group']]
+        try:
+            scene.selection.clear()
+            for e in edges:
+                scene.selection.add(e)
+            self._sel_sig = self._selection_sig(scene)
+        except Exception:
+            return
+        if len(rows) == 1 and rows[0] < len(self.found):
+            try:
+                zoom_to_opening(self.viewport, self.found[rows[0]])
+            except Exception as e:
+                print("%s: couldn't zoom: %s" % (PLUGIN_NAME, e))
+        try:
+            self.viewport.notify_scene_changed()
+        except Exception:
+            try:
+                self.viewport.update()
+            except Exception:
+                pass
+
+    def ticked_openings(self):
+        from PySide6.QtCore import Qt
+        out = []
+        for i in range(min(self.lst_open.count(), len(self.found))):
+            if self.lst_open.item(i).checkState() == Qt.Checked:
+                out.append(self.found[i])
+        return out
 
     # ---- values ----
     def values(self):
@@ -3137,19 +4474,58 @@ class DoorsDialog(QDialog):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem(self.CUSTOM, None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_names():
+            self.cb_preset.addItem(name + "  (built-in)" if name in BUILTIN_PRESETS else name, name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
         self.cb_preset.blockSignals(False)
 
+    def remember(self):
+        """Keeps the preset you have open and the settings, for next time (even after a restart)."""
+        try:
+            name = self.cb_preset.currentData() or getattr(self, '_last_preset', None)
+            save_last(name, self.values())
+        except Exception:
+            pass
+
+    def show_preset_name(self, name):
+        """Puts a preset's name in the list without loading it over the settings."""
+        if not name:
+            return
+        self.cb_preset.blockSignals(True)
+        for i in range(self.cb_preset.count()):
+            if self.cb_preset.itemData(i) == name:
+                self.cb_preset.setCurrentIndex(i)
+        self.cb_preset.blockSignals(False)
+
+    def preset_names(self):
+        """Every preset, built-in and your own, in the order you've arranged them."""
+        names = list(BUILTIN_PRESETS) + [n for n in sorted(self.user_presets) if n not in BUILTIN_PRESETS]
+        order = load_order()
+        return [n for n in order if n in names] + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        """Moves the preset you have open up (-1) or down (+1) the list, and remembers the order."""
+        name = self.cb_preset.currentData()
+        if not name:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick a preset in the list first, then move it.")
+            return
+        names = self.preset_names()
+        i = names.index(name) if name in names else -1
+        j = i + step
+        if i < 0 or j < 0 or j >= len(names):
+            return
+        names[i], names[j] = names[j], names[i]
+        save_order(names)
+        self.refresh_presets(select=name)
+
     def apply_preset(self, *_):
         name = self.cb_preset.currentData()
         p = self.all_presets().get(name) if name else None
+        if p:
+            self._last_preset = name
+            QTimer_remember(self)
         if p:
             # built-in presets are complete doors: start them from the defaults
             self.set_values(dict(DEFAULTS, **p) if name in BUILTIN_PRESETS else p)
@@ -3197,6 +4573,8 @@ class DoorsDialog(QDialog):
             return False
         self.user_presets = load_presets()
         self.refresh_presets(select=name)
+        self._last_preset = name
+        self.remember()
         return True
 
     def delete_preset(self):
@@ -3252,13 +4630,30 @@ class PeriodDoorsTool(Tool):
                     return
             except Exception:
                 pass
+        # always open with the preset you used last (as it's saved); failing that, the settings
+        # as you left them
         cur = dict(DEFAULTS)
-        if PeriodDoorsTool._saved:
+        last = load_last()
+        pname = last.get('preset')
+        presets = dict(BUILTIN_PRESETS)
+        presets.update(load_presets())
+        if pname and pname in presets:
+            cur.update({k: x for k, x in presets[pname].items() if k in DEFAULTS})
+        elif PeriodDoorsTool._saved:
             cur.update(PeriodDoorsTool._saved)
+        elif isinstance(last.get('values'), dict):
+            cur.update({k: x for k, x in last['values'].items() if k in DEFAULTS})
         dlg = DoorsDialog(cur, viewport, self)
         PeriodDoorsTool._dialog = dlg
+        dlg._last_preset = pname if (pname and pname in presets) else None
+        dlg.show_preset_name(dlg._last_preset)
 
         def closed(*_):
+            try:
+                PeriodDoorsTool._saved = dlg.values()
+                dlg.remember()
+            except Exception:
+                pass
             PeriodDoorsTool._dialog = None
         dlg.finished.connect(closed)
         eddy_window(dlg, PLUGIN_NAME, EDDY_TIPS, place=True)  # eddy-window
@@ -3270,6 +4665,7 @@ class PeriodDoorsTool(Tool):
     def add_from_dialog(self, dlg):
         v = dlg.values()
         PeriodDoorsTool._saved = dict(v)
+        dlg.remember()
         viewport = dlg.viewport
         scene = getattr(viewport, 'scene', None)
         faces = selected_faces(scene) if scene is not None else []
@@ -3319,6 +4715,7 @@ class PeriodDoorsTool(Tool):
             for poly in polys:
                 n += 1
                 vv = dict(v)
+                vv['_drop'] = door_drop(frame, poly, mesh, v)
                 zlift = gap                     # no wall behind: just sit a hair off the face
                 if info is not None:
                     # cut right through: everything sits on the back of the wall
@@ -3372,6 +4769,102 @@ class PeriodDoorsTool(Tool):
             if made and not holes:
                 used.append(face)
         return parts, problems, used, cuts
+
+    def build_into_walls(self, dlg, take_out=False):
+        """Whole building page: a window / door in every ticked opening (one already there is made
+        again with the settings as they are now), joined into its wall section. With take_out, the
+        ticked ones are taken out again instead. Each wall is built again from the plain wall kept
+        with it, with everything in it (the other plugin's windows or doors kept as they were)."""
+        v = dlg.values()
+        type(self)._saved = dict(v)
+        dlg.remember()
+        ops = dlg.ticked_openings()
+        if take_out:
+            ops = [op for op in ops if op.get('built')]
+        if not ops:
+            QMessageBox.information(dlg, PLUGIN_NAME, ("Tick the ones you want taken out (marked 'has a "
+                                    "window' or 'has a door')." if take_out else "Click 'Find openings' "
+                                    "first, and tick the openings you want %s in." % WB_WORDS['ns']))
+            return
+        overlap = dlg.sp_overlap.value()
+        stale = [op for op in ops if getattr(op['group'], 'mesh', None) is not op['mesh']
+                 or (op['face'] is not None
+                     and all(op['face'] is not f for f in _items(getattr(op['mesh'], 'faces', None))))]
+        if stale:
+            QMessageBox.information(dlg, PLUGIN_NAME, "The model has changed since Find. Click "
+                                    "'Find openings' again.")
+            return
+        keep_v = {k: v[k] for k in PRESET_KEYS if k in v}
+        walls = []                                   # [(group, mesh, record)]
+        for op in ops:
+            for w in walls:
+                if w[0] is op['group']:
+                    rec = w[2]
+                    break
+            else:
+                old = wall_record(op['group'])
+                rec = json.loads(json.dumps(old)) if old else {
+                    'orig': [[list(map(list, pts)), [list(map(list, h)) for h in hls]]
+                             for pts, hls in _faces_of_mesh(op['mesh'])],
+                    'items': []}
+                walls.append((op['group'], op['mesh'], rec))
+            rec['items'] = [w_ for w_ in rec['items'] if not (w_['fi'] == op['fi'] and w_['k'] == op['k'])]
+            if not take_out:
+                O, U, V_, N = op['frame']
+                rec['items'].append({
+                    'kind': WB_KIND, 'fi': op['fi'], 'k': op['k'], 'name': op['name'],
+                    'poly': [list(p) for p in op['poly']], 'depth': op['depth'],
+                    'frame': [list(O), list(U), list(V_), list(N)],
+                    'values': dict(keep_v), 'overlap': overlap})
+        swaps, problems, loose = [], [], []
+        for g, mesh, rec in walls:
+            plain, _bad = _mesh_from([(pts, hls) for pts, hls in rec['orig']])
+            sols, kept = [], []
+            for w_ in rec['items']:
+                try:
+                    sols += item_solids(w_, WB_KIND)
+                    kept.append(w_)
+                except ValueError as e:
+                    problems.append("%s: %s" % (w_.get('name', 'an opening'), e))
+                    if w_.get('kind') != WB_KIND:
+                        kept.append(w_)          # not ours: never lose it
+            rec['items'] = kept
+            if sols:
+                new, ok, why = join_into_wall(plain, sols)
+                if not ok:
+                    loose.append("%s (%s)" % (getattr(g, 'name', 'a wall'), why))
+                new_rec = rec
+            else:
+                new, new_rec = plain, None           # nothing left in it: the plain wall again
+            old_rec = wall_record(g)
+            swaps.append((g, mesh, new, json.loads(json.dumps(old_rec)) if old_rec else None, new_rec))
+        try:
+            dlg.viewport.history.execute(wall_swap_command(swaps))
+        except Exception as e:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "Could not change the walls:\n%s" % e)
+            return
+        try:
+            dlg.viewport.notify_scene_changed()
+        except Exception:
+            pass
+        pl = lambda n: "" if n == 1 else "s"
+        if take_out:
+            lines = ["%d taken out." % len(ops)]
+        else:
+            lines = ["%d %s%s built into %d wall section%s." % (len(ops), WB_WORDS['n'], pl(len(ops)),
+                                                               len(swaps), pl(len(swaps)))]
+        if loose:
+            lines.append("Couldn't join into one solid, so they're in the wall's piece but "
+                         "overlapping it (slicers join them when printing): " + "; ".join(loose))
+        lines.append("Close the plugin whenever you like: Find picks these up again to change them. "
+                     "To print: Scale Studio's Pieces page, 'Every group with faces', tick 'Lay each "
+                     "piece flat'.")
+        dlg.lst_open.clear()
+        dlg.found = []
+        dlg.lbl_found.setText("\n".join(lines))
+        dlg.show_report(lines)
+        if problems:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Some were skipped:\n" + "\n".join(problems))
 
     def add_to_scene(self, viewport, parts, remove=(), cuts=None):
         """Adds the groups and takes away the faces in `remove`, as one undo step."""

@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "floor_plan"
+source = "plugins/3D_Eddys/ed3d_floor_plan.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["drawing", "fabrication"]
+
+[name]
+es = "Planta 3D"
+en = "3D Floor Plan"
+pt = "Planta 3D"
+
+[summary]
+es = "Levanta el casco de un edificio a partir de su planta: rectángulo, L, T, U, tus propias esquinas o una cara que elijas. Muros metidos hacia dentro según su grosor, con esquinas a tope o a inglete, partidos en cada planta (alturas una a una o el total dividido), con forjados o suelos encajados, tabiques con puerta (cada uno un objeto en su planta: en su sitio, tumbado al lado o unido al suelo), zócalo y placa superior. Cada pieza es un grupo aparte, lista para tumbar en la cama de impresión."
+en = "Builds the shell of a building from its floor plan: rectangle, L, T, U, your own corners or a face you pick. Walls set in by their thickness, with flat or mitred corners, split at each floor (heights one by one or the total divided), with floor slabs or drop-in floors, room dividers with doorways (each an object on its floor: in place, laid flat beside the building or joined to its floor), a plinth and a top plate. Every piece is its own group, ready to lay flat on the print bed."
+pt = "Levanta o casco de um edifício a partir da sua planta: retângulo, L, T, U, os seus próprios cantos ou uma face que escolha. Paredes recuadas pela sua espessura, com cantos topo a topo ou em meia-esquadria, divididas em cada piso (alturas uma a uma ou o total dividido), com lajes ou pisos encaixados, divisórias com porta (cada uma um objeto no seu piso: no lugar, deitada ao lado ou unida ao piso), plinto e placa de topo. Cada peça é um grupo à parte, pronta a deitar na mesa de impressão."

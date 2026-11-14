@@ -26,6 +26,12 @@ Weathering: rust holes, a rusted ragged bottom edge, missing sheets (showing the
 behind), sheets hanging skew off one nail and sheets lifting at the foot. Flashings round
 openings and corner trims too.
 
+Ridge capping along the top of a roof (angular, roll-top or half-round), half on each slope
+so it prints flat with the sheets. Sheets and ridge go round any chimney on the roof.
+Or click a whole group - the building, a shed - and every roof slope (or wall, or both) in it
+is clad at once. Each face comes out as a group of its own, with its sheets, rails, trims and
+flashing each a piece of their own, ready to print apart.
+
 Sizes are real-world millimetres (IngeTrazo stores metres). Ctrl+Alt+I.
 """
 
@@ -42,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Corrugated Iron"
-VERSION = "1"
+VERSION = "3"
 
 
 def _ed3d_organise(scene, group):
@@ -77,7 +83,9 @@ DEFAULTS = dict(
     missing=0.0, rot_h=0.0, holes=0.0, hole_size=150.0, skew_pct=0.0, skew_ang=8.0,
     lifted_pct=0.0, lifted_mm=40.0, seed=1,
     hole_gap=10.0, trims=False, trim_w=150.0, trim_t=16.0,
-    corners=False, corner_w=150.0, backing=0.0, lift=0.01, flip=False, remove_face=False)
+    corners=False, corner_w=150.0, backing=0.0, lift=0.01, flip=False, remove_face=False,
+    group_what='roofs', round_chimneys=True,
+    ridge=False, ridge_style='angular', ridge_w=200.0, ridge_h=60.0, ridge_len=1800.0, ridge_gap=10.0)
 
 # ready-made settings, most for printing at 1:80 with a 0.4 mm nozzle (real mm / 80 = model)
 BUILTIN_PRESETS = {
@@ -1269,6 +1277,471 @@ def face_frame(face, flip=False, turn=0):
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Finding the faces to clad in a picked group (the building, a shed)
+# ---------------------------------------------------------------------------
+# never clad when a whole group is picked: sheets and tiles made before, and Subframe's bars
+GROUP_SKIP = ("Sheeting - ", "Roof - ", "Subframe", "Roof truss", "Glazing frames", "Fascia and barge boards",
+              "Chimney", "Industrial chimney", "Roof vent", "Doig", "Weather vane")
+GROUP_WHAT = [("Roof slopes", 'roofs'), ("Walls", 'walls'), ("Roofs and walls", 'both')]
+
+
+class WorldFace:
+    """A face from inside a group, its corners already where they really are (moved groups
+    and copies come through their placement)."""
+    def __init__(self, pts, holes):
+        self.vertices = pts
+        self.holes = holes
+
+
+def _is_face(e):
+    return hasattr(e, 'loop') or 'face' in type(e).__name__.lower()
+
+
+def selected_groups(scene):
+    return [e for e in _items(getattr(scene, 'selection', None))
+            if getattr(e, 'mesh', None) is not None and not _is_face(e)]
+
+
+def _kids(g):
+    return [c for c in _items(getattr(g, 'children', None)) + _items(getattr(g, 'groups', None))
+            if not _is_face(c)]
+
+
+def _placements(top):
+    """(group, world matrix or None) for a group and every group inside it - the same way
+    Scale Studio finds where each piece really is."""
+    try:
+        from core.group import iter_placements
+        return list(iter_placements(top))
+    except Exception:
+        pass
+    out = []
+
+    def walk(g, base, depth):
+        m = getattr(g, 'xform', None)
+        if base is not None:
+            m = base if m is None else base * m
+        out.append((g, m))
+        if depth < 12:
+            for c in _kids(g):
+                walk(c, m, depth + 1)
+    walk(top, None, 0)
+    return out
+
+
+def faces_in_groups(groups):
+    """Every face inside the picked groups, in world space: ([WorldFace], [names left out])."""
+    out, skipped = [], []
+    for top in groups:
+        place = {}
+        for g, m in _placements(top):
+            place.setdefault(id(g), m)
+
+        def wpos(q, m):
+            p = _pos(q)
+            if p is None or m is None:
+                return p
+            try:
+                r = m.map(QVector3D(*p))
+                return (float(r.x()), float(r.y()), float(r.z()))
+            except Exception:
+                return p
+
+        def walk(g, lvl):
+            nm = str(getattr(g, 'name', '') or '')
+            if nm.startswith(GROUP_SKIP):
+                skipped.append(nm)
+                return
+            m = place.get(id(g))
+            for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                pts = [p for p in (wpos(q, m) for q in _items(getattr(f, 'vertices', None))) if p is not None]
+                if len(pts) < 3:
+                    continue
+                hs = []
+                for h in _items(getattr(f, 'holes', None)):
+                    hp = [p for p in (wpos(q, m) for q in _items(h)) if p is not None]
+                    if len(hp) >= 3:
+                        hs.append(hp)
+                out.append(WorldFace(pts, hs))
+            if lvl < 12:
+                for c in _kids(g):
+                    walk(c, lvl + 1)
+        walk(top, 0)
+    return out, skipped
+
+
+def _area3(pts):
+    nx = ny = nz = 0.0
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    return 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
+
+
+def _join(A, B, tol):
+    """Two outlines (both counter-clockwise) sharing an edge, joined into one - or None."""
+    na, nb = len(A), len(B)
+    same = lambda p, q: abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+    for i in range(na):
+        P, Q = A[i], A[(i + 1) % na]
+        for k in range(nb):
+            if same(B[k], Q) and same(B[(k + 1) % nb], P):
+                pa = [A[(i + 1 + j) % na] for j in range(na)]          # Q ... P
+                pb = [B[(k + 1 + j) % nb] for j in range(nb)]          # P ... Q
+                return clean(pa + pb[1:-1])
+    return None
+
+
+def merge_coplanar(slopes, tol=1.0):
+    """A roof slope drawn as several faces (say two triangles) is joined back into one, so its
+    courses run straight across it. slopes: [[tw, outline, holes, up]] - changed in place."""
+    merged = True
+    while merged:
+        merged = False
+        for i, a in enumerate(slopes):
+            O = a[0]((0.0, 0.0, 0.0))
+            Uu = v_norm(v_sub(a[0]((1.0, 0.0, 0.0)), O))
+            Vu = v_norm(v_sub(a[0]((0.0, 1.0, 0.0)), O))
+            Na = v_norm(v_sub(a[0]((0.0, 0.0, 1.0)), O))
+
+            def to_a(P, O=O, Uu=Uu, Vu=Vu):
+                d = v_sub(P, O)
+                return (v_dot(d, Uu) / SCALE, v_dot(d, Vu) / SCALE)
+            for b in slopes[i + 1:]:
+                Ob = b[0]((0.0, 0.0, 0.0))
+                Nb = v_norm(v_sub(b[0]((0.0, 0.0, 1.0)), Ob))
+                if v_dot(Na, Nb) < 0.9999 or abs(v_dot(v_sub(Ob, O), Na)) / SCALE > tol:
+                    continue
+                bo = clean([to_a(b[0]((x, y, 0.0))) for x, y in b[1]])
+                if not bo:
+                    continue
+                u = _join(a[1], bo, tol)
+                if u is None:
+                    continue
+                a[1] = u
+                a[2] = list(a[2]) + [h for h in (clean([to_a(b[0]((x, y, 0.0))) for x, y in hl])
+                                                 for hl in b[2]) if h]
+                slopes.remove(b)
+                merged = True
+                break
+            if merged:
+                break
+    return slopes
+
+
+def pick_sheet_faces(faces, what):
+    """The faces of a picked group to clad: roof slopes (sloping, facing up), walls (upright,
+    facing out of the building) or both. Floors, flat tops, the undersides and insides, and
+    narrow faces (wall tops, window reveals, the edges of thick roofs) are left out."""
+    if not faces:
+        return []
+    allp = [q for f in faces for q in f.vertices]
+    cx = (min(q[0] for q in allp) + max(q[0] for q in allp)) / 2.0
+    cy = (min(q[1] for q in allp) + max(q[1] for q in allp)) / 2.0
+    out = []
+    for f in faces:
+        pts = f.vertices
+        n = _newell(pts)
+        roof = 0.05 < n[2] < 0.995
+        wall = abs(n[2]) <= 0.05
+        if not ((roof and what in ('roofs', 'both')) or (wall and what in ('walls', 'both'))):
+            continue
+        area = _area3(pts) / (SCALE * SCALE)
+        longest = max(v_len(v_sub(pts[(i + 1) % len(pts)], pts[i])) for i in range(len(pts))) / SCALE
+        if area < 1.0 or longest < 1e-6 or area / longest < 200.0:
+            continue
+        if wall:
+            # facing out of the building: away from the middle of it, in plan
+            fc = (sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts))
+            if n[0] * (fc[0] - cx) + n[1] * (fc[1] - cy) <= 0.0:
+                continue
+            if min(area / longest, longest) < 400.0:
+                continue                  # a window or door reveal, not a wall
+        out.append(f)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Going round chimneys: the tiles (or sheets) are cut round any chimney standing on the
+# roof, and the ridge stops either side of one that stands astride it
+# ---------------------------------------------------------------------------
+CHIMNEY_WORDS = ("chimney", "roof vent", "doig")
+
+
+def _wpos(q, m):
+    p = _pos(q)
+    if p is None or m is None:
+        return p
+    try:
+        r = m.map(QVector3D(*p))
+        return (float(r.x()), float(r.y()), float(r.z()))
+    except Exception:
+        return p
+
+
+def find_chimneys(scene):
+    """Every chimney in the model, as a list of its corners in world space - one list for
+    each group with 'chimney' (or 'roof vent') in its name: ones Chimneys built, or your own."""
+    out = []
+    for top in _items(getattr(scene, 'groups', None)):
+        place = {}
+        try:
+            for g, m in _placements(top):
+                place.setdefault(id(g), m)
+        except Exception:
+            pass
+
+        def grab(h, pts, lvl):
+            m = place.get(id(h))
+            for f in _items(getattr(getattr(h, 'mesh', None), 'faces', None)):
+                for q in _items(getattr(f, 'vertices', None)):
+                    p = _wpos(q, m)
+                    if p is not None:
+                        pts.append(p)
+            if lvl < 12:
+                for c in _kids(h):
+                    grab(c, pts, lvl + 1)
+
+        def walk(g, lvl):
+            nm = str(getattr(g, 'name', '') or '').lower()
+            if any(w in nm for w in CHIMNEY_WORDS):
+                pts = []
+                grab(g, pts, 0)
+                if len(pts) >= 3:
+                    out.append(pts)
+                return
+            if lvl < 12:
+                for c in _kids(g):
+                    walk(c, lvl + 1)
+        walk(top, 0)
+    return out
+
+
+def _hull2(pts):
+    pts = sorted(set((round(p[0], 6), round(p[1], 6)) for p in pts))
+    if len(pts) < 3:
+        return None
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, hi = [], []
+    for p in pts:
+        while len(lo) >= 2 and cross(lo[-2], lo[-1], p) <= 0:
+            lo.pop()
+        lo.append(p)
+    for p in reversed(pts):
+        while len(hi) >= 2 and cross(hi[-2], hi[-1], p) <= 0:
+            hi.pop()
+        hi.append(p)
+    h = lo[:-1] + hi[:-1]
+    return h if len(h) >= 3 else None
+
+
+def _grow_convex(poly, d):
+    """A convex outline (counter-clockwise) made d bigger all round."""
+    n = len(poly)
+    out = []
+    for i in range(n):
+        a, b, c = poly[i - 1], poly[i], poly[(i + 1) % n]
+        e1 = (b[0] - a[0], b[1] - a[1])
+        e2 = (c[0] - b[0], c[1] - b[1])
+        l1, l2 = math.hypot(*e1) or 1.0, math.hypot(*e2) or 1.0
+        n1 = (e1[1] / l1, -e1[0] / l1)
+        n2 = (e2[1] / l2, -e2[0] / l2)
+        k = 1.0 + n1[0] * n2[0] + n1[1] * n2[1]
+        k = max(k, 0.2)
+        out.append((b[0] + d * (n1[0] + n2[0]) / k, b[1] + d * (n1[1] + n2[1]) / k))
+    return out
+
+
+def chimney_holes(tw, outline, chims, clear=10.0, reach=300.0):
+    """Where each chimney stands on this roof face, in the face's own terms (mm): its outline
+    where it meets the roof (taken from the part of it within `reach` mm above the roof, so the
+    wider oversailing top and the pots don't count), made `clear` mm bigger all round. Only
+    chimneys that are on this face."""
+    O = tw((0.0, 0.0, 0.0))
+    U = v_norm(v_sub(tw((1.0, 0.0, 0.0)), O))
+    V = v_norm(v_sub(tw((0.0, 1.0, 0.0)), O))
+    N = v_norm(v_sub(tw((0.0, 0.0, 1.0)), O))
+    if N[2] < 0.05:
+        return []                                  # an upright face: no chimney stands on it
+    x0, x1, y0, y1 = bbox(outline)
+    holes = []
+    for pts in chims:
+        flat = []
+        for P in pts:
+            hv = v_dot(v_sub(P, O), N) / N[2]      # how far above the roof, straight up (m)
+            if hv / SCALE > reach:
+                continue
+            Q = (P[0], P[1], P[2] - hv)            # straight down onto the roof's plane
+            d = v_sub(Q, O)
+            flat.append((v_dot(d, U) / SCALE, v_dot(d, V) / SCALE))
+        h = _hull2(flat)
+        if not h:
+            continue
+        hb = bbox(h)
+        if hb[1] <= x0 or hb[0] >= x1 or hb[3] <= y0 or hb[2] >= y1:
+            continue                               # not on this face
+        h = clean(_grow_convex(h, clear))
+        if h:
+            holes.append(h)
+    return holes
+
+
+def ridge_cuts(holes, outline, reach):
+    """The stretches along the top edge where a chimney stands astride the ridge: [(x from, x to)]."""
+    y1 = bbox(outline)[3]
+    out = []
+    for h in holes:
+        hb = bbox(h)
+        if hb[3] >= y1 - reach:
+            out.append((hb[0], hb[1]))
+    return out
+
+
+def split_edges(edges, cuts):
+    """The ridge's top edges with the chimneys' stretches taken out: [(from, to, real start, real end)]
+    - 'real' meaning an end of the roof, not the side of a chimney (finials only go on those)."""
+    out = []
+    for xa, xb in edges:
+        segs = [(xa, xb)]
+        for ca, cb in cuts:
+            nxt = []
+            for a, b in segs:
+                if cb <= a or ca >= b:
+                    nxt.append((a, b))
+                else:
+                    if ca > a:
+                        nxt.append((a, ca))
+                    if cb < b:
+                        nxt.append((cb, b))
+            segs = nxt
+        for a, b in segs:
+            if b - a > 1.0:
+                out.append((a, b, abs(a - xa) < 1e-6, abs(b - xb) < 1e-6))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Ridge capping: half on each slope (so each half prints flat with its sheets), meeting in
+# the middle over the ridge, in lengths with a joint between them
+# ---------------------------------------------------------------------------
+CAP_STYLES = [("angular", "Angular (bent sheet)"), ("roll", "Roll-top"), ("round", "Half-round")]
+
+
+def cap_profile(style, s, h, a):
+    """Height of the half capping at s = 0 (over the ridge) .. 1 (where it meets the sheets)."""
+    if style == 'angular':
+        return h * (1.0 - s)
+    z = h * math.sqrt(max(0.0, 1.0 - s * s))
+    if style == 'roll':
+        rr = min(0.3 * a, 0.45 * h)               # a roll along the very top
+        u = s * a / rr
+        if u < 1.0:
+            z += rr * 0.8 * math.sqrt(max(0.0, 1.0 - u * u))
+    return z
+
+
+def cap_top_edges(outline):
+    """The level stretches of the outline's top edge: [(x from, x to)] at the highest y."""
+    x0, x1, y0, y1 = bbox(outline)
+    tol = 1e-3 * (1.0 + y1 - y0)
+    out = []
+    n = len(outline)
+    for i in range(n):
+        (ax, ay), (bx, by) = outline[i], outline[(i + 1) % n]
+        if abs(ay - y1) < tol and abs(by - y1) < tol and abs(bx - ax) > 1.0:
+            out.append((min(ax, bx), max(ax, bx)))
+    return out, y1
+
+
+def build_cap(outline, v, zr0, up=(0.0, 1.0), cuts=()):
+    """Half ridge capping along the face's top edge (local mm: x along, y up the slope, z out),
+    sitting on the sheets at height zr0, stopping either side of any chimney (cuts).
+    Returns (solids, lengths)."""
+    edges, y1 = cap_top_edges(outline)
+    if not edges:
+        return [], 0
+    a, h = max(1.0, v['ridge_w']), max(1.0, v['ridge_h'])
+    style = v.get('ridge_style', 'angular')
+    rl, rg = max(10.0, v['ridge_len']), max(0.0, v['ridge_gap'])
+    uy, uz = up
+    s0 = zr0 / uz if uz > 1e-6 else 0.0
+    C = (y1 + s0 * uy, zr0)                       # over the ridge line, on the sheets
+    foot = (y1 - a, zr0)
+    ed = foot[0] - C[0]
+    sec = [C]
+    for k in range(17):
+        sk = k / 16.0
+        f = cap_profile(style, sk, h, a)
+        sec.append((C[0] + f * uy + sk * ed, C[1] + f * uz))
+    sec.append(foot)
+    sec = clean(sec)
+    if not sec:
+        return [], 0
+    out, count = [], 0
+    for xa, xb, _ea, _eb in split_edges(edges, cuts):
+        n = max(1, int(round((xb - xa) / rl)))
+        step = (xb - xa) / n
+        for i in range(n):
+            sa = xa + i * step + (rg / 2 if i > 0 else 0.0)
+            sb = xa + (i + 1) * step - (rg / 2 if i < n - 1 else 0.0)
+            if sb - sa < 1.0:
+                continue
+            so = slab(sec, lambda p_, q_, sa=sa: sa, lambda p_, q_, sb=sb: sb)
+            if so:
+                out.append(so.mapped(lambda q: (q[2], q[0], q[1])))
+                count += 1
+    return out, count
+
+
+CAP_FIELDS = [
+    ('ridge_w', "N   Capping width (down the slope)", 10.0, 2000.0, 0, " mm",
+     "How far each half of the capping reaches down its slope, over the sheets."),
+    ('ridge_h', "P   Capping height", 2.0, 1000.0, 0, " mm", "How high the capping stands above the sheets."),
+    ('ridge_len', "Q   Capping length", 100.0, 10000.0, 0, " mm", "How long each length of capping is."),
+    ('ridge_gap', "R   Joint between lengths", 0.0, 200.0, 1, " mm",
+     "The gap between lengths of capping (a fine line to show the joint)."),
+]
+
+
+# what you last used and the order of your presets - kept between sessions
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_corrugated_iron.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception as e:
+        print("%s: could not keep your settings: %s" % (PLUGIN_NAME, e))
+
+
+def remember_last(values):
+    keep = {k: val for k, val in values.items()
+            if not k.startswith('_') and isinstance(val, (bool, int, float, str, type(None)))}
+    _ui_settings_save(last=keep)
+
+
+def last_used():
+    d = _ui_settings().get('last')
+    return d if isinstance(d, dict) else {}
+
+
 def _safe_name(name):
     return "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip() or "preset"
 
@@ -1773,8 +2246,34 @@ def sheet_sizes_drawing(v):
             dims.append(('J', (xr, rows[1][0]), (xr, rows[0][1]), (1, 0), 12))
     else:
         dims.append(('H', (Fw, G * 0.5), (Fw + Hs, G * 0.5), (0, -1), 0))
-    panels.append({'title': "Front", 'box': (0.0, 0.0, 0.5, 1.0), 'polys': polys, 'lines': lines,
-                   'dims': dims, 'stretch': 1.0})
+    ridge_on = bool(v.get('ridge'))
+    panels.append({'title': "Front", 'box': (0.0, 0.0, 0.5, 0.6 if ridge_on else 1.0), 'polys': polys,
+                   'lines': lines, 'dims': dims, 'stretch': 1.0})
+    if ridge_on:
+        # the ridge capping end on (N, P), and from the side (Q, R)
+        a_, h_ = max(1.0, v['ridge_w']), max(1.0, v['ridge_h'])
+        sl_ = 0.45
+        roof_ = [(-1.4 * a_, -1.4 * a_ * sl_), (0.0, 0.0), (1.4 * a_, -1.4 * a_ * sl_)]
+        top_ = []
+        for k in range(-16, 17):
+            x_ = a_ * k / 16.0
+            top_.append((x_, -abs(x_) * sl_ + cap_profile(v.get('ridge_style', 'angular'), abs(k) / 16.0, h_, a_)))
+        cap_ = top_ + [(a_, -a_ * sl_), (0.0, 0.0), (-a_, -a_ * sl_)]
+        th_ = max(E, a_ * 0.06)
+        polys_ = [([roof_[0], roof_[1], roof_[2], (roof_[2][0], roof_[2][1] - th_), (0.0, -th_),
+                    (roof_[0][0], roof_[0][1] - th_)], MET2), (cap_, MET)]
+        dims_ = [('N', (-a_, -a_ * sl_), (0.0, -a_ * sl_), (0, -1), 22),
+                 ('P', (a_ * 1.1, 0.0), (a_ * 1.1, h_), (1, 0), 6)]
+        panels.append({'title': "Ridge, end on", 'box': (0.0, 0.62, 0.27, 1.0), 'polys': polys_,
+                       'lines': [((0.0, 0.0), (a_ * 1.15, 0.0), (150, 150, 150))], 'dims': dims_, 'stretch': 1.0})
+        Q_ = max(10.0, v['ridge_len'])
+        R_ = max(Q_ * 0.05, v['ridge_gap'])        # the joint drawn wide enough to see
+        hh_ = max(Q_ * 0.12, 1.0)
+        polys_ = [([(0.0, 0.0), (Q_, 0.0), (Q_, hh_), (0.0, hh_)], MET),
+                  ([(Q_ + R_, 0.0), (2 * Q_ + R_, 0.0), (2 * Q_ + R_, hh_), (Q_ + R_, hh_)], MET2)]
+        dims_ = [('Q', (0.0, hh_), (Q_, hh_), (0, 1), 10), ('R', (Q_, 0.0), (Q_ + R_, 0.0), (0, -1), 10)]
+        panels.append({'title': "Ridge from the side", 'box': (0.27, 0.62, 0.5, 1.0), 'polys': polys_,
+                       'lines': [], 'dims': dims_, 'stretch': 1.0})
 
     # --- cut across the corrugations ---
     polys, lines, dims = [], [], []
@@ -1825,8 +2324,18 @@ def sheet_sizes_drawing(v):
         if I_ > 0:
             dims.append(('I', (t_s, G), (t_s + I_, G), (0, -1), 12))
         dims.append(('E', (0.0, G + Gs * 0.8), (E, G + Gs * 0.8), (0, 1), 10))
-    lines.append(((-E * 0.2 if not real else 0.0, G - Gs - 40), (-E * 0.2 if not real else 0.0, G + Gs + 40),
-                  (150, 150, 150)))
+        Bk = max(0.0, v.get('backing', 0.0))
+        if Bk > 0:
+            # the backing sheet behind the sheets (L), a hair clear of the face (M, drawn wider)
+            Bd = max(Bk, 0.5 * t_s)
+            Md = max(v.get('lift', 0.0), 0.25 * t_s)
+            polys.append(([(-Bd, G - Gs), (0.0, G - Gs), (0.0, G + Gs), (-Bd, G + Gs)], (126, 118, 110)))
+            dims.append(('L', (-Bd, G - Gs * 0.7), (0.0, G - Gs * 0.7), (0, -1), 10))
+            lines.append(((-Bd - Md, G - Gs - 40), (-Bd - Md, G + Gs + 40), (150, 150, 150)))
+            dims.append(('M', (-Bd - Md, G + Gs * 0.5), (-Bd, G + Gs * 0.5), (0, 1), 10))
+    if real or not max(0.0, v.get('backing', 0.0)) > 0:
+        lines.append(((-E * 0.2 if not real else 0.0, G - Gs - 40), (-E * 0.2 if not real else 0.0, G + Gs + 40),
+                      (150, 150, 150)))
     width = max(p[0] for pp, _ in polys for p in pp) or 1.0
     panels.append({'title': "Cut up the sheets (across exaggerated)", 'box': (0.52, 0.46, 1.0, 1.0),
                    'polys': polys, 'lines': lines, 'dims': dims, 'stretch': max(1.0, Gs * 0.45 / width)})
@@ -1956,9 +2465,9 @@ FIELDS = [
     ('lap', "J   End lap (real sheets)", 0.0, 1000.0, 0, " mm",
      "Real sheets: how far each sheet laps down over the one below. They also lap one corrugation at "
      "the sides."),
-    ('backing', "Backing sheet thickness", 0.0, 500.0, 1, " mm",
+    ('backing', "L   Backing sheet thickness", 0.0, 500.0, 1, " mm",
      "A solid sheet under it all, the shape of the face, so it prints as one piece. 0 = none."),
-    ('lift', "Gap off the face", 0.0, 5.0, 3, " mm",
+    ('lift', "M   Gap off the face", 0.0, 5.0, 3, " mm",
      "A hair's gap between the sheets and the face, so the slicer doesn't see faces lying exactly on "
      "top of each other. 0.01 mm is plenty."),
 ]
@@ -1997,8 +2506,9 @@ class SheetDialog(QDialog):
         self.user_presets = load_presets()
         self._busy = False
         lay = QVBoxLayout(self)
-        self.lbl = QLabel("Select a face (a wall or a roof slope), then click 'Clad selected face(s)'. "
-                          "Sizes are real-world mm.")
+        self.lbl = QLabel("Select a face (a wall or a roof slope) - or click a whole group, the building or "
+                          "a shed, to clad every roof slope or wall in it at once - then click 'Clad "
+                          "selected face(s) or group'. Sizes are real-world mm.")
         self.lbl.setWordWrap(True)
         self.lbl.setStyleSheet("font-weight: bold;")
         lay.addWidget(self.lbl)
@@ -2057,6 +2567,17 @@ class SheetDialog(QDialog):
                                   "see-through derelict shed (set the backing to 0). Don't use it on the face "
                                   "of a solid wall. Undo puts it back.")
         form.addRow(self.cb_remove)
+        self.cb_what = QComboBox()
+        for lab_, k_ in GROUP_WHAT:
+            self.cb_what.addItem(lab_, k_)
+        self.cb_what.setToolTip("When you click a whole group (the building, a shed): what gets clad - its roof "
+                                "slopes, its outside walls, or both. A single face you pick is always clad.")
+        form.addRow("From a group, clad", self.cb_what)
+        self.cb_chim = QCheckBox("Go round chimneys")
+        self.cb_chim.setToolTip("Sheets are cut round any chimney standing on the roof (one Chimneys built, or "
+                                "your own group with 'chimney' in its name), and the ridge capping stops either "
+                                "side of a chimney on the ridge.")
+        form.addRow(self.cb_chim)
 
         page2 = QWidget()
         wf = QFormLayout(page2)
@@ -2083,12 +2604,42 @@ class SheetDialog(QDialog):
         self.cb_corners.setToolTip("An upright trim at each end of the face, over the sheet edges.")
         tf.addRow(self.cb_corners)
         self._fields(tf, TFIELDS)
+        pager = QWidget()
+        rfm = QFormLayout(pager)
+        self.tabs.addTab(pager, "Ridge")
+        self.tabs.setTabToolTip(self.tabs.count() - 1, "Ridge capping along the top of a roof.")
+        self.cb_ridge = QCheckBox("Ridge capping along the top edge")
+        self.cb_ridge.setToolTip("Each roof slope gets its half of the capping (so it prints flat with the "
+                                 "sheets); the halves on the two slopes meet in the middle. Pick both slopes "
+                                 "(or the whole building) for a full ridge.")
+        rfm.addRow(self.cb_ridge)
+        self.cb_rstyle = QComboBox()
+        for k_, lab_ in CAP_STYLES:
+            self.cb_rstyle.addItem(lab_, k_)
+        self.cb_rstyle.setToolTip("Angular: a sheet bent over the ridge. Roll-top: with a roll along the top. "
+                                  "Half-round: a rounded capping.")
+        rfm.addRow("Capping shape", self.cb_rstyle)
+        self._fields(rfm, CAP_FIELDS)
+        rnote = QLabel("The letters are on the 'Sizes' page once the ridge is ticked. It stops either side of "
+                       "a chimney on the ridge.")
+        rnote.setWordWrap(True)
+        rnote.setStyleSheet("color: gray;")
+        rfm.addRow(rnote)
         add_flashing_tab(self, self.tabs, self.changed)
 
         prow = QHBoxLayout()
         prow.addWidget(QLabel("Preset:"))
         self.cb_preset = QComboBox()
         prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_dn = QPushButton("\u25bc")
+        for b_, tip_ in ((b_up, "Moves the preset you have open up the list."),
+                         (b_dn, "Moves the preset you have open down the list.")):
+            b_.setToolTip(tip_)
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
         b_save = QPushButton("Save")
         b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
         b_saveas = QPushButton("Save as...")
@@ -2101,8 +2652,11 @@ class SheetDialog(QDialog):
             prow.addWidget(b)
         lay.addLayout(prow)
         brow = QHBoxLayout()
-        self.b_add = QPushButton("Clad selected face(s)")
-        self.b_add.setToolTip("Covers each face you have selected in sheets.")
+        self.b_add = QPushButton("Clad selected face(s) or group")
+        self.b_add.setToolTip("Covers each face you have selected in sheets - or, if you clicked a whole group, "
+                              "every roof slope or wall in it (see 'From a group, clad'). Each face comes out "
+                              "as a group of its own, with its sheets, rails, trims and flashing each a "
+                              "separate piece for printing.")
         self.b_add.setDefault(True)
         b_close = QPushButton("Close")
         brow.addWidget(self.b_add)
@@ -2110,9 +2664,10 @@ class SheetDialog(QDialog):
         brow.addWidget(b_close)
         lay.addLayout(brow)
 
-        for w in (self.cb_style, self.cb_dir, self.cb_mode):
+        for w in (self.cb_style, self.cb_dir, self.cb_mode, self.cb_what, self.cb_rstyle):
             w.currentIndexChanged.connect(self.changed)
-        for w in (self.cb_thin, self.cb_flip, self.cb_trims, self.cb_corners, self.cb_remove, self.cb_rails):
+        for w in (self.cb_thin, self.cb_flip, self.cb_trims, self.cb_corners, self.cb_remove, self.cb_rails,
+                  self.cb_ridge, self.cb_chim):
             w.toggled.connect(self.changed)
         self.sp_seed.valueChanged.connect(self.changed)
         self.cb_preset.currentIndexChanged.connect(self.apply_preset)
@@ -2147,7 +2702,10 @@ class SheetDialog(QDialog):
                  angle=float(self.cb_dir.currentData() or 0.0),
                  flip=self.cb_flip.isChecked(), trims=self.cb_trims.isChecked(),
                  corners=self.cb_corners.isChecked(), rails=self.cb_rails.isChecked(),
-                 seed=int(self.sp_seed.value()), remove_face=self.cb_remove.isChecked())
+                 seed=int(self.sp_seed.value()), remove_face=self.cb_remove.isChecked(),
+                 group_what=self.cb_what.currentData() or 'roofs',
+                 round_chimneys=self.cb_chim.isChecked(), ridge=self.cb_ridge.isChecked(),
+                 ridge_style=self.cb_rstyle.currentData() or 'angular')
         v.update(flashing_values(self))
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
@@ -2156,13 +2714,15 @@ class SheetDialog(QDialog):
     def set_values(self, d):
         self._busy = True
         try:
-            for cb, key in ((self.cb_style, 'profile'), (self.cb_mode, 'mode'), (self.cb_dir, 'angle')):
+            for cb, key in ((self.cb_style, 'profile'), (self.cb_mode, 'mode'), (self.cb_dir, 'angle'),
+                            (self.cb_what, 'group_what'), (self.cb_rstyle, 'ridge_style')):
                 if d.get(key) is not None:
                     for i in range(cb.count()):
                         if cb.itemData(i) == d[key]:
                             cb.setCurrentIndex(i)
             for cbx, key in ((self.cb_thin, 'thin'), (self.cb_flip, 'flip'), (self.cb_trims, 'trims'), (self.cb_corners, 'corners'),
-                             (self.cb_remove, 'remove_face'), (self.cb_rails, 'rails')):
+                             (self.cb_remove, 'remove_face'), (self.cb_rails, 'rails'),
+                             (self.cb_ridge, 'ridge'), (self.cb_chim, 'round_chimneys')):
                 cbx.setChecked(bool(d.get(key, DEFAULTS[key])))
             self.sp_seed.setValue(int(d.get('seed', DEFAULTS['seed'])))
             set_flashing_values(self, d)
@@ -2183,7 +2743,9 @@ class SheetDialog(QDialog):
               'rail_w': v['rails'], 'rail_t': v['rails'], 'rail_gap': v['rails'],
               'trim_w': v['trims'], 'trim_t': v['trims'] or v['corners'], 'corner_w': v['corners'],
               'skew_ang': v['skew_pct'] > 0, 'lifted_mm': v['lifted_pct'] > 0,
-              'hole_size': v['holes'] > 0}
+              'hole_size': v['holes'] > 0,
+              'ridge_w': v['ridge'], 'ridge_h': v['ridge'], 'ridge_len': v['ridge'], 'ridge_gap': v['ridge']}
+        self.cb_rstyle.setEnabled(v['ridge'])
         for key, ok in on.items():
             s, lab = self.sp[key]
             s.setEnabled(ok)
@@ -2198,15 +2760,32 @@ class SheetDialog(QDialog):
         self.lbl_report.setVisible(True)
 
     # ---- presets ----
+    def preset_order(self):
+        """Every preset's name, in the order you've put them (new ones go at the bottom)."""
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in (_ui_settings().get('order') or []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick a preset first, then move it up or down.")
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = max(0, min(len(order) - 1, i + step))
+        if i == j:
+            return
+        order[i], order[j] = order[j], order[i]
+        _ui_settings_save(order=order)
+        self.refresh_presets(select=name)
+
     def refresh_presets(self, select=None):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem("-- Custom --", None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
@@ -2324,12 +2903,16 @@ class CorrugatedIronTool(Tool):
             except Exception:
                 pass
         cur = dict(DEFAULTS)
-        if CorrugatedIronTool._saved:
-            cur.update(CorrugatedIronTool._saved)
+        cur.update(CorrugatedIronTool._saved or last_used())      # opens with what you last used
         dlg = SheetDialog(cur, viewport, self)
         CorrugatedIronTool._dialog = dlg
 
         def closed(*_):
+            try:
+                CorrugatedIronTool._saved = dict(dlg.values())
+                remember_last(CorrugatedIronTool._saved)
+            except Exception:
+                pass
             CorrugatedIronTool._dialog = None
         dlg.finished.connect(closed)
         eddy_window(dlg, PLUGIN_NAME, EDDY_TIPS, place=True)  # eddy-window
@@ -2341,57 +2924,137 @@ class CorrugatedIronTool(Tool):
     def add_from_dialog(self, dlg):
         v = dlg.values()
         CorrugatedIronTool._saved = dict(v)
+        remember_last(v)
         viewport = dlg.viewport
         scene = getattr(viewport, 'scene', None)
         faces = selected_faces(scene) if scene is not None else []
-        if not faces:
-            QMessageBox.information(dlg, PLUGIN_NAME, "Select a face first.")
+        groups = selected_groups(scene) if scene is not None else []
+        if not faces and not groups:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Select a face first - or click a whole group (the "
+                                    "building, a shed) to clad every roof slope or wall in it.")
             return
-        parts, total, problems = [], 0, []
-        style = PROFILE_NAMES.get(v['profile'], "Sheets").split(" (")[0]
-        many = len(faces) > 1
+        problems, notes = [], []
+        # every face to clad: [to_world, outline, holes, up, the face picked (or None from a group)]
+        targets = []
         for i, f in enumerate(faces):
             try:
                 tw, outline, holes, up_ = face_frame(f, v['flip'], 0)
                 if outline is None:
                     raise ValueError("that face has no area")
+                targets.append([tw, outline, holes, up_, f])
+            except Exception as e:
+                problems.append("Face %d: %s" % (i + 1, e))
+        if groups:
+            wf, skipped = faces_in_groups(groups)
+            found = []
+            for f in pick_sheet_faces(wf, v.get('group_what', 'roofs')):
+                try:
+                    # from a group: always on the outside
+                    tw, outline, holes, up_ = face_frame(f, False, 0)
+                    if outline is not None:
+                        found.append([tw, outline, holes, up_])
+                except Exception:
+                    pass
+            merge_coplanar(found)
+            targets += [t_ + [None] for t_ in found]
+            what = dict((k, l) for l, k in GROUP_WHAT).get(v.get('group_what', 'roofs'), '').lower()
+            if not found:
+                problems.append("No %s found in the group you picked." % what)
+            if skipped:
+                notes.append("Left out: %s." % ", ".join(sorted(set(skipped))))
+            if v.get('flip'):
+                notes.append("Picked from a group, the sheets go on the outside ('other side' is for single faces).")
+            if v.get('remove_face'):
+                notes.append("Faces inside a picked group are never deleted.")
+        if not targets:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No sheets fitted.")
+            return
+        # one group per face, holding each piece of it on its own: the sheets, rails, trims,
+        # backing and flashing - so they can be printed apart
+        parts, total, done = [], 0, []
+        style = PROFILE_NAMES.get(v['profile'], "Sheets").split(" (")[0]
+        chims = find_chimneys(scene) if (v.get('round_chimneys', True) and scene is not None) else []
+        clear = max(10.0, v.get('gap', 0.0))
+        went_round, caps, no_top = 0, 0, 0
+        for i, (tw, outline, holes, up_, face) in enumerate(targets):
+            cuts = []
+            if chims:
+                ch = chimney_holes(tw, outline, chims, clear)
+                if ch:
+                    went_round += len(ch)
+                    holes = list(holes) + ch
+                    cuts = ridge_cuts(ch, outline, max(1.0, v.get('ridge_w', 0.0)) + clear)
+            try:
                 res, count = lay_sheets(outline, holes, v)
-                fl, notes = build_flashings(outline, res['sheets'] + res['trims'], v, up_)
+                res['ridge'] = []
+                if v.get('ridge') and up_[0] > 0.05:          # a sloping roof (not a wall or a flat roof)
+                    # on the top of the sheets near the ridge, a hair clear of them
+                    y1_ = bbox(outline)[3]
+                    a_ = max(1.0, v['ridge_w'])
+                    zr0 = _top_in(res['sheets'], lambda p, y1_=y1_, a_=a_: p[1] >= y1_ - a_ - 1.0) + \
+                        max(0.01, v.get('lift', 0.0))
+                    res['ridge'], nc = build_cap(outline, v, zr0, up_, cuts)
+                    caps += nc
+                    if not nc:
+                        no_top += 1
+                fl, fnotes = build_flashings(outline, res['sheets'] + res['trims'], v, up_)
                 res['flashing'] = fl
-                problems += ["Face %d (flashing): %s" % (i + 1, n_) for n_ in notes]
+                problems += ["Face %d (flashing): %s" % (i + 1, n_) for n_ in fnotes]
             except Exception as e:
                 problems.append("Face %d: %s" % (i + 1, e))
                 continue
-            pre = ("Face %d - " % (i + 1)) if many else ""
-            for kind, label in (('sheets', "Sheets - %s - %d sheets" % (style, count)),
-                                ('rails', "Rails"), ('trims', "Flashings and trims"), ('backing', "Backing"),
-                                ('flashing', "Lead flashing")):
+            k = len(parts) + 1
+            pieces = []
+            for kind, label in (('sheets', "sheets - %s - %d sheets" % (style, count)),
+                                ('rails', "rails"), ('trims', "flashings and trims"), ('backing', "backing"),
+                                ('flashing', "lead flashing"),
+                                ('ridge', "ridge capping half - %d lengths" % len(res.get('ridge') or []))):
                 if res[kind]:
-                    parts.append((pre + label, [s.mapped(tw) for s in res[kind]]))
+                    pieces.append(("Face %d - %s" % (k, label), [s_.mapped(tw) for s_ in res[kind]]))
+            if not pieces:
+                continue
+            parts.append(("Face %d (%d pieces)" % (k, len(pieces)), pieces))
             total += count
+            if face is not None:
+                done.append(face)
         if not parts:
             QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No sheets fitted on that face.")
             return
         top = "Sheeting - %s" % style
-        done = [f for i, f in enumerate(faces) if not any(p.startswith("Face %d:" % (i + 1)) for p in problems)]
+        if len(parts) == 1:
+            parts = [(top, parts[0][1])]                 # one face: its group is the sheeting
         remove = done if v.get('remove_face') else []
         nf = self.add_to_scene(viewport, parts, top, remove)
         if nf is None:
             return
-        msg = "Added %d sheets on %d face(s), %d faces." % (total, len(faces) - len(problems), nf)
+        npieces = sum(len(pc) for _, pc in parts)
+        msg = "Added %d sheets on %d face(s), %d faces." % (total, len(parts), nf)
         if remove:
             msg += " Deleted the face%s under them." % ("s" if len(remove) > 1 else "")
-        if len(parts) > 1:
-            msg += "\nOne group '%s' holding: %s." % (top, ", ".join(n.split(" - ")[0] if not many else
-                                                                     " - ".join(n.split(" - ")[:2])
-                                                                     for n, _ in parts))
+        if npieces > 1:
+            msg += ("\nOne group '%s': each face is a group of its own, with its sheets, rails, trims, "
+                    "flashing and ridge capping each a separate piece (%d pieces). To print them apart, in Scale Studio's Pieces "
+                    "page pick 'Every group with faces (smallest pieces)' and tick 'Lay each piece flat' - or "
+                    "'Groups 1 level in' for each face as one piece." % (top, npieces))
+        if caps:
+            msg += "\n%d lengths of ridge capping." % caps
+        if v.get('ridge') and no_top:
+            notes.append("%d slope%s had no level top edge for ridge capping (a hip end?)." % (
+                no_top, "s" if no_top > 1 else ""))
+        if went_round:
+            msg += "\nWent round the chimney on %d face%s%s." % (
+                went_round, "s" if went_round > 1 else "",
+                " - the capping stops either side of one on the ridge" if caps else "")
+        if notes:
+            msg += "\n" + "\n".join(notes)
         if problems:
             msg += "\n" + "\n".join(problems)
         dlg.show_report(msg, bad=bool(problems))
 
     def add_to_scene(self, viewport, parts, top_name="Sheeting", remove=()):
-        """One parent group holding a child group per part (each slope, the ridge, the
-        finials). The geometry is already in place, so no transforms are needed."""
+        """One parent group holding a group per face, each holding a group per piece of it (its
+        sheets, rails, trims, backing, flashing). The geometry is already in place, so no
+        transforms are needed. parts: [(face group name, [(piece name, solids)])]."""
         stats = {'faces': 0, 'errors': 0, 'err': None}
         tol = 1e-4 * 0.001
 
@@ -2407,54 +3070,67 @@ class CorrugatedIronTool(Tool):
                 pass
             return g
 
+        def holder(Group, name, kids):
+            try:
+                h = Group(name=name)
+                if hasattr(h, 'adopt'):
+                    h.adopt(kids)
+                else:
+                    h.children = kids
+                h.component = False
+                return h
+            except Exception:
+                return None             # an older IngeTrazo: the pieces go in side by side
+
+        def one_piece(Mesh, Group, name, solids):
+            mesh = Mesh()
+            made = 0
+            for so in solids:
+                verts = {}
+
+                def vx(p):
+                    k = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
+                    if k not in verts:
+                        verts[k] = VertexWrapper(*p)
+                    return verts[k]
+                hol = getattr(so, 'holes', {})
+                for fi, pts in enumerate(so.faces):
+                    try:
+                        hs = [[vx(p) for p in h] for h in hol.get(fi, ())]
+                        if hs:
+                            try:
+                                mesh.add_face([vx(p) for p in pts], hs)
+                            except TypeError:          # an older IngeTrazo: holes one by one
+                                f_ = mesh.add_face([vx(p) for p in pts])
+                                for h in hs:
+                                    mesh.add_hole(f_, h)
+                        else:
+                            mesh.add_face([vx(p) for p in pts])
+                        made += 1
+                    except Exception as e:
+                        stats['errors'] += 1
+                        stats['err'] = e
+            if not made:
+                return None
+            stats['faces'] += made
+            g = make_group(Group, mesh, name)
+            g.component = False
+            return g
+
         def mutate(scene):
             from core.mesh import Mesh
             from core.group import Group
-            kids = []
-            for name, solids in parts:
-                mesh = Mesh()
-                for so in solids:
-                    verts = {}
-
-                    def vx(p):
-                        k = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
-                        if k not in verts:
-                            verts[k] = VertexWrapper(*p)
-                        return verts[k]
-                    hol = getattr(so, 'holes', {})
-                    for fi, pts in enumerate(so.faces):
-                        try:
-                            hs = [[vx(p) for p in h] for h in hol.get(fi, ())]
-                            if hs:
-                                try:
-                                    mesh.add_face([vx(p) for p in pts], hs)
-                                except TypeError:          # an older IngeTrazo: holes one by one
-                                    f_ = mesh.add_face([vx(p) for p in pts])
-                                    for h in hs:
-                                        mesh.add_hole(f_, h)
-                            else:
-                                mesh.add_face([vx(p) for p in pts])
-                            stats['faces'] += 1
-                        except Exception as e:
-                            stats['errors'] += 1
-                            stats['err'] = e
-                if stats['faces'] == 0:
-                    raise RuntimeError("No faces could be created (%s)." % stats['err'])
-                g = make_group(Group, mesh, name)
-                g.component = False
-                kids.append(g)
-            parent = None
-            if len(kids) > 1:
-                try:
-                    parent = Group(name=top_name)
-                    if hasattr(parent, 'adopt'):
-                        parent.adopt(kids)
-                    else:
-                        parent.children = kids
-                    parent.component = False
-                except Exception:
-                    parent = None          # an older IngeTrazo: add them side by side
-            for g in ([parent] if parent is not None else kids):
+            tops = []
+            for fname, pieces in parts:
+                kids = [g for g in (one_piece(Mesh, Group, n_, sols) for n_, sols in pieces) if g is not None]
+                if not kids:
+                    continue
+                h = holder(Group, fname, kids) if (fname and len(kids) > 1) else None
+                tops += [h] if h is not None else kids
+            if stats['faces'] == 0:
+                raise RuntimeError("No faces could be created (%s)." % stats['err'])
+            parent = holder(Group, top_name, tops) if len(tops) > 1 else None
+            for g in ([parent] if parent is not None else tops):
                 _ed3d_organise(scene, g)
                 if hasattr(scene, 'add_group') and parent is None:
                     scene.add_group(g)

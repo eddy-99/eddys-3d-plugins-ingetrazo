@@ -1109,7 +1109,12 @@ def eddy_window(dlg, key, tips=None, place=True):
 # --- Eddy's 3D plugins: hover help and remembered window places (end) ---
 
 EDDY_TIPS = {'@lst': 'The parts to choose from. Pick one to set it up.',
- '@cb_preset': 'Ready-made settings. Pick one and the whole window is filled in.'}
+ '@cb_preset': 'Ready-made settings. Pick one and the whole window is filled in.',
+ 'Add part': 'Builds the part picked on the Part page, joined onto the open end (or at the origin, or on '
+             'the wall you picked).',
+ 'Profile': 'The shape of the gutter.',
+ 'Shape': 'Round or square downpipe.',
+ 'Direction': 'Which way the bend, branch or shoe turns.'}
 EDDY_TIPS_END = None
 
 
@@ -1147,14 +1152,171 @@ class PartPreview(QWidget):
                 p.drawPolygon(QPolygonF([QPointF(ox + x * sc, oy + y * sc) for x, y in pts]))
         p.end()
 
+class GutterKey(QWidget):
+    """What each lettered size is: the gutter and pipe end on, and a run along a wall."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, 560)
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        import math as _m
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / 560.0)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        gut, wallc, brick = QColor(70, 74, 80), QColor(200, 196, 188), QColor(178, 90, 60)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+
+        def box(x, y, w, h, col):
+            p.setPen(QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawRect(QRectF(x, y, w, h))
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = _m.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + _m.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * _m.cos(a + s_), y + 6 * _m.sin(a + s_)))
+            p.setPen(red)
+            p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+        def title(x, y, t):
+            p.setPen(QColor(60, 60, 60))
+            p.setFont(f)
+            p.drawText(QRectF(x, y, 340, 18), Qt.AlignLeft, t)
+
+        # ---- the gutter end on, on its bracket at the wall
+        title(10, 4, "The gutter end on")
+        box(20, 30, 26, 120, wallc)                     # the wall
+        box(14, 30, 6, 120, brick)
+        cx, cy, R, t = 110.0, 60.0, 44.0, 5.0
+        path = QPainterPath()
+        path.moveTo(cx - R, cy)
+        path.arcTo(QRectF(cx - R, cy - R, 2 * R, 2 * R), 180, 180)
+        path.lineTo(cx + R - t, cy)
+        path.arcTo(QRectF(cx - R + t, cy - R + t, 2 * (R - t), 2 * (R - t)), 0, -180)
+        path.closeSubpath()
+        p.setPen(QPen(gut.darker(140), 0.8))
+        p.setBrush(gut)
+        p.drawPath(path)
+        dim(cx - R, cy - 12, cx + R, cy - 12, "A", cx, cy - 22)
+        dim(cx + R + 10, cy, cx + R + 10, cy + R, "B", cx + R + 22, cy + R / 2)
+        dim(cx - 6, cy + R - t, cx - 6, cy + R, "C", cx - 18, cy + R + 10)
+        dim(46, cy + R + 22, cx - R, cy + R + 22, "M", (46 + cx - R) / 2, cy + R + 34)
+        dim(60, 30, 60, cy, "L", 70, 42)
+        p.setPen(QPen(QColor(120, 120, 120), 0.6, Qt.DashLine))
+        p.drawLine(QPointF(46, 30), QPointF(70, 30))
+
+        # ---- the downpipe end on
+        title(200, 4, "The downpipe end on")
+        px, py, pr = 280.0, 75.0, 32.0
+        p.setPen(QPen(gut.darker(140), 0.8))
+        p.setBrush(gut)
+        p.drawEllipse(QPointF(px, py), pr, pr)
+        p.setBrush(QColor(250, 250, 246))
+        p.drawEllipse(QPointF(px, py), pr - 5, pr - 5)
+        dim(px - pr, py + pr + 12, px + pr, py + pr + 12, "D", px, py + pr + 24)
+        dim(px + pr - 5, py, px + pr, py, "E", px + pr + 12, py - 8)
+
+        # ---- a run along the wall, from the front
+        title(10, 175, "A run along the wall, from the front")
+        WX0, WX1, WY = 70.0, 290.0, 215.0
+        box(WX0, WY, WX1 - WX0, 150, wallc)            # the wall
+        for i in range(7):
+            p.setPen(QPen(brick, 0.6))
+            p.drawLine(QPointF(WX0, WY + 20 + i * 18), QPointF(WX1, WY + 20 + i * 18))
+        gx0, gx1, gy = WX0 - 26, WX1 - 40, WY + 8
+        box(gx0, gy, gx1 - gx0, 14, gut)               # the gutter
+        box(gx1, gy, 30, 14, QColor(110, 115, 122))    # running outlet
+        box(gx1 + 8, gy + 14, 14, 160, gut)            # downpipe
+        for bx in (gx0 + 20, gx0 + 110, gx0 + 200):
+            box(bx, gy - 3, 5, 20, QColor(30, 30, 30))  # fascia brackets
+        for cy_ in (gy + 60, gy + 140):
+            box(gx1 + 4, cy_, 22, 5, QColor(30, 30, 30))   # pipe clips
+        dim(gx0, gy - 14, WX0, gy - 14, "N", (gx0 + WX0) / 2, gy - 26)
+        dim(gx0 + 22.5, gy + 32, gx0 + 112.5, gy + 32, "Q", gx0 + 67, gy + 44)
+        dim(gx0, gy + 70, gx1, gy + 70, "F", (gx0 + gx1) / 2, gy + 82)
+        dim(gx1, gy - 14, gx1 + 30, gy - 14, "G", gx1 + 15, gy - 26)
+        dim(gx1 + 34, gy + 62, gx1 + 34, gy + 142, "R", gx1 + 46, gy + 102)
+        dim(WX1, gy + 28, gx1 + 30, gy + 28, "P", (WX1 + gx1 + 30) / 2, gy + 40)
+
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        notes = ["A  gutter width", "B  gutter depth", "C  gutter wall thickness", "D  downpipe size",
+                 "E  downpipe wall thickness", "F  length of a gutter / downpipe", "G  running outlet length",
+                 "H  angle leg length (each side)", "J  branch length", "K  distance back from the end",
+                 "L  gutter top below the wall top", "M  extra gap from the wall", "N  past the left end",
+                 "P  past the right end (minus = short)", "Q  gutter brackets at most", "R  pipe clips at most",
+                 "T  bend turn angle"]
+        for i, t_ in enumerate(notes):
+            p.drawText(QRectF(10 if i < 9 else 185, 400 + (i % 9) * 15.5, 175, 14),
+                       Qt.AlignLeft | Qt.AlignVCenter, t_)
+        p.end()
+
+
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_gutters_downpipes.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>How to use it</b><br>"
+             "Pick a part on the Part page and click 'Add part'. The first one goes at the origin - or select "
+             "a wall face, click 'Use selected wall' (On a wall page) and the gutter runs along its top. Each "
+             "part joins onto the open end of the last one; select the open end of any part you placed and "
+             "click 'Use selected end' to carry on from there.<br><br>"
+             "<b>Sizes</b><br>The gutter and downpipe sizes are on their own pages; the letters are on the Key "
+             "page. Click a part in the model and the settings that made it light up.<br><br>"
+             "<b>Printing</b><br>Tick 'Solid' and 'Chunky fittings' for small scales. Sizes are real-world mm "
+             "- Scale Studio takes it down to your model scale.")
+
+# which settings make each part, found from its group name when you click it in the model
+PIECE_KEYS = [("Fascia brackets", ('g_spacing',)), ("Pipe clips", ('p_spacing',)),
+              ("Gutter length", ('length', 'g_width', 'g_depth', 'g_wall')),
+              ("Running outlet", ('outlet_len', 'g_width')), ("angle", ('leg', 'g_width')),
+              ("Downpipe length", ('length', 'p_size', 'p_wall')), ("Bend", ('bend_turn', 'p_size')),
+              ("Branch", ('branch_len', 'bend_turn', 'p_size')), ("Union", ('offset', 'g_width')),
+              ("Fascia bracket", ('offset', 'g_width')), ("Pipe socket", ('offset', 'p_size')),
+              ("Pipe clip", ('offset', 'p_size')), ("Stop end", ('g_width', 'g_depth')),
+              ("Shoe", ('p_size',))]
+
+
 # ---------------------------------------------------------------------------
-# Dialog
+# Dialog - laid out like the other plugins: pictures on the left, pages on the right
 # ---------------------------------------------------------------------------
 class DrainDialog(QDialog):
     CUSTOM = "-- Custom --"
 
     def __init__(self, cur, target, viewport, tool):
         super().__init__(viewport)
+        from PySide6.QtWidgets import QTabWidget, QScrollArea
         self.setWindowTitle(PLUGIN_NAME)
         self.setModal(False)
         self.viewport = viewport
@@ -1167,38 +1329,71 @@ class DrainDialog(QDialog):
         self.user_presets = load_presets()
         lay = QVBoxLayout(self)
 
+        # how to use it - only shows when Info is pressed
+        self.info_box = QWidget()
+        ib = QVBoxLayout(self.info_box)
+        ib.setContentsMargins(0, 0, 0, 0)
+        lbl_info = QLabel(INFO_TEXT)
+        lbl_info.setWordWrap(True)
+        ib.addWidget(lbl_info)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
+
         self.lbl_target = QLabel()
         self.lbl_target.setWordWrap(True)
         self.lbl_target.setStyleSheet("font-weight: bold;")
         lay.addWidget(self.lbl_target)
 
-        self.cb_solid = QCheckBox("Solid (for 3D printing) - no hollow inside")
-        self.cb_solid.setChecked(bool(cur.get('solid')))
-        self.cb_solid.setToolTip("Fills the gutters and pipes in, so small-scale prints come out "
-                                 "strong. Fit-over parts (unions, sockets, clips) stay as sleeves.")
-        lay.addWidget(self.cb_solid)
+        def mm_spin(val, lo=0.1, hi=100000.0, suffix=" mm", dec=1):
+            sp = QDoubleSpinBox()
+            sp.setDecimals(dec)
+            sp.setRange(lo, hi)
+            sp.setSuffix(suffix)
+            sp.setValue(val)
+            return sp
 
-
-        # ---- presets ----
         row = QHBoxLayout()
-        self.cb_preset = QComboBox()
-        b_save, b_del, b_open = QPushButton("Save"), QPushButton("Delete"), QPushButton("Open folder")
-        b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
-        b_saveas = QPushButton("Save as...")
-        self.btn_preset_save = b_save
-        row.addWidget(QLabel("Preset:"))
-        row.addWidget(self.cb_preset, 1)
-        for b in (b_save, b_saveas, b_del, b_open):
-            row.addWidget(b)
         lay.addLayout(row)
-        b_save.clicked.connect(self.save_preset)
-        b_saveas.clicked.connect(lambda: self.save_preset_as())
-        b_del.clicked.connect(self.delete_preset)
-        b_open.clicked.connect(self.open_folder)
+        # ---- left: the preview and the key
+        self.left = QTabWidget()
+        pv = QWidget()
+        pvl = QVBoxLayout(pv)
+        pvl.setContentsMargins(4, 4, 4, 4)
+        self.preview = PartPreview()
+        self.preview.setMinimumSize(320, 300)
+        pvl.addWidget(self.preview, 1)
+        cap = QLabel("Brown panel = the wall. Pale grey = the part it fits over.")
+        cap.setStyleSheet("color: gray; font-size: 9pt;")
+        pvl.addWidget(cap)
+        self.left.addTab(pv, "Preview")
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(GutterKey())
+        self.left.addTab(ks, "Key (A, B, C...)")
+        self.left.setTabToolTip(1, "What each lettered size is.")
+        row.addWidget(self.left, 1)
+        # ---- right: the pages
+        self.tabs = QTabWidget()
+        row.addWidget(self.tabs, 1)
+        self.keyw = {}                    # setting -> (box, label), to light up
+        self.page_of = {}
 
-        # ---- part list ----
+        def add_row(form, key, label, w, tip=None):
+            lab = QLabel(label)
+            if tip:
+                w.setToolTip(tip)
+                lab.setToolTip(tip)
+            form.addRow(lab, w)
+            self.keyw[key] = (w, lab)
+            self.page_of[key] = self.tabs.count() - 1
+            return lab
+
+        # Part page: what to add next
+        page = QWidget()
+        sf = QFormLayout(page)
+        self.tabs.addTab(page, "Part")
         self.lst = QListWidget()
-        self.lst.setMinimumHeight(260)
+        self.lst.setMinimumHeight(250)
         for header, system in (("GUTTER", 'gutter'), ("DOWNPIPE", 'pipe')):
             h = QListWidgetItem(header)
             h.setFlags(h.flags() & ~QtItemFlags.selectable & ~QtItemFlags.enabled)
@@ -1211,55 +1406,7 @@ class DrainDialog(QDialog):
                 self.lst.addItem(it)
                 if key == cur['part']:
                     self.lst.setCurrentItem(it)
-        lay.addWidget(self.lst)
-
-        def mm_spin(val, lo=0.1, hi=100000.0, suffix=" mm", dec=1):
-            sp = QDoubleSpinBox()
-            sp.setDecimals(dec)
-            sp.setRange(lo, hi)
-            sp.setSuffix(suffix)
-            sp.setValue(val)
-            return sp
-
-        # ---- gutter ----
-        gb = QGroupBox("Gutter")
-        gf = QFormLayout(gb)
-        self.cb_gprof = QComboBox()
-        for label, key in GUTTER_PROFILES:
-            self.cb_gprof.addItem(label, key)
-            if key == cur['g_profile']:
-                self.cb_gprof.setCurrentIndex(self.cb_gprof.count() - 1)
-        self.sp_gw = mm_spin(cur['g_width'], 10.0)
-        self.sp_gd = mm_spin(cur['g_depth'], 5.0)
-        self.sp_gt = mm_spin(cur['g_wall'], 0.5, 50.0)
-        gf.addRow("Profile:", self.cb_gprof)
-        gf.addRow("Width:", self.sp_gw)
-        gf.addRow("Depth:", self.sp_gd)
-        gf.addRow("Wall thickness:", self.sp_gt)
-
-        # ---- downpipe ----
-        pb = QGroupBox("Downpipe")
-        pf = QFormLayout(pb)
-        self.cb_ptype = QComboBox()
-        for label, key in PIPE_TYPES:
-            self.cb_ptype.addItem(label, key)
-            if key == cur['p_type']:
-                self.cb_ptype.setCurrentIndex(self.cb_ptype.count() - 1)
-        self.sp_ps = mm_spin(cur['p_size'], 10.0)
-        self.sp_pt = mm_spin(cur['p_wall'], 0.5, 50.0)
-        self.lbl_ps = QLabel()
-        pf.addRow("Shape:", self.cb_ptype)
-        pf.addRow(self.lbl_ps, self.sp_ps)
-        pf.addRow("Wall thickness:", self.sp_pt)
-
-        # ---- part sizes ----
-        sb = QGroupBox("This part")
-        sf = QFormLayout(sb)
-        self.preview = PartPreview()
-        sf.addRow(self.preview)
-        cap = QLabel("Brown panel = the wall. Pale grey = the part it fits over.")
-        cap.setStyleSheet("color: gray; font-size: 9pt;")
-        sf.addRow(cap)
+        sf.addRow(self.lst)
         self.sp = {
             'length': mm_spin(cur['length'], 1.0),
             'outlet_len': mm_spin(cur['outlet_len'], 20.0),
@@ -1268,27 +1415,28 @@ class DrainDialog(QDialog):
             'branch_len': mm_spin(cur['branch_len'], 20.0),
             'offset': mm_spin(cur['offset'], 0.0),
         }
-        self.sp['bend_turn'].setToolTip("How far the pipe turns. A 112.5 deg offset bend turns 67.5; "
-                                        "a 92.5 deg bend turns 87.5; a 135 deg bend turns 45.")
-        self.sp['offset'].setToolTip("0 = centred on the end you selected. Larger values slide it "
-                                     "back along the part.")
+        tips = {'bend_turn': "How far the pipe turns. A 112.5 deg offset bend turns 67.5; a 92.5 deg bend "
+                             "turns 87.5; a 135 deg bend turns 45.",
+                'offset': "0 = centred on the end you selected. Larger values slide it back along the part.",
+                'length': "How long the gutter or downpipe length is.",
+                'outlet_len': "How long the running outlet is, along the gutter.",
+                'leg': "How long each leg of the angle is.",
+                'branch_len': "How long the branch of the Y junction is."}
         self.cb_dir = QComboBox()
         for label, deg in BEND_DIRS:
             self.cb_dir.addItem(label, deg)
             if abs(deg - cur['bend_dir']) < 1e-6:
                 self.cb_dir.setCurrentIndex(self.cb_dir.count() - 1)
-        labels = {'length': "Length:", 'outlet_len': "Outlet length:", 'leg': "Leg length (each side):",
-                  'bend_turn': "Turn angle:", 'branch_len': "Branch length:",
-                  'offset': "Distance back from the end:"}
+        labels = {'length': "F   Length", 'outlet_len': "G   Outlet length", 'leg': "H   Leg length (each side)",
+                  'bend_turn': "T   Turn angle", 'branch_len': "J   Branch length",
+                  'offset': "K   Distance back from the end"}
         self.rows = {}
         for k in ('length', 'outlet_len', 'leg', 'bend_turn', 'branch_len', 'offset'):
-            lab = QLabel(labels[k])
-            sf.addRow(lab, self.sp[k])
+            lab = add_row(sf, k, labels[k], self.sp[k], tips.get(k))
             self.rows[k] = (lab, self.sp[k])
-        lab = QLabel("Direction:")
+        lab = QLabel("Direction")
         sf.addRow(lab, self.cb_dir)
         self.rows['bend_dir'] = (lab, self.cb_dir)
-
         self.cb_wall = QComboBox()
         for label, deg in WALL_SIDES:
             self.cb_wall.addItem(label, deg)
@@ -1296,60 +1444,103 @@ class DrainDialog(QDialog):
                 self.cb_wall.setCurrentIndex(self.cb_wall.count() - 1)
         self.cb_wall.setToolTip("Which side the wall is on when a new run starts at the origin. "
                                 "Parts joined onto an end follow that end instead.")
-        sf.addRow("New run - wall is:", self.cb_wall)
+        sf.addRow("New run - wall is", self.cb_wall)
+        self.cb_solid = QCheckBox("Solid (for 3D printing) - no hollow inside")
+        self.cb_solid.setChecked(bool(cur.get('solid')))
+        self.cb_solid.setToolTip("Fills the gutters and pipes in, so small-scale prints come out "
+                                 "strong. Fit-over parts (unions, sockets, clips) stay as sleeves.")
+        sf.addRow(self.cb_solid)
 
+        # Gutter page
+        page = QWidget()
+        gf = QFormLayout(page)
+        self.tabs.addTab(page, "Gutter")
+        self.cb_gprof = QComboBox()
+        for label, key in GUTTER_PROFILES:
+            self.cb_gprof.addItem(label, key)
+            if key == cur['g_profile']:
+                self.cb_gprof.setCurrentIndex(self.cb_gprof.count() - 1)
+        gf.addRow("Profile", self.cb_gprof)
+        self.sp_gw = mm_spin(cur['g_width'], 10.0)
+        self.sp_gd = mm_spin(cur['g_depth'], 5.0)
+        self.sp_gt = mm_spin(cur['g_wall'], 0.5, 50.0)
+        add_row(gf, 'g_width', "A   Width", self.sp_gw, "How wide the gutter is, across the top.")
+        add_row(gf, 'g_depth', "B   Depth", self.sp_gd, "How deep the gutter is (half the width for half-round).")
+        add_row(gf, 'g_wall', "C   Wall thickness", self.sp_gt, "How thick the gutter's wall is.")
+        gn = QLabel("Half-round gutters are always half as deep as they're wide.")
+        gn.setWordWrap(True)
+        gn.setStyleSheet("color: gray;")
+        gf.addRow(gn)
 
-        # ---- start on a wall ----
-        wb = QGroupBox("Start a gutter on a wall")
-        wf = QFormLayout(wb)
+        # Downpipe page
+        page = QWidget()
+        pf = QFormLayout(page)
+        self.tabs.addTab(page, "Downpipe")
+        self.cb_ptype = QComboBox()
+        for label, key in PIPE_TYPES:
+            self.cb_ptype.addItem(label, key)
+            if key == cur['p_type']:
+                self.cb_ptype.setCurrentIndex(self.cb_ptype.count() - 1)
+        pf.addRow("Shape", self.cb_ptype)
+        self.sp_ps = mm_spin(cur['p_size'], 10.0)
+        self.sp_pt = mm_spin(cur['p_wall'], 0.5, 50.0)
+        self.lbl_ps = add_row(pf, 'p_size', "D   Diameter", self.sp_ps, "How big the downpipe is across.")
+        add_row(pf, 'p_wall', "E   Wall thickness", self.sp_pt, "How thick the pipe's wall is.")
+
+        # On a wall page
+        page = QWidget()
+        wf = QFormLayout(page)
+        self.tabs.addTab(page, "On a wall")
+        wi = QLabel("Start a gutter on a wall: select a wall face, then click 'Use selected wall'. The next "
+                    "gutter part runs along the top of that wall.")
+        wi.setWordWrap(True)
+        wf.addRow(wi)
         b_wall = QPushButton("Use selected wall")
         b_wall.setToolTip("Select a wall face, then click this. The next gutter part runs along "
                           "the top of that wall.")
         b_wall.clicked.connect(self.use_selected_wall)
         wf.addRow(b_wall)
         self.sp_drop = mm_spin(cur['drop'], 0.0)
-        self.sp_drop.setToolTip("How far the top of the gutter sits below the top of the wall.")
         self.sp_wgap = mm_spin(cur['wall_gap'], 0.0)
-        self.sp_wgap.setToolTip("0 = fascia brackets sit flat on the wall. More moves the gutter out.")
         self.sp_ovl = mm_spin(cur['over_left'], -100000.0)
         self.sp_ovr = mm_spin(cur['over_right'], -100000.0)
-        self.sp_ovl.setToolTip("How far the gutter runs past the left end of the wall, as you look "
-                               "at it from outside. Negative stops short of the end, leaving room "
-                               "for a running outlet, angle or stop end.")
-        self.sp_ovr.setToolTip("Same for the right end. Negative stops short of the end.")
+        add_row(wf, 'drop', "L   Below top of wall", self.sp_drop,
+                "How far the top of the gutter sits below the top of the wall.")
+        add_row(wf, 'wall_gap', "M   Extra gap from wall", self.sp_wgap,
+                "0 = fascia brackets sit flat on the wall. More moves the gutter out.")
+        add_row(wf, 'over_left', "N   Past left end", self.sp_ovl,
+                "How far the gutter runs past the left end of the wall, as you look at it from outside. "
+                "Negative stops short of the end, leaving room for a running outlet, angle or stop end.")
+        add_row(wf, 'over_right', "P   Past right end", self.sp_ovr,
+                "Same for the right end. Negative stops short of the end.")
         self.cb_fit = QCheckBox("Gutter length = wall length")
         self.cb_fit.setChecked(cur['fit_wall'])
         self.cb_flip = QCheckBox("Wrong side? Put it on the other side of the wall")
         self.cb_flip.setChecked(cur['wall_flip'])
         self.cb_flip.toggled.connect(self.reread_wall)
-        wf.addRow("Below top of wall:", self.sp_drop)
-        wf.addRow("Extra gap from wall:", self.sp_wgap)
-        wf.addRow("Past left end:", self.sp_ovl)
-        wf.addRow("Past right end:", self.sp_ovr)
         wf.addRow(self.cb_fit)
         wf.addRow(self.cb_flip)
 
-        # ---- brackets and clips ----
-        fb = QGroupBox("Brackets and clips")
-        ff = QFormLayout(fb)
+        # Brackets & clips page
+        page = QWidget()
+        ff = QFormLayout(page)
+        self.tabs.addTab(page, "Brackets & clips")
         self.cb_fix = QCheckBox("Add them evenly with every gutter / downpipe length")
         self.cb_fix.setChecked(cur['auto_fix'])
+        ff.addRow(self.cb_fix)
         self.sp_gsp = mm_spin(cur['g_spacing'], 100.0)
         self.sp_psp = mm_spin(cur['p_spacing'], 100.0)
-        self.sp_gsp.setToolTip("Most a fascia bracket can be from the next one. One also goes "
-                               "near each end.")
-        self.sp_psp.setToolTip("Most a pipe clip can be from the next one. One also goes near each end.")
-        ff.addRow(self.cb_fix)
-        ff.addRow("Gutter brackets at most:", self.sp_gsp)
-        ff.addRow("Pipe clips at most:", self.sp_psp)
+        add_row(ff, 'g_spacing', "Q   Gutter brackets at most", self.sp_gsp,
+                "Most a fascia bracket can be from the next one. One also goes near each end.")
+        add_row(ff, 'p_spacing', "R   Pipe clips at most", self.sp_psp,
+                "Most a pipe clip can be from the next one. One also goes near each end.")
         self.cb_chunky = QCheckBox("Chunky fittings (for 3D printing)")
         self.cb_chunky.setChecked(cur['chunky'])
         self.cb_chunky.setToolTip("Makes every bracket, clip, union, socket and stop end thicker "
                                   "and wider so they survive printing at small scales.")
-        self.sp_chunk = mm_spin(cur['chunk_mult'], 1.0, 10.0, " x", 1)
-        self.sp_chunk.setToolTip("How many times thicker than real fittings.")
         ff.addRow(self.cb_chunky)
-        ff.addRow("   Thicker by:", self.sp_chunk)
+        self.sp_chunk = mm_spin(cur['chunk_mult'], 1.0, 10.0, " x", 1)
+        add_row(ff, 'chunk_mult', "Thicker by", self.sp_chunk, "How many times thicker than real fittings.")
         self.cb_chunky.toggled.connect(self.sp_chunk.setEnabled)
         self.sp_chunk.setEnabled(self.cb_chunky.isChecked())
         self.cb_chunky.toggled.connect(self.sync)
@@ -1358,19 +1549,32 @@ class DrainDialog(QDialog):
         self.sp_gsp.setEnabled(self.cb_fix.isChecked())
         self.sp_psp.setEnabled(self.cb_fix.isChecked())
 
-        cols = QHBoxLayout()
-        left = QVBoxLayout()
-        left.addWidget(gb)
-        left.addWidget(pb)
-        cols.addLayout(left)
-        cols.addWidget(sb)
-        right = QVBoxLayout()
-        right.addWidget(wb)
-        right.addWidget(fb)
-        right.addStretch(1)
-        cols.addLayout(right)
-        lay.addLayout(cols)
+        # ---- presets
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Preset:"))
+        self.cb_preset = QComboBox()
+        prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("▲")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("▼")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
+        b_save, b_saveas = QPushButton("Save"), QPushButton("Save as...")
+        b_del, b_open = QPushButton("Delete"), QPushButton("Folder")
+        self.btn_preset_save = b_save
+        for b in (b_save, b_saveas, b_del, b_open):
+            prow.addWidget(b)
+        lay.addLayout(prow)
+        b_save.clicked.connect(self.save_preset)
+        b_saveas.clicked.connect(lambda: self.save_preset_as())
+        b_del.clicked.connect(self.delete_preset)
+        b_open.clicked.connect(self.open_folder)
 
+        # ---- buttons
         brow = QHBoxLayout()
         self.b_add = QPushButton("Add part")
         self.b_add.setDefault(True)
@@ -1378,9 +1582,27 @@ class DrainDialog(QDialog):
         b_new = QPushButton("Start at the origin")
         b_close = QPushButton("Close")
         b_sel.setToolTip("Select the open end face of any placed part, then click this to join onto it.")
+        b_new.setToolTip("The next part starts a new run at the origin.")
         for b in (self.b_add, b_sel, b_new):
             brow.addWidget(b)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(st.get('tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         self.b_add.clicked.connect(lambda: self.tool.add_from_dialog(self))
@@ -1389,7 +1611,7 @@ class DrainDialog(QDialog):
         b_close.clicked.connect(self.close)
         self.set_target(target)
 
-        self.refresh_presets()
+        self.refresh_presets(select=st.get('last_preset'))
         self.cb_preset.currentIndexChanged.connect(self.apply_preset)
         self.lst.currentItemChanged.connect(self.sync)
         self.cb_gprof.currentIndexChanged.connect(self.sync)
@@ -1398,9 +1620,84 @@ class DrainDialog(QDialog):
         self.cb_solid.toggled.connect(self.sync)
         self.cb_wall.currentIndexChanged.connect(self.sync)
         self.cb_dir.currentIndexChanged.connect(self.sync)
-        for w in [self.sp_gd, self.sp_gt, self.sp_ps, self.sp_pt] + list(self.sp.values()):
+        for w in [self.sp_gd, self.sp_gt, self.sp_ps, self.sp_pt, self.sp_drop, self.sp_wgap, self.sp_ovl,
+                  self.sp_ovr, self.sp_gsp, self.sp_psp] + list(self.sp.values()):
             w.valueChanged.connect(self.sync)
+        for c in (self.cb_fit, self.cb_flip, self.cb_fix):
+            c.toggled.connect(self.sync)
+        # click a part in the model and the settings that made it light up
+        self._sel_names = None
+        self._lit = []
+        try:
+            from PySide6.QtCore import QTimer
+            self._sel_timer = QTimer(self)
+            self._sel_timer.timeout.connect(self.watch_selection)
+            self._sel_timer.start(400)
+        except Exception:
+            pass
         self.sync()
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def watch_selection(self):
+        try:
+            if not self.isVisible():
+                return
+            scene = getattr(self.viewport, 'scene', None)
+            sel = _items(getattr(scene, 'selection', None)) if scene is not None else []
+            names = tuple(str(getattr(e, 'name', '') or '') for e in sel)
+        except Exception:
+            return
+        if names == self._sel_names:
+            return
+        self._sel_names = names
+        keys = []
+        for nm in names:
+            for word, ks in PIECE_KEYS:
+                if nm.startswith(word) or (word == "angle" and " angle " in nm):
+                    keys += [k for k in ks if k not in keys]
+                    break
+        for w, lab in self._lit:
+            try:
+                w.setStyleSheet("")
+                lab.setStyleSheet("")
+            except Exception:
+                pass
+        self._lit = []
+        for k in keys:
+            if k in self.keyw:
+                w, lab = self.keyw[k]
+                w.setStyleSheet("background-color: #fff3a0;")
+                lab.setStyleSheet("background-color: #fff3a0; font-weight: bold;")
+                self._lit.append((w, lab))
+        if keys and keys[0] in self.page_of:
+            try:
+                self.tabs.setCurrentIndex(self.page_of[keys[0]])
+            except Exception:
+                pass
+
+    # ---- preset order ----
+    def preset_order(self):
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.refresh_presets(select=name)
 
     # ---- helpers ----
     def part(self):
@@ -1424,7 +1721,11 @@ class DrainDialog(QDialog):
         self.sp_gd.setEnabled(not half)
         if half:
             self.sp_gd.setValue(self.sp_gw.value() / 2)
-        self.lbl_ps.setText("Side:" if self.cb_ptype.currentData() == 'square' else "Diameter:")
+        self.lbl_ps.setText("D   Side" if self.cb_ptype.currentData() == 'square' else "D   Diameter")
+        try:
+            _ui_settings_save(last_values=self.values())       # opens like this next time
+        except Exception:
+            pass
         if hasattr(self, 'preview'):
             self.preview.show_part(part, self.values())
         hollow = not self.cb_solid.isChecked()
@@ -1567,6 +1868,9 @@ class DrainDialog(QDialog):
                 w.setValue(float(d[k]))
         if 'chunky' in d:
             self.cb_chunky.setChecked(bool(d['chunky']))
+        for c, key in ((self.cb_fit, 'fit_wall'), (self.cb_fix, 'auto_fix')):
+            if key in d:
+                c.setChecked(bool(d[key]))
         for w, key in ((self.sp_drop, 'drop'), (self.sp_wgap, 'wall_gap'), (self.sp_ovl, 'over_left'),
                        (self.sp_ovr, 'over_right'), (self.sp_gsp, 'g_spacing'),
                        (self.sp_psp, 'p_spacing'), (self.sp_chunk, 'chunk_mult')):
@@ -1584,11 +1888,8 @@ class DrainDialog(QDialog):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem(self.CUSTOM, None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
@@ -1596,6 +1897,7 @@ class DrainDialog(QDialog):
 
     def apply_preset(self, *_):
         name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)      # opens on this one next time
         p = self.all_presets().get(name) if name else None
         if p:
             self.set_values(p)
@@ -1643,6 +1945,7 @@ class DrainDialog(QDialog):
             return False
         self.user_presets = load_presets()
         self.refresh_presets(select=name)
+        _ui_settings_save(last_preset=name)
         return True
 
     def delete_preset(self):
@@ -1715,6 +2018,9 @@ class GuttersDownpipesTool(Tool):
                 pass
 
         cur = dict(DEFAULTS)
+        last = _ui_settings().get('last_values')
+        if isinstance(last, dict):
+            cur.update({k: last[k] for k in DEFAULTS if k in last and k != 'units'})
         if GuttersDownpipesTool._saved:
             cur.update(GuttersDownpipesTool._saved)
         if target:

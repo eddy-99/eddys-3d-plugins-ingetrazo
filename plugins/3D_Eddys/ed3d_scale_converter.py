@@ -2891,6 +2891,11 @@ class PiecesDialog(QDialog):
         b_kind = QPushButton("A piece for each group")
         b_kind.setToolTip("Quick start: one piece per group the parts are in - all the columns together, all "
                           "the brackets together and so on.")
+        b_grp = QPushButton("Pick whole group")
+        b_grp.setToolTip("Picks every part in the same group as the parts you've picked (the 'In group' column) - "
+                         "pick one bar of a wall, click this, and the whole wall is picked. Then 'Add picked to' "
+                         "puts it in another piece, so one group joins another.")
+        b_grp.clicked.connect(self.pick_whole_group)
         b_clear = QPushButton("Clear all")
         b_clear.setToolTip("Every part on its own again.")
         b_turn = QPushButton("Turn picture")
@@ -2995,7 +3000,7 @@ class PiecesDialog(QDialog):
                 sc.activated.connect(fn)
         except Exception:
             pass
-        for w in (self.b_undo, self.b_redo, b_kind, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall):
+        for w in (self.b_undo, self.b_redo, b_kind, b_grp, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall):
             brow2.addWidget(w)
         lay.addLayout(brow2)
         self.lbl.setWordWrap(True)
@@ -3117,6 +3122,19 @@ class PiecesDialog(QDialog):
         except Exception:
             pass
         return super().eventFilter(obj, ev)
+
+    def pick_whole_group(self, *_):
+        """Adds every part in the same group as the picked parts to what's picked."""
+        rows = self.picked_rows()
+        if not rows:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick a part first (in the list or the picture), then "
+                                    "click 'Pick whole group' to pick the rest of its group.")
+            return
+        kinds = set(self.leaves[r][2] for r in rows)
+        have = set(rows)
+        for i, lf in enumerate(self.leaves):
+            if lf[2] in kinds and i not in have:
+                self.pick_row(i, add=True)
 
     def pick_row(self, i, add=False):
         try:

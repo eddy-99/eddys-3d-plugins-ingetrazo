@@ -14,7 +14,10 @@
 3D Roof Tiles - roof coverings for IngeTrazo
 Select a roof face (any flat face: sloping, flat or upright) and it is covered in
 courses of tiles from its lowest edge (the eaves) up, trimmed to the face's outline
-and round any openings in it. Plain tiles, slates, fishtail, bullnose, beaver tail,
+and round any openings in it. Or click a whole group - the building, or Subframe's
+'Roof panels' group - and every roof piece in it is found and tiled at once, ridge
+and all. Each slope comes out as its own group, with its tiles, its half of the ridge,
+its finials and its flashing each a piece of their own, ready to print apart. Plain tiles, slates, fishtail, bullnose, beaver tail,
 club, pantiles and double Roman tiles.
 
 Two ways to make them:
@@ -38,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "4"
+VERSION = "6"
 
 
 def _ed3d_organise(scene, group):
@@ -95,7 +98,7 @@ RIDGE_DEFAULTS = dict(ridge=False, ridge_style='round', ridge_w=150.0, ridge_h=1
                       ridge_gap=10.0, crest='none', crest_h=90.0, crest_t=32.0, finial='none',
                       finial_h=350.0, finial_w=90.0, finial_t=32.0, finial_ends='both',
                       finial_face='out')
-DEFAULTS = dict(tile='plain', print_mode=True, stepped=False, step=8.0, gap=2.0, cgap=2.0, lift=0.01, backing=40.0, turn=0, flip=False,
+DEFAULTS = dict(tile='plain', print_mode=True, round_chimneys=True, stepped=False, step=8.0, gap=2.0, cgap=2.0, lift=0.01, backing=40.0, turn=0, flip=False,
                 **dict(TILE_INFO['plain'][1], **RIDGE_DEFAULTS))
 # ready-made settings for printing at 1:80 with a 0.4 mm nozzle (real-world mm: x 80 = model)
 BUILTIN_PRESETS = {
@@ -482,7 +485,8 @@ def build_ridge(outline, v, zr0, up=(0.0, 1.0)):
     crest = v.get('crest', 'none')
     ch, ct = max(1.0, v['crest_h']), max(0.5, v['crest_t'])
 
-    for xa, xb in edges:
+    # stopped either side of any chimney standing astride the ridge
+    for xa, xb, end_a, end_b in split_edges(edges, v.get('_ridge_cuts') or ()):
         n = max(1, int(round((xb - xa) / rl)))
         step = (xb - xa) / n
         for i in range(n):
@@ -519,6 +523,8 @@ def build_ridge(outline, v, zr0, up=(0.0, 1.0)):
             for xc, which in ((ia + fw / 2, 'left'), (ib - fw / 2, 'right')):
                 if not ends in ('both', which):
                     continue
+                if not (end_a if which == 'left' else end_b):
+                    continue                    # the side of a chimney, not the end of the roof
                 if v.get('finial_face', 'out') == 'out':
                     # turned to face out: its flat side looks along the ridge
                     xs = (ia, ia + ft) if which == 'left' else (ib - ft, ib)
@@ -688,10 +694,10 @@ FLASH_EDGES = (('flash_top', "Top edge (against a wall)",
                 "against the wall, the apron over the edge of the roof."),
                ('flash_right', "Right side (against a wall)",
                 "The same down the right side of the roof."))
-FLASH_FIELDS = (('flash_t', "Flashing thickness", 1.0, 200.0, 1,
+FLASH_FIELDS = (('flash_t', "V   Flashing thickness", 1.0, 200.0, 1,
                  "How thick the lead is. For 1:80 printing 32 mm (0.4 mm) or more."),
-                ('flash_up', "Up the wall", 20.0, 2000.0, 0, "How far the upstand runs up the wall above the roof."),
-                ('flash_cover', "Onto the roof", 20.0, 2000.0, 0,
+                ('flash_up', "W   Up the wall", 20.0, 2000.0, 0, "How far the upstand runs up the wall above the roof."),
+                ('flash_cover', "X   Onto the roof", 20.0, 2000.0, 0,
                  "How far the apron lies over the roof from the wall."))
 
 
@@ -905,6 +911,377 @@ def face_frame(face, flip=False, turn=0):
     L = math.hypot(uy, uz)
     up = (uy / L, uz / L) if L > 1e-9 and uz > 0.05 else (0.0, 1.0)
     return tw, outline, holes, up
+
+
+# ---------------------------------------------------------------------------
+# Going round chimneys: the tiles (or sheets) are cut round any chimney standing on the
+# roof, and the ridge stops either side of one that stands astride it
+# ---------------------------------------------------------------------------
+CHIMNEY_WORDS = ("chimney", "roof vent", "doig")
+
+
+def _wpos(q, m):
+    p = _pos(q)
+    if p is None or m is None:
+        return p
+    try:
+        r = m.map(QVector3D(*p))
+        return (float(r.x()), float(r.y()), float(r.z()))
+    except Exception:
+        return p
+
+
+def find_chimneys(scene):
+    """Every chimney in the model, as a list of its corners in world space - one list for
+    each group with 'chimney' (or 'roof vent') in its name: ones Chimneys built, or your own."""
+    out = []
+    for top in _items(getattr(scene, 'groups', None)):
+        place = {}
+        try:
+            for g, m in _placements(top):
+                place.setdefault(id(g), m)
+        except Exception:
+            pass
+
+        def grab(h, pts, lvl):
+            m = place.get(id(h))
+            for f in _items(getattr(getattr(h, 'mesh', None), 'faces', None)):
+                for q in _items(getattr(f, 'vertices', None)):
+                    p = _wpos(q, m)
+                    if p is not None:
+                        pts.append(p)
+            if lvl < 12:
+                for c in _kids(h):
+                    grab(c, pts, lvl + 1)
+
+        def walk(g, lvl):
+            nm = str(getattr(g, 'name', '') or '').lower()
+            if any(w in nm for w in CHIMNEY_WORDS):
+                pts = []
+                grab(g, pts, 0)
+                if len(pts) >= 3:
+                    out.append(pts)
+                return
+            if lvl < 12:
+                for c in _kids(g):
+                    walk(c, lvl + 1)
+        walk(top, 0)
+    return out
+
+
+def _hull2(pts):
+    pts = sorted(set((round(p[0], 6), round(p[1], 6)) for p in pts))
+    if len(pts) < 3:
+        return None
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, hi = [], []
+    for p in pts:
+        while len(lo) >= 2 and cross(lo[-2], lo[-1], p) <= 0:
+            lo.pop()
+        lo.append(p)
+    for p in reversed(pts):
+        while len(hi) >= 2 and cross(hi[-2], hi[-1], p) <= 0:
+            hi.pop()
+        hi.append(p)
+    h = lo[:-1] + hi[:-1]
+    return h if len(h) >= 3 else None
+
+
+def _grow_convex(poly, d):
+    """A convex outline (counter-clockwise) made d bigger all round."""
+    n = len(poly)
+    out = []
+    for i in range(n):
+        a, b, c = poly[i - 1], poly[i], poly[(i + 1) % n]
+        e1 = (b[0] - a[0], b[1] - a[1])
+        e2 = (c[0] - b[0], c[1] - b[1])
+        l1, l2 = math.hypot(*e1) or 1.0, math.hypot(*e2) or 1.0
+        n1 = (e1[1] / l1, -e1[0] / l1)
+        n2 = (e2[1] / l2, -e2[0] / l2)
+        k = 1.0 + n1[0] * n2[0] + n1[1] * n2[1]
+        k = max(k, 0.2)
+        out.append((b[0] + d * (n1[0] + n2[0]) / k, b[1] + d * (n1[1] + n2[1]) / k))
+    return out
+
+
+def chimney_holes(tw, outline, chims, clear=10.0, reach=300.0):
+    """Where each chimney stands on this roof face, in the face's own terms (mm): its outline
+    where it meets the roof (taken from the part of it within `reach` mm above the roof, so the
+    wider oversailing top and the pots don't count), made `clear` mm bigger all round. Only
+    chimneys that are on this face."""
+    O = tw((0.0, 0.0, 0.0))
+    U = v_norm(v_sub(tw((1.0, 0.0, 0.0)), O))
+    V = v_norm(v_sub(tw((0.0, 1.0, 0.0)), O))
+    N = v_norm(v_sub(tw((0.0, 0.0, 1.0)), O))
+    if N[2] < 0.05:
+        return []                                  # an upright face: no chimney stands on it
+    x0, x1, y0, y1 = bbox(outline)
+    holes = []
+    for pts in chims:
+        flat = []
+        for P in pts:
+            hv = v_dot(v_sub(P, O), N) / N[2]      # how far above the roof, straight up (m)
+            if hv / SCALE > reach:
+                continue
+            Q = (P[0], P[1], P[2] - hv)            # straight down onto the roof's plane
+            d = v_sub(Q, O)
+            flat.append((v_dot(d, U) / SCALE, v_dot(d, V) / SCALE))
+        h = _hull2(flat)
+        if not h:
+            continue
+        hb = bbox(h)
+        if hb[1] <= x0 or hb[0] >= x1 or hb[3] <= y0 or hb[2] >= y1:
+            continue                               # not on this face
+        h = clean(_grow_convex(h, clear))
+        if h:
+            holes.append(h)
+    return holes
+
+
+def ridge_cuts(holes, outline, reach):
+    """The stretches along the top edge where a chimney stands astride the ridge: [(x from, x to)]."""
+    y1 = bbox(outline)[3]
+    out = []
+    for h in holes:
+        hb = bbox(h)
+        if hb[3] >= y1 - reach:
+            out.append((hb[0], hb[1]))
+    return out
+
+
+def split_edges(edges, cuts):
+    """The ridge's top edges with the chimneys' stretches taken out: [(from, to, real start, real end)]
+    - 'real' meaning an end of the roof, not the side of a chimney (finials only go on those)."""
+    out = []
+    for xa, xb in edges:
+        segs = [(xa, xb)]
+        for ca, cb in cuts:
+            nxt = []
+            for a, b in segs:
+                if cb <= a or ca >= b:
+                    nxt.append((a, b))
+                else:
+                    if ca > a:
+                        nxt.append((a, ca))
+                    if cb < b:
+                        nxt.append((cb, b))
+            segs = nxt
+        for a, b in segs:
+            if b - a > 1.0:
+                out.append((a, b, abs(a - xa) < 1e-6, abs(b - xb) < 1e-6))
+    return out
+
+
+# what you last used and the order of your presets - kept between sessions
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_roof_tiles.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception as e:
+        print("%s: could not keep your settings: %s" % (PLUGIN_NAME, e))
+
+
+def remember_last(values):
+    """Keeps the settings you used, so the window opens with them next time."""
+    keep = {k: val for k, val in values.items()
+            if not k.startswith('_') and isinstance(val, (bool, int, float, str, type(None)))}
+    _ui_settings_save(last=keep)
+
+
+def last_used():
+    d = _ui_settings().get('last')
+    return d if isinstance(d, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# Finding the roof pieces in a picked group (the building, or Subframe's roof panels)
+# ---------------------------------------------------------------------------
+# groups never tiled when a whole group is picked: tiles made before, and Subframe's bars
+# (its rafters have wide sloping tops, but they're not the roof). Subframe's 'Roof panels'
+# group is not in here: it's made to be tiled.
+GROUP_SKIP = ("Roof - ", "Sheeting - ", "Subframe", "Roof truss", "Glazing frames", "Fascia and barge boards",
+              "Chimney", "Industrial chimney", "Roof vent", "Doig", "Weather vane")
+
+
+class WorldFace:
+    """A face from inside a group, its corners already where they really are (moved groups
+    and copies come through their placement)."""
+    def __init__(self, pts, holes):
+        self.vertices = pts
+        self.holes = holes
+
+
+def _is_face(e):
+    return hasattr(e, 'loop') or 'face' in type(e).__name__.lower()
+
+
+def selected_groups(scene):
+    return [e for e in _items(getattr(scene, 'selection', None))
+            if getattr(e, 'mesh', None) is not None and not _is_face(e)]
+
+
+def _kids(g):
+    return [c for c in _items(getattr(g, 'children', None)) + _items(getattr(g, 'groups', None))
+            if not _is_face(c)]
+
+
+def _placements(top):
+    """(group, world matrix or None) for a group and every group inside it - the same way
+    Scale Studio finds where each piece really is."""
+    try:
+        from core.group import iter_placements
+        return list(iter_placements(top))
+    except Exception:
+        pass
+    out = []
+
+    def walk(g, base, depth):
+        m = getattr(g, 'xform', None)
+        if base is not None:
+            m = base if m is None else base * m
+        out.append((g, m))
+        if depth < 12:
+            for c in _kids(g):
+                walk(c, m, depth + 1)
+    walk(top, None, 0)
+    return out
+
+
+def faces_in_groups(groups):
+    """Every face inside the picked groups, in world space: ([WorldFace], [names left out])."""
+    out, skipped = [], []
+    for top in groups:
+        place = {}
+        for g, m in _placements(top):
+            place.setdefault(id(g), m)
+
+        def wpos(q, m):
+            p = _pos(q)
+            if p is None or m is None:
+                return p
+            try:
+                r = m.map(QVector3D(*p))
+                return (float(r.x()), float(r.y()), float(r.z()))
+            except Exception:
+                return p
+
+        def walk(g, lvl):
+            nm = str(getattr(g, 'name', '') or '')
+            if nm.startswith(GROUP_SKIP):
+                skipped.append(nm)
+                return
+            m = place.get(id(g))
+            for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                pts = [p for p in (wpos(q, m) for q in _items(getattr(f, 'vertices', None))) if p is not None]
+                if len(pts) < 3:
+                    continue
+                hs = []
+                for h in _items(getattr(f, 'holes', None)):
+                    hp = [p for p in (wpos(q, m) for q in _items(h)) if p is not None]
+                    if len(hp) >= 3:
+                        hs.append(hp)
+                out.append(WorldFace(pts, hs))
+            if lvl < 12:
+                for c in _kids(g):
+                    walk(c, lvl + 1)
+        walk(top, 0)
+    return out, skipped
+
+
+def _area3(pts):
+    nx = ny = nz = 0.0
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    return 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
+
+
+def pick_roof_faces(faces, v):
+    """The roof pieces among a group's faces: sloping and facing up, and wide enough for a
+    course of tiles - so walls, floors, wall tops, the undersides of the roof and the thin edges
+    of a thick roof or roof panel are all left out."""
+    g = max(10.0, v.get('gauge', 100.0))
+    out = []
+    for f in faces:
+        pts = f.vertices
+        n = _newell(pts)
+        if not (0.05 < n[2] < 0.995):
+            continue
+        area = _area3(pts) / (SCALE * SCALE)
+        longest = max(v_len(v_sub(pts[(i + 1) % len(pts)], pts[i])) for i in range(len(pts))) / SCALE
+        if area < 1.0 or longest < 1e-6 or area / longest < 0.5 * g:
+            continue
+        out.append(f)
+    return out
+
+
+def _join(A, B, tol):
+    """Two outlines (both counter-clockwise) sharing an edge, joined into one - or None."""
+    na, nb = len(A), len(B)
+    same = lambda p, q: abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+    for i in range(na):
+        P, Q = A[i], A[(i + 1) % na]
+        for k in range(nb):
+            if same(B[k], Q) and same(B[(k + 1) % nb], P):
+                pa = [A[(i + 1 + j) % na] for j in range(na)]          # Q ... P
+                pb = [B[(k + 1 + j) % nb] for j in range(nb)]          # P ... Q
+                return clean(pa + pb[1:-1])
+    return None
+
+
+def merge_coplanar(slopes, tol=1.0):
+    """A roof slope drawn as several faces (say two triangles) is joined back into one, so its
+    courses run straight across it. slopes: [[tw, outline, holes, up]] - changed in place."""
+    merged = True
+    while merged:
+        merged = False
+        for i, a in enumerate(slopes):
+            O = a[0]((0.0, 0.0, 0.0))
+            Uu = v_norm(v_sub(a[0]((1.0, 0.0, 0.0)), O))
+            Vu = v_norm(v_sub(a[0]((0.0, 1.0, 0.0)), O))
+            Na = v_norm(v_sub(a[0]((0.0, 0.0, 1.0)), O))
+
+            def to_a(P, O=O, Uu=Uu, Vu=Vu):
+                d = v_sub(P, O)
+                return (v_dot(d, Uu) / SCALE, v_dot(d, Vu) / SCALE)
+            for b in slopes[i + 1:]:
+                Ob = b[0]((0.0, 0.0, 0.0))
+                Nb = v_norm(v_sub(b[0]((0.0, 0.0, 1.0)), Ob))
+                if v_dot(Na, Nb) < 0.9999 or abs(v_dot(v_sub(Ob, O), Na)) / SCALE > tol:
+                    continue
+                bo = clean([to_a(b[0]((x, y, 0.0))) for x, y in b[1]])
+                if not bo:
+                    continue
+                u = _join(a[1], bo, tol)
+                if u is None:
+                    continue
+                a[1] = u
+                a[2] = list(a[2]) + [h for h in (clean([to_a(b[0]((x, y, 0.0))) for x, y in hl])
+                                                 for hl in b[2]) if h]
+                slopes.remove(b)
+                merged = True
+                break
+            if merged:
+                break
+    return slopes
 
 
 # ---------------------------------------------------------------------------
@@ -1181,11 +1558,301 @@ EDDY_TIPS = {'Tile': 'The tile shape: plain, beaver tail, fish scale, slate and 
  'Finial height': 'How tall the finials are.',
  'Finial width': 'How wide the finials are.',
  'Finial thickness': 'How thick the finials are.',
- 'Tile selected face(s)': 'Tiles each roof face you have selected. Pick two faces that meet to '
-                          'get a ridge along the top.',
+ 'Tile selected face(s) or group': 'Tiles each roof face you have selected - pick two faces that '
+                                   'meet to get a ridge along the top. Or click a whole group (the '
+                                   "building, or Subframe's 'Roof panels') and every roof piece in it is "
+                                   'tiled at once, ridge and all. Each slope comes out as a group of its '
+                                   'own, with the tiles, ridge half, finials and flashing each a separate '
+                                   'piece for printing.',
  'Tiles': "The tiles: shape, size and how they're laid.",
  'Ridge': 'Ridge tiles along the top, and the finials at the ends.'}
 EDDY_TIPS_END = None
+
+
+class KeyDrawing(QWidget):
+    """The first key: what each lettered tile size is (A to J, and U)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, 700)
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF, QPainterPath
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        import math as _m
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / 700.0)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        tile = QColor(186, 92, 62)
+        roofc, backc = QColor(200, 196, 188), QColor(150, 142, 134)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+
+        def poly(pts, col):
+            p.setPen(QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+        def box(x, y, w, h, col):
+            poly([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], col)
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = _m.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + _m.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * _m.cos(a + s_), y + 6 * _m.sin(a + s_)))
+            p.setPen(red)
+            p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+        def title(x, y, text):
+            p.setFont(f)
+            p.setPen(QColor(60, 60, 60))
+            p.drawText(QRectF(x, y, 350, 18), Qt.AlignLeft, text)
+
+        # ---- the tiles from above: three courses, half bond, eaves at the bottom
+        title(10, 4, "Tiles from above (3D printing) - eaves at the bottom")
+        X0, X1, YB = 30.0, 320.0, 200.0
+        tw_, gp, gauge, cg = 70.0, 6.0, 56.0, 6.0
+        p.save()
+        p.setClipRect(QRectF(X0, 20, X1 - X0, YB - 20))
+        box(X0, 20, X1 - X0, YB - 20, roofc)
+        for r in range(3):
+            yb = YB - r * gauge
+            off = (tw_ + gp) / 2.0 if r % 2 else 0.0
+            x = X0 - off
+            while x < X1:
+                box(x, yb - (gauge - cg), tw_, gauge - cg, tile)
+                x += tw_ + gp
+        p.restore()
+        # A: one tile wide (bottom course, second tile); F: the gap after it
+        ax = X0 + tw_ + gp
+        dim(ax, YB + 12, ax + tw_, YB + 12, "A", ax + tw_ / 2, YB + 24)
+        dim(ax + tw_, YB - 20, ax + tw_ + gp, YB - 20, "F", ax + tw_ + gp + 12, YB - 30)
+        # C: one course to the next (butt to butt); J: the gap between courses
+        dim(X1 + 12, YB, X1 + 12, YB - gauge, "C", X1 + 22, YB - gauge / 2)
+        jy = YB - (gauge - cg)
+        dim(X0 - 12, jy, X0 - 12, jy - cg, "J", X0 - 22, jy - cg / 2)
+        p.setPen(QPen(QColor(150, 150, 150), 0.6))
+        p.drawLine(QPointF(X0 - 16, jy), QPointF(X0, jy))
+        p.drawLine(QPointF(X0 - 16, jy - cg), QPointF(X0, jy - cg))
+
+        # ---- lapped tiles from the side (3D printing off)
+        title(10, 228, "Lapped tiles from the side (3D printing off)")
+        p.setPen(QPen(QColor(110, 110, 110), 2.0))
+        p.drawLine(QPointF(30, 300), QPointF(330, 300))              # the roof face
+        tl, gg = 120.0, 50.0
+        for i in range(5):
+            x0 = 40 + i * gg
+            ang = -0.10
+            pts = [(x0, 296), (x0 + tl, 296 + tl * ang), (x0 + tl, 290 + tl * ang), (x0, 290)]
+            poly(pts, tile.lighter(110 if i % 2 else 100))
+        dim(40, 312, 40 + tl, 312, "B", 40 + tl / 2, 324)
+        dim(40 + 2 * gg, 262, 40 + 3 * gg, 262, "C", 40 + 2.5 * gg, 250)
+        p.setPen(QColor(110, 110, 110))
+        p.setFont(QFont())
+        p.drawText(QRectF(250, 304, 100, 14), Qt.AlignLeft, "eaves this way →")
+
+        # ---- a course end on, flat and stepped (3D printing)
+        title(10, 340, "Courses end on (3D printing) - flat, and stepped")
+        base = 440.0
+        box(20, base, 150, 18, roofc)                                  # the roof face
+        box(20, base - 16, 150, 12, backc)                             # backing sheet (I), U clear
+        for i in range(3):                                             # flat tiles: D thick
+            box(24 + i * 50, base - 16 - 10, 44, 10, tile)
+        dim(10, base - 4, 10, base, "U", 4, base + 10)
+        dim(178, base - 16, 178, base - 4, "I", 190, base - 10)
+        dim(178, base - 26, 178, base - 16, "D", 190, base - 26)
+        box(190 + 10, base, 150, 18, roofc)
+        box(200, base - 16, 150, 12, backc)
+        for i in range(3):                                             # stepped: thicker at the bottom
+            x0 = 204 + i * 50
+            poly([(x0, base - 16), (x0 + 44, base - 16), (x0 + 44, base - 30), (x0, base - 24)], tile)
+        x0 = 204
+        dim(x0 + 47, base - 24, x0 + 47, base - 30, "E", x0 + 47, base - 40)
+        p.setPen(QPen(QColor(150, 150, 150), 0.6))
+        p.drawLine(QPointF(x0 + 30, base - 24), QPointF(x0 + 50, base - 24))
+        p.setPen(QColor(110, 110, 110))
+        p.setFont(QFont())
+        p.drawText(QRectF(204, base + 20, 150, 14), Qt.AlignLeft, "← up the roof   eaves →")
+
+        # ---- a shaped tile and a pantile
+        title(10, 478, "A shaped tile (bullnose)")
+        sx, sy, sw, sh, dep = 40.0, 505.0, 80.0, 60.0, 26.0
+        path = QPainterPath()
+        path.moveTo(sx, sy)
+        path.lineTo(sx + sw, sy)
+        path.lineTo(sx + sw, sy + sh - dep)
+        path.arcTo(QRectF(sx, sy + sh - 2 * dep, sw, 2 * dep), 0, -180)
+        path.closeSubpath()
+        p.setPen(QPen(tile.darker(160), 0.8))
+        p.setBrush(tile)
+        p.drawPath(path)
+        dim(sx + sw + 12, sy + sh - dep, sx + sw + 12, sy + sh, "G", sx + sw + 22, sy + sh - dep / 2)
+        p.setPen(QPen(QColor(150, 150, 150), 0.6))
+        p.drawLine(QPointF(sx + sw, sy + sh - dep), QPointF(sx + sw + 16, sy + sh - dep))
+        title(180, 478, "A pantile, end on")
+        wy, amp = 545.0, 18.0
+        top = [(170 + i * 4.0, wy - amp * 0.5 * (1 - _m.cos(i * 4.0 / 80.0 * 2 * _m.pi))) for i in range(41)]
+        poly(top + [(330, wy + 6), (170, wy + 6)], tile)
+        dim(338, wy, 338, wy - amp, "H", 350, wy - amp / 2)
+
+        # ---- the notes
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        notes = ["A  tile width (cover, side by side)", "B  tile length (lapped tiles)",
+                 "C  gauge - course to course", "D  tile thickness", "E  extra at the bottom (stepped)",
+                 "F  gap between tiles", "G  tail depth (shaped tiles)", "H  wave height (pantiles, Romans)",
+                 "I  backing sheet thickness", "J  gap between courses", "U  gap off the roof face",
+                 "K - X  on the next key page"]
+        for i, t in enumerate(notes):
+            p.drawText(QRectF(10 if i < 6 else 185, 590 + (i % 6) * 14, 175, 14), Qt.AlignLeft | Qt.AlignVCenter, t)
+        p.end()
+
+
+class KeyDrawing2(QWidget):
+    """The second key: the ridge, crest and finials (K to T) and the flashing (V to X)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, 730)
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        import math as _m
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / 730.0)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        tile, ridge = QColor(186, 92, 62), QColor(160, 70, 48)
+        roofc, wallc = QColor(200, 196, 188), QColor(214, 208, 198)
+        lead = QColor(120, 124, 132)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+
+        def poly(pts, col):
+            p.setPen(QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+        def box(x, y, w, h, col):
+            poly([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], col)
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = _m.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + _m.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * _m.cos(a + s_), y + 6 * _m.sin(a + s_)))
+            p.setPen(red)
+            p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+        def guide(x1, y1, x2, y2):
+            p.setPen(QPen(QColor(150, 150, 150), 0.6, Qt.DashLine))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+        def title(x, y, text):
+            p.setFont(f)
+            p.setPen(QColor(60, 60, 60))
+            p.drawText(QRectF(x, y, 350, 18), Qt.AlignLeft, text)
+
+        # ---- the ridge end on: two slopes, a half-round ridge, a crest on top
+        title(10, 4, "The ridge end on - each slope has its half")
+        ax, ay = 180.0, 120.0                     # the ridge line
+        sl = 0.62
+        for sgn in (-1, 1):
+            poly([(ax, ay), (ax + sgn * 150, ay + 150 * sl), (ax + sgn * 150, ay + 150 * sl + 12),
+                  (ax, ay + 12)], tile)
+        K_ = 60.0                                 # how far the ridge reaches down each slope
+        rh = 34.0
+        pts = []
+        for i in range(25):
+            t = i / 24.0
+            x = ax - K_ + 2 * K_ * t
+            pts.append((x, ay + abs(x - ax) * sl - rh * _m.sin(_m.pi * t) * 0.9 - 2))
+        poly(pts + [(ax + K_, ay + K_ * sl), (ax - K_, ay + K_ * sl)], ridge)
+        guide(ax, ay - 70, ax, ay + 40)
+        # the crest: an upright fin on top, half each side of the middle
+        ct = 5.0
+        box(ax - ct, ay - rh - 30, 2 * ct, 32, QColor(90, 90, 96))
+        dim(ax - K_, ay + K_ * sl + 14, ax, ay + 14, "K", ax - K_ / 2 - 14, ay + K_ * sl / 2 + 22)
+        dim(ax + K_ + 24, ay, ax + K_ + 24, ay - rh, "L", ax + K_ + 36, ay - rh / 2)
+        guide(ax, ay, ax + K_ + 28, ay)
+        guide(ax, ay - rh, ax + K_ + 28, ay - rh)
+        dim(ax - 40, ay - rh, ax - 40, ay - rh - 28, "P", ax - 52, ay - rh - 14)
+        guide(ax - 44, ay - rh - 28, ax - ct, ay - rh - 28)
+        dim(ax, ay - rh - 40, ax + ct, ay - rh - 40, "Q", ax + 18, ay - rh - 48)
+        p.setFont(QFont())
+        p.setPen(QColor(110, 110, 110))
+        p.drawText(QRectF(ax + 6, ay + 40, 120, 14), Qt.AlignLeft, "middle of the ridge")
+
+        # ---- the ridge from the side: tiles, gaps and a finial at the end
+        title(10, 230, "The ridge from the side, with a finial")
+        ry = 360.0
+        box(20, ry, 330, 14, tile)                # the top course of the slope
+        L_, G_ = 82.0, 8.0
+        x = 30.0
+        for i in range(4):
+            box(x, ry - 26, L_, 26, ridge)
+            x += L_ + G_
+        dim(30, ry + 26, 30 + L_, ry + 26, "M", 30 + L_ / 2, ry + 38)
+        dim(30 + L_, ry - 38, 30 + L_ + G_, ry - 38, "N", 30 + L_ + G_ / 2 + 12, ry - 48)
+        # a spike finial at the left end
+        fx, fw_, fh_ = 34.0, 22.0, 64.0
+        poly([(fx, ry - 26), (fx + fw_, ry - 26), (fx + fw_, ry - 26 - fh_ * 0.6),
+              (fx + fw_ / 2, ry - 26 - fh_), (fx, ry - 26 - fh_ * 0.6)], QColor(90, 90, 96))
+        dim(fx - 12, ry - 26, fx - 12, ry - 26 - fh_, "R", fx - 22, ry - 26 - fh_ / 2)
+        dim(fx, ry - 26 - fh_ - 10, fx + fw_, ry - 26 - fh_ - 10, "S", fx + fw_ / 2, ry - 26 - fh_ - 22)
+        # the finial seen edge on (its thickness)
+        title(250, ry + 20, "Finial edge on")
+        ex = 290.0
+        poly([(ex, ry - 30), (ex + 8, ry - 30), (ex + 8, ry - 30 - fh_ * 0.6), (ex + 4, ry - 30 - fh_),
+              (ex, ry - 30 - fh_ * 0.6)], QColor(90, 90, 96))
+        dim(ex, ry - 30 - fh_ - 10, ex + 8, ry - 30 - fh_ - 10, "T", ex + 4 + 16, ry - 30 - fh_ - 20)
+
+        # ---- the flashing: a roof against a wall, end on
+        title(10, 410, "Flashing where the roof meets a wall, end on")
+        wx0, wx1 = 230.0, 270.0
+        box(wx0, 430, wx1 - wx0, 200, wallc)      # the wall
+        rsl = 0.45
+        ry0 = 550.0
+        poly([(40, ry0 + (wx0 - 40) * rsl), (wx0, ry0), (wx0, ry0 + 14), (40, ry0 + (wx0 - 40) * rsl + 14)],
+             roofc)
+        poly([(40, ry0 + (wx0 - 40) * rsl - 10), (wx0, ry0 - 10), (wx0, ry0), (40, ry0 + (wx0 - 40) * rsl)], tile)
+        lt, up_, cov = 6.0, 80.0, 110.0
+        x0 = wx0 - 1.0
+        yt = ry0 - 10
+        poly([(x0, yt - up_), (x0, yt - 1), (x0 - cov, yt - 1 + cov * rsl), (x0 - cov, yt - 1 + cov * rsl - lt),
+              (x0 - lt, yt - lt - 1), (x0 - lt, yt - up_)], lead)
+        dim(x0 - lt, yt - up_ - 10, x0, yt - up_ - 10, "V", x0 - lt - 14, yt - up_ - 18)
+        dim(x0 - 24, yt - lt, x0 - 24, yt - up_, "W", x0 - 36, yt - up_ / 2)
+        dim(x0, yt + 18, x0 - cov, yt + 18 + cov * rsl, "X", x0 - cov / 2 + 4, yt + 40 + cov * rsl / 2)
+        p.setFont(QFont())
+        p.setPen(QColor(90, 90, 90))
+        p.drawText(QRectF(wx0 + 2, 610, 40, 14), Qt.AlignCenter, "wall")
+
+        # ---- the notes
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        notes = ["K  ridge width (down the slope)", "L  ridge height", "M  ridge tile length",
+                 "N  gap between ridge tiles", "P  crest height", "Q  crest thickness (each half)",
+                 "R  finial height", "S  finial width", "T  finial thickness",
+                 "V  flashing thickness", "W  flashing up the wall", "X  flashing onto the roof"]
+        for i, t in enumerate(notes):
+            p.drawText(QRectF(10 if i < 6 else 185, 645 + (i % 6) * 14, 175, 14), Qt.AlignLeft | Qt.AlignVCenter, t)
+        p.end()
 
 
 class TilePreview(QWidget):
@@ -1261,7 +1928,7 @@ FIELDS = [
     ('backing', "I   Backing sheet thickness", 0.0, 500.0, 1, "3D printing: a solid sheet under the "
                                                              "tiles, the shape of the roof, so the roof "
                                                              "prints as one piece. 0 = no backing."),
-    ('lift', "Gap off the roof face", 0.0, 5.0, 3, "3D printing: a hair's gap between the tiles and the "
+    ('lift', "U   Gap off the roof face", 0.0, 5.0, 3, "3D printing: a hair's gap between the tiles and the "
                                                    "roof face, so the slicer doesn't see faces lying exactly "
                                                    "on top of each other. 0.01 mm is plenty."),
 ]
@@ -1293,7 +1960,9 @@ class TilesDialog(QDialog):
         self.user_presets = load_presets()
         self._busy = False
         lay = QVBoxLayout(self)
-        self.lbl = QLabel("Select a roof face, then click 'Tile selected face(s)'. Sizes are real-world mm.")
+        self.lbl = QLabel("Select a roof face - or click the whole building, or Subframe's 'Roof panels' "
+                          "group, to tile every roof piece at once - then click 'Tile selected face(s) or "
+                          "group'. Sizes are real-world mm.")
         self.lbl.setWordWrap(True)
         self.lbl.setStyleSheet("font-weight: bold;")
         lay.addWidget(self.lbl)
@@ -1304,9 +1973,21 @@ class TilesDialog(QDialog):
 
         row = QHBoxLayout()
         lay.addLayout(row)
+        from PySide6.QtWidgets import QTabWidget, QScrollArea
         self.preview = TilePreview()
-        row.addWidget(self.preview, 1)
-        from PySide6.QtWidgets import QTabWidget
+        self.left = QTabWidget()
+        self.left.addTab(self.preview, "Preview")
+        key1 = QScrollArea()
+        key1.setWidgetResizable(True)
+        key1.setWidget(KeyDrawing())
+        self.left.addTab(key1, "Key (A - J)")
+        key2 = QScrollArea()
+        key2.setWidgetResizable(True)
+        key2.setWidget(KeyDrawing2())
+        self.left.addTab(key2, "Key (K - X)")
+        self.left.setTabToolTip(1, "What each lettered tile size is.")
+        self.left.setTabToolTip(2, "What each lettered ridge, finial and flashing size is.")
+        row.addWidget(self.left, 1)
         self.tabs = QTabWidget()
         row.addWidget(self.tabs, 1)
         page1 = QWidget()
@@ -1347,6 +2028,11 @@ class TilesDialog(QDialog):
         form.addRow("Courses start", self.cb_turn)
         self.cb_flip = QCheckBox("Tiles on the other side of the face")
         form.addRow(self.cb_flip)
+        self.cb_chim = QCheckBox("Go round chimneys")
+        self.cb_chim.setToolTip("Tiles are cut round any chimney standing on the roof (one Chimneys built, or "
+                                "your own group with 'chimney' in its name), with a groove's room round it, and "
+                                "the ridge tiles stop either side of a chimney on the ridge.")
+        form.addRow(self.cb_chim)
 
         # ---- ridge tab ----
         page2 = QWidget()
@@ -1405,6 +2091,15 @@ class TilesDialog(QDialog):
         prow.addWidget(QLabel("Preset:"))
         self.cb_preset = QComboBox()
         prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_dn = QPushButton("\u25bc")
+        for b_, tip_ in ((b_up, "Moves the preset you have open up the list."),
+                         (b_dn, "Moves the preset you have open down the list.")):
+            b_.setToolTip(tip_)
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
         b_save = QPushButton("Save")
         b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
         b_saveas = QPushButton("Save as...")
@@ -1422,7 +2117,7 @@ class TilesDialog(QDialog):
         b_dir.clicked.connect(self.open_folder)
         lay.addLayout(prow)
         brow = QHBoxLayout()
-        self.b_add = QPushButton("Tile selected face(s)")
+        self.b_add = QPushButton("Tile selected face(s) or group")
         self.b_add.setDefault(True)
         b_close = QPushButton("Close")
         brow.addWidget(self.b_add)
@@ -1431,7 +2126,7 @@ class TilesDialog(QDialog):
         lay.addLayout(brow)
 
         self.cb_tile.currentIndexChanged.connect(self.tile_changed)
-        for w in (self.cb_print, self.cb_bond, self.cb_flip, self.cb_step):
+        for w in (self.cb_print, self.cb_bond, self.cb_flip, self.cb_step, self.cb_chim):
             w.toggled.connect(self.changed)
         self.cb_turn.currentIndexChanged.connect(self.changed)
         self.cb_preset.currentIndexChanged.connect(self.apply_preset)
@@ -1452,7 +2147,8 @@ class TilesDialog(QDialog):
                  crest=self.cb_crest.currentData() or 'none', finial=self.cb_finial.currentData() or 'none',
                  finial_ends=self.cb_fends.currentData() or 'both',
                  finial_face=self.cb_fface.currentData() or 'out',
-                 turn=self.cb_turn.currentData() or 0, flip=self.cb_flip.isChecked())
+                 turn=self.cb_turn.currentData() or 0, flip=self.cb_flip.isChecked(),
+                 round_chimneys=self.cb_chim.isChecked())
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
         v.update(flashing_values(self))
@@ -1479,6 +2175,7 @@ class TilesDialog(QDialog):
                             cb.setCurrentIndex(i)
             self.cb_bond.setChecked(bool(d.get('bond', True)))
             self.cb_flip.setChecked(bool(d.get('flip', False)))
+            self.cb_chim.setChecked(bool(d.get('round_chimneys', True)))
             for i in range(self.cb_turn.count()):
                 if self.cb_turn.itemData(i) == d.get('turn', 0):
                     self.cb_turn.setCurrentIndex(i)
@@ -1531,15 +2228,32 @@ class TilesDialog(QDialog):
         self.lbl_report.setVisible(True)
 
     # ---- presets ----
+    def preset_order(self):
+        """Every preset's name, in the order you've put them (new ones go at the bottom)."""
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in (_ui_settings().get('order') or []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick a preset first, then move it up or down.")
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = max(0, min(len(order) - 1, i + step))
+        if i == j:
+            return
+        order[i], order[j] = order[j], order[i]
+        _ui_settings_save(order=order)
+        self.refresh_presets(select=name)
+
     def refresh_presets(self, select=None):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem("-- Custom --", None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
@@ -1655,12 +2369,16 @@ class RoofTilesTool(Tool):
             except Exception:
                 pass
         cur = dict(DEFAULTS)
-        if RoofTilesTool._saved:
-            cur.update(RoofTilesTool._saved)
+        cur.update(RoofTilesTool._saved or last_used())       # opens with what you last used
         dlg = TilesDialog(cur, viewport, self)
         RoofTilesTool._dialog = dlg
 
         def closed(*_):
+            try:
+                RoofTilesTool._saved = dict(dlg.values())
+                remember_last(RoofTilesTool._saved)
+            except Exception:
+                pass
             RoofTilesTool._dialog = None
         dlg.finished.connect(closed)
         eddy_window(dlg, PLUGIN_NAME, EDDY_TIPS, place=True)  # eddy-window
@@ -1672,65 +2390,123 @@ class RoofTilesTool(Tool):
     def add_from_dialog(self, dlg):
         v = dlg.values()
         RoofTilesTool._saved = dict(v)
+        remember_last(v)
         viewport = dlg.viewport
         scene = getattr(viewport, 'scene', None)
         faces = selected_faces(scene) if scene is not None else []
-        if not faces:
-            QMessageBox.information(dlg, PLUGIN_NAME, "Select a roof face first.")
+        groups = selected_groups(scene) if scene is not None else []
+        if not faces and not groups:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Select a roof face first - or click the building "
+                                    "(or Subframe's 'Roof panels' group) to tile every roof piece in it.")
             return
-        parts, total, problems = [], 0, []
-        ridge_sols, finial_sols, flash_sols = [], [], []
-        ridges = 0
+        problems, notes = [], []
+        # every slope to tile: [to_world, outline, holes, up, picked from a group?]
+        slopes = []
         for i, f in enumerate(faces):
             try:
                 tw, outline, holes, up = face_frame(f, v['flip'], v['turn'])
                 if outline is None:
                     raise ValueError("that face has no area")
-                sols, count = lay_tiles(outline, holes, dict(v, _up=up))
-                ridges += getattr(lay_tiles, 'ridges', 0)
-                if v.get('ridge') and not getattr(lay_tiles, 'ridges', 0):
-                    problems.append("Face %d: no level top edge for a ridge (a hip end?)" % (i + 1))
+                slopes.append([tw, outline, holes, up, False])
             except Exception as e:
                 problems.append("Face %d: %s" % (i + 1, e))
+        if groups:
+            wf, skipped = faces_in_groups(groups)
+            found = []
+            for f in pick_roof_faces(wf, v):
+                try:
+                    # from a group: always on the top of the roof, eaves at the lowest edge
+                    tw, outline, holes, up = face_frame(f, False, 0)
+                    if outline is not None:
+                        found.append([tw, outline, holes, up])
+                except Exception:
+                    pass
+            merge_coplanar(found)
+            slopes += [s_ + [True] for s_ in found]
+            if not found:
+                problems.append("No roof pieces found in the group you picked - roof pieces are the "
+                                "sloping faces facing up, at least half a course wide.")
+            if skipped:
+                notes.append("Left out (not roof coverings): %s." % ", ".join(sorted(set(skipped))))
+            if v.get('flip') or v.get('turn'):
+                notes.append("Picked from a group, the tiles go on the top of each roof piece with the "
+                             "eaves at its lowest edge ('Courses start' and 'other side' are for single faces).")
+        if not slopes:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No tiles fitted.")
+            return
+        # one group per slope, holding each piece of it on its own: the tiles (on their backing), its
+        # half of the ridge, its finials, its flashing - so they can be printed apart
+        slope_parts, total, ridges, nslopes = [], 0, 0, 0
+        tile_name = TILE_INFO[v['tile']][0]
+        chims = find_chimneys(scene) if (v.get('round_chimneys', True) and scene is not None) else []
+        clear = max(10.0, v.get('cgap', 0.0) if v.get('print_mode') else v.get('gap', 0.0))
+        went_round = 0
+        for i, (tw, outline, holes, up, from_group) in enumerate(slopes):
+            cuts = []
+            if chims:
+                ch = chimney_holes(tw, outline, chims, clear)
+                if ch:
+                    went_round += len(ch)
+                    holes = list(holes) + ch
+                    cuts = ridge_cuts(ch, outline, max(1.0, v.get('ridge_w', 0.0)) + clear)
+            try:
+                sols, count = lay_tiles(outline, holes, dict(v, _up=up, _ridge_cuts=cuts))
+                nr = getattr(lay_tiles, 'ridges', 0)
+                if v.get('ridge') and not nr and not from_group:
+                    problems.append("Slope %d: no level top edge for a ridge (a hip end?)" % (i + 1))
+            except Exception as e:
+                problems.append("Slope %d: %s" % (i + 1, e))
                 continue
             # split before mapping: the tags don't survive mapped()
             fins = [s for s in sols if getattr(s, 'finial', False)]
             rids = [s for s in sols if getattr(s, 'ridge', False) and not getattr(s, 'finial', False)]
             tiles = [s for s in sols if not getattr(s, 'ridge', False) and not getattr(s, 'finial', False)]
-            fl, notes = build_flashings(outline, sols, v, up)
-            flash_sols += [s.mapped(tw) for s in fl]
-            problems += ["Face %d (flashing): %s" % (i + 1, n_) for n_ in notes]
-            ridge_sols += [s.mapped(tw) for s in rids]
-            finial_sols += [s.mapped(tw) for s in fins]
-            if tiles:
-                name = "Slope %d - %s - %d tiles" % (len(parts) + 1, TILE_INFO[v['tile']][0], count)
-                parts.append((name, [s.mapped(tw) for s in tiles]))
-                total += count
-        if not parts:
+            fl, fnotes = build_flashings(outline, sols, v, up)
+            problems += ["Slope %d (flashing): %s" % (i + 1, n_) for n_ in fnotes]
+            if not tiles:
+                continue
+            nslopes += 1
+            k = nslopes
+            pieces = [("Slope %d - tiles - %s - %d tiles" % (k, tile_name, count), [s.mapped(tw) for s in tiles])]
+            if rids:
+                pieces.append(("Slope %d - ridge half - %d ridge tiles" % (k, nr), [s.mapped(tw) for s in rids]))
+                ridges += nr
+            if fins:
+                pieces.append(("Slope %d - finials" % k, [s.mapped(tw) for s in fins]))
+            if fl:
+                pieces.append(("Slope %d - flashing" % k, [s.mapped(tw) for s in fl]))
+            slope_parts.append(("Slope %d (%d pieces)" % (k, len(pieces)) if len(pieces) > 1 else None, pieces))
+            total += count
+        if not slope_parts:
             QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No tiles fitted on that face.")
             return
-        nslopes = len(parts)
-        if ridge_sols:
-            parts.append(("Ridge - %d ridge tiles" % ridges, ridge_sols))
-        if finial_sols:
-            parts.append(("Finials", finial_sols))
-        if flash_sols:
-            parts.append(("Flashing", flash_sols))
-        top = "Roof - %s%s" % (TILE_INFO[v['tile']][0], " (for 3D printing)" if v['print_mode'] else "")
-        nf = self.add_to_scene(viewport, parts, top)
+        top = "Roof - %s%s" % (tile_name, " (for 3D printing)" if v['print_mode'] else "")
+        if len(slope_parts) == 1 and slope_parts[0][0]:
+            slope_parts = [(top, slope_parts[0][1])]        # one slope: its group is the roof
+        nf = self.add_to_scene(viewport, slope_parts, top)
         if nf is None:
             return
+        npieces = sum(len(pc) for _, pc in slope_parts)
         msg = "Added %d tiles%s on %d slope(s), %d faces." % (
             total, (" and %d ridge tiles" % ridges) if ridges else "", nslopes, nf)
-        if len(parts) > 1:
-            msg += "\nOne group '%s' holding: %s." % (top, ", ".join(n.split(" - ")[0] for n, _ in parts))
+        if npieces > 1:
+            msg += ("\nOne group '%s': each slope is a group of its own, with its tiles, ridge half, finials "
+                    "and flashing each a separate piece (%d pieces). To print them apart, in Scale Studio's "
+                    "Pieces page pick 'Every group with faces (smallest pieces)' and tick 'Lay each piece "
+                    "flat' - or 'Groups 1 level in' for each slope as one piece." % (top, npieces))
+        if went_round:
+            msg += "\nWent round the chimney on %d slope%s - the ridge stops either side of one on the ridge." % (
+                went_round, "s" if went_round > 1 else "")
+        if notes:
+            msg += "\n" + "\n".join(notes)
         if problems:
             msg += "\n" + "\n".join(problems)
         dlg.show_report(msg, bad=bool(problems))
 
-    def add_to_scene(self, viewport, parts, top_name="Roof"):
-        """One parent group holding a child group per part (each slope, the ridge, the
-        finials). The geometry is already in place, so no transforms are needed."""
+    def add_to_scene(self, viewport, slope_parts, top_name="Roof"):
+        """One parent group holding a group per slope, each holding a group per piece of it (its
+        tiles, ridge half, finials, flashing). The geometry is already in place, so no transforms
+        are needed. slope_parts: [(slope group name or None, [(piece name, solids)])]."""
         stats = {'faces': 0, 'errors': 0, 'err': None}
         tol = 1e-4 * 0.001
 
@@ -1746,44 +2522,56 @@ class RoofTilesTool(Tool):
                 pass
             return g
 
+        def holder(Group, name, kids):
+            try:
+                h = Group(name=name)
+                if hasattr(h, 'adopt'):
+                    h.adopt(kids)
+                else:
+                    h.children = kids
+                h.component = False
+                return h
+            except Exception:
+                return None             # an older IngeTrazo: the pieces go in side by side
+
         def mutate(scene):
             from core.mesh import Mesh
             from core.group import Group
-            kids = []
-            for name, solids in parts:
-                mesh = Mesh()
-                for so in solids:
-                    verts = {}
+            tops = []
+            for sname, pieces in slope_parts:
+                kids = []
+                for name, solids in pieces:
+                    mesh = Mesh()
+                    made = 0
+                    for so in solids:
+                        verts = {}
 
-                    def vx(p):
-                        k = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
-                        if k not in verts:
-                            verts[k] = VertexWrapper(*p)
-                        return verts[k]
-                    for pts in so.faces:
-                        try:
-                            mesh.add_face([vx(p) for p in pts])
-                            stats['faces'] += 1
-                        except Exception as e:
-                            stats['errors'] += 1
-                            stats['err'] = e
-                if stats['faces'] == 0:
-                    raise RuntimeError("No faces could be created (%s)." % stats['err'])
-                g = make_group(Group, mesh, name)
-                g.component = False
-                kids.append(g)
-            parent = None
-            if len(kids) > 1:
-                try:
-                    parent = Group(name=top_name)
-                    if hasattr(parent, 'adopt'):
-                        parent.adopt(kids)
-                    else:
-                        parent.children = kids
-                    parent.component = False
-                except Exception:
-                    parent = None          # an older IngeTrazo: add them side by side
-            for g in ([parent] if parent is not None else kids):
+                        def vx(p):
+                            k = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
+                            if k not in verts:
+                                verts[k] = VertexWrapper(*p)
+                            return verts[k]
+                        for pts in so.faces:
+                            try:
+                                mesh.add_face([vx(p) for p in pts])
+                                made += 1
+                            except Exception as e:
+                                stats['errors'] += 1
+                                stats['err'] = e
+                    if not made:
+                        continue
+                    stats['faces'] += made
+                    g = make_group(Group, mesh, name)
+                    g.component = False
+                    kids.append(g)
+                if not kids:
+                    continue
+                h = holder(Group, sname, kids) if (sname and len(kids) > 1) else None
+                tops += [h] if h is not None else kids
+            if stats['faces'] == 0:
+                raise RuntimeError("No faces could be created (%s)." % stats['err'])
+            parent = holder(Group, top_name, tops) if len(tops) > 1 else None
+            for g in ([parent] if parent is not None else tops):
                 _ed3d_organise(scene, g)
                 if hasattr(scene, 'add_group') and parent is None:
                     scene.add_group(g)

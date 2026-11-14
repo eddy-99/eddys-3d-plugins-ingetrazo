@@ -18,6 +18,6 @@ en = "3D Roof Tiles"
 pt = "Telhas 3D"
 
 [summary]
-es = "Cubre un faldón con tejas planas, pizarras o tejas con forma, solapadas o planas para imprimir, con cumbrera y remates. Cada faldón en su propio grupo."
-en = "Covers a roof face with plain tiles, slates, shaped or profiled tiles, overlapping or flat for printing, with ridge tiles and finials. Each slope in its own group."
-pt = "Cobre uma água do telhado com telhas planas, ardósias ou telhas perfiladas, sobrepostas ou planas para impressão, com cumeeira e remates."
+es = "Cubre un faldón con tejas planas, pizarras o tejas con forma, solapadas o planas para imprimir, con cumbrera y remates. Elige una cara o todo el edificio y se tejan todos los faldones a la vez, cada pieza aparte para imprimir."
+en = "Covers a roof face with plain tiles, slates, shaped or profiled tiles, overlapping or flat for printing, with ridge tiles and finials. Pick one face, or the whole building to tile every slope at once, each piece separate for printing."
+pt = "Cobre uma água do telhado com telhas planas, ardósias ou telhas perfiladas, sobrepostas ou planas para impressão, com cumeeira e remates. Escolha uma face ou o edifício inteiro para cobrir todas as águas de uma vez."

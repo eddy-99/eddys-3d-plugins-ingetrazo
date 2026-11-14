@@ -18,6 +18,6 @@ en = "3D Corrugated Iron"
 pt = "Chapa ondulada 3D"
 
 [summary]
-es = "Cubre una cara con chapa ondulada, grecada o lisa, para imprimir o en láminas reales solapadas, con óxido y chapas sueltas, alrededor de los huecos."
-en = "Covers a face with corrugated, box-profile or flat sheets, flat-backed for printing or real lapped sheets, with rust, missing and skew sheets, round any openings."
-pt = "Cobre uma face com chapa ondulada, trapezoidal ou lisa, para impressão ou em folhas reais sobrepostas, com ferrugem e folhas soltas, à volta das aberturas."
+es = "Cubre una cara con chapa ondulada, grecada o lisa, para imprimir o en láminas reales solapadas, con óxido y chapas sueltas, alrededor de los huecos. Haz clic en el edificio para cubrir todos los tejados o paredes a la vez."
+en = "Covers a face with corrugated, box-profile or flat sheets, flat-backed for printing or real lapped sheets, with rust, missing and skew sheets, round any openings. Click a whole building to clad every roof or wall at once."
+pt = "Cobre uma face com chapa ondulada, trapezoidal ou lisa, para impressão ou em folhas reais sobrepostas, com ferrugem e folhas soltas, à volta das aberturas. Clique no edifício para cobrir todos os telhados ou paredes de uma vez."

@@ -17,6 +17,12 @@ A toolbar along the top of the IngeTrazo window with a button for each of the
 Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
 that plugin. Right-click the toolbar to pick which buttons it shows, and whether
 they have labels. Ctrl+Alt+B shows or hides the toolbar.
+
+Workflow toolbars: a toolbar of steps to work through in order - say, making a building: floor
+plan, bricks, windows, doors, frame, roof... Copy any buttons onto it (the same plugin can be on
+it more than once, and on your other toolbars too), each step numbered with a note of your own.
+The next step is lit up; each one gets a tick when you've done it; 'Start again' clears them.
+Make one with Arrange toolbars (right-click any of the toolbars).
 """
 
 import os
@@ -55,6 +61,9 @@ PLUGINS = [
     ("3D Layers & Colours", "Ctrl+Alt+V", "Layers", "layers"),
     ("3D Pieces In", "Ctrl+Alt+E", "Pieces in", "piecesin"),
     ("3D Blend", "Ctrl+Shift+B", "Blend", "blend"),
+    ("3D Subframe", "Ctrl+Alt+Y", "Subframe", "subframe"),
+    ("3D Floor Plan", "Ctrl+Alt+Shift+F", "Floor plan", "floorplan"),
+    ("3D Openings", "Ctrl+Shift+O", "Openings", "openings"),
 ]
 
 
@@ -167,6 +176,52 @@ def make_icon(kind):
         p.setPen(QPen(QColor(30, 60, 120), 1.6))
         p.drawEllipse(QRectF(10, 3, 12, 6))
         p.drawRect(QRectF(4, 25, 24, 5))
+    elif kind == "subframe":
+        # a wall frame: plates, posts, a stud and a brace, round a window
+        p.setPen(QPen(QColor(80, 50, 25), 1.0))
+        p.setBrush(QColor(150, 104, 64))
+        p.drawRect(QRectF(3, 26, 26, 3))                            # bottom plate
+        p.drawRect(QRectF(3, 4, 26, 3))                             # top plate
+        p.setBrush(QColor(120, 82, 50))
+        p.drawRect(QRectF(3, 7, 3, 19))                             # end posts
+        p.drawRect(QRectF(26, 7, 3, 19))
+        p.setBrush(QColor(215, 150, 50))
+        p.drawRect(QRectF(15, 11, 9, 2.5))                          # lintel and sill
+        p.drawRect(QRectF(15, 20, 9, 2.5))
+        p.setBrush(QColor(200, 120, 40))
+        p.drawRect(QRectF(13, 7, 2.5, 19))                          # post by the window
+        p.setPen(QPen(QColor(90, 120, 70), 2.4))
+        p.drawLine(QPointF(7, 25), QPointF(12, 8))                  # brace
+    elif kind == "floorplan":
+        # a plan from above: an L of walls, an inside wall, the floor showing through
+        p.setPen(QPen(QColor(110, 60, 40), 1.0))
+        p.setBrush(QColor(196, 120, 90))
+        o = QPainterPath()
+        for x, y in ((3, 29), (29, 29), (29, 15), (17, 15), (17, 3), (3, 3)):
+            (o.moveTo if o.elementCount() == 0 else o.lineTo)(x, y)
+        o.closeSubpath()
+        i = QPainterPath()
+        for x, y in ((7, 25), (25, 25), (25, 19), (13, 19), (13, 7), (7, 7)):
+            (i.moveTo if i.elementCount() == 0 else i.lineTo)(x, y)
+        i.closeSubpath()
+        p.drawPath(o.subtracted(i))
+        p.setBrush(QColor(240, 225, 195))
+        p.drawPath(i)
+        p.setBrush(QColor(225, 170, 120))
+        p.drawRect(QRectF(7, 13, 6, 2))                            # an inside wall
+    elif kind == "openings":
+        # a wall with a window hole and a doorway cut up from the bottom
+        p.setPen(QPen(QColor(110, 60, 40), 1.0))
+        p.setBrush(QColor(196, 120, 90))
+        w_ = QPainterPath()
+        for x, y in ((3, 29), (17, 29), (17, 15), (25, 15), (25, 29), (29, 29), (29, 5), (3, 5)):
+            (w_.moveTo if w_.elementCount() == 0 else w_.lineTo)(x, y)
+        w_.closeSubpath()
+        h_ = QPainterPath()
+        h_.addRect(QRectF(6, 10, 7, 9))
+        p.drawPath(w_.subtracted(h_))
+        p.setBrush(QColor(190, 215, 235))                           # sky through the window
+        p.drawRect(QRectF(6, 10, 7, 9))
     elif kind == "blend":
         # a post standing on a block, a curved fillet blending one into the other
         p.setPen(dark)
@@ -411,6 +466,14 @@ def make_icon(kind):
         p.drawLine(QPointF(16, 2), QPointF(16, 10))                 # the arrow coming in
         p.setBrush(QColor(235, 120, 30))
         p.drawPolygon(QPolygonF([QPointF(11.5, 8), QPointF(20.5, 8), QPointF(16, 13)]))
+    elif kind == "again":
+        # a round arrow: start the workflow again
+        p.setPen(QPen(QColor(46, 125, 50), 3.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(6, 6, 20, 20), 60 * 16, 290 * 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(46, 125, 50))
+        p.drawPolygon(QPolygonF([QPointF(17, 1), QPointF(26, 6), QPointF(17, 12)]))
     elif kind == "layers":
         p.setPen(dark)
         for i, col in enumerate(((168, 80, 56), (84, 90, 102), (46, 92, 68))):   # brick, slate, ironwork
@@ -551,6 +614,9 @@ def refresh_buttons(tb):
         found = find_tool_class(name) is not None or find_plugin_action(win, name, shortcut) is not None
         act._missing = not found
         act.setEnabled(True)
+        if hasattr(act, '_step'):
+            act.setVisible(found)                # a workflow step: always shown if the plugin's there
+            continue
         act.setToolTip("%s  (%s)" % (name, shortcut))
         act.setVisible(found and name not in hidden)
 
@@ -579,9 +645,9 @@ DIVIDER = "|"          # in the saved layout: a divider between groups of button
 # The plugins sorted by what they're for: the Extensions menu's sub-menus, and the
 # ready-made 'one small toolbar for each kind' layout.
 GROUPS = [
-    ("Walls", ["3D Brick & Block Studio", "3D Wrap", "3D Wood Planking"]),
+    ("Walls", ["3D Brick & Block Studio", "3D Wrap", "3D Wood Planking", "3D Subframe", "3D Floor Plan"]),
     ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
-    ("Doors & windows", ["3D Period Doors", "3D Period Windows"]),
+    ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
@@ -589,6 +655,29 @@ GROUPS = [
     ("Notes & set-up", ["3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
 MAIN_ID = "main"
+
+# ready-made workflow toolbars: (plugin, the step's note)
+WORKFLOWS = {
+    "Make a building": [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Brick & Block Studio", "Bricks"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Subframe", "Frame"),
+        ("3D Roof Tiles", "Roof tiles"), ("3D Chimneys", "Chimneys"), ("3D Gutters & Downpipes", "Gutters"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")],
+    "Get it ready to print": [
+        ("3D Layers & Colours", "Check parts"), ("3D Scale Studio", "Scale & pieces"),
+        ("3D Print Scaler", "Fit the bed")],
+}
+STEP_SEP = "::"          # a workflow step is saved as 'plugin name::your note'
+
+
+def split_step(entry):
+    name, _sep, note = str(entry).partition(STEP_SEP)
+    return RENAMED.get(name, name), note.strip()
+
+
+def join_step(name, note=""):
+    note = (note or "").replace(STEP_SEP, ":").strip()
+    return name + (STEP_SEP + note if note else "")
 
 
 def _new_id(bars):
@@ -600,9 +689,10 @@ def _new_id(bars):
 
 
 def current_bars():
-    """The saved toolbars: [{'id', 'name', 'items': [plugin names and DIVIDER], 'visible'}]. The
-    first is always the main one. Every plugin is on exactly one toolbar; new plugins go on the
-    end of the main one. An old single-toolbar layout becomes the main toolbar."""
+    """The saved toolbars: [{'id', 'name', 'items': [plugin names and DIVIDER], 'visible', 'workflow'}].
+    The first is always the main one. Every plugin is on exactly one ordinary toolbar; new plugins go
+    on the end of the main one. Workflow toolbars are extra: their steps can be any plugin, as often
+    as you like ('name::note'). An old single-toolbar layout becomes the main toolbar."""
     st = load_settings()
     known = [p[0] for p in PLUGINS]
     bars = st.get('bars')
@@ -614,18 +704,24 @@ def current_bars():
         if not isinstance(b, dict):
             continue
         items = []
+        wf = bool(b.get('workflow')) and b.get('id') != MAIN_ID
         for x in b.get('items') or []:
-            x = RENAMED.get(x, x)
             if x == DIVIDER:
                 if items and items[-1] != DIVIDER:
                     items.append(x)
-            elif x in known and x not in seen:
-                seen.add(x)
-                items.append(x)
+                continue
+            nm, note = split_step(x)
+            if nm not in known:
+                continue
+            if wf:
+                items.append(join_step(nm, note))
+            elif nm not in seen:
+                seen.add(nm)
+                items.append(nm)
         while items and items[-1] == DIVIDER:
             items.pop()
         out.append({'id': str(b.get('id') or _new_id(out)), 'name': str(b.get('name') or "Toolbar"),
-                    'items': items, 'visible': bool(b.get('visible', True))})
+                    'items': items, 'visible': bool(b.get('visible', True)), 'workflow': wf})
     if not out or out[0]['id'] != MAIN_ID:
         out.insert(0, {'id': MAIN_ID, 'name': "3D Plugins", 'items': [], 'visible': True})
     for name in known:
@@ -690,8 +786,11 @@ def build_buttons(tb, win, items=None):
         items = next((b['items'] for b in current_bars() if b['id'] == bid), [])
     for a in list(tb.actions()):
         tb.removeAction(a)
-        if getattr(a, '_plugin', None) or a.isSeparator():
+        if getattr(a, '_plugin', None) or a.isSeparator() or getattr(a, '_wf', False):
             a.deleteLater()
+    if getattr(tb, '_workflow', False):
+        build_workflow(tb, win, items)
+        return
     hidden = set(load_settings().get('hidden') or [])
     info = {p[0]: p for p in PLUGINS}
     for entry in items:
@@ -711,14 +810,114 @@ def build_buttons(tb, win, items=None):
         act.setVisible(name not in hidden)
 
 
+# ---------------------------------------------------------------------------
+# Workflow toolbars: numbered steps, the next one lit up, ticks as you go
+# ---------------------------------------------------------------------------
+NEXT_CSS = ("QToolButton { background-color: #fff3a0; border: 1px solid #c9a227; border-radius: 4px; "
+            "font-weight: bold; }")
+DONE_CSS = "QToolButton { color: #2e7d32; }"
+
+
+def wf_done(bid):
+    try:
+        return set(int(i) for i in (load_settings().get('progress') or {}).get(bid, []))
+    except Exception:
+        return set()
+
+
+def wf_set_done(bid, done):
+    s = load_settings()
+    pr = s.get('progress') if isinstance(s.get('progress'), dict) else {}
+    pr[bid] = sorted(int(i) for i in done)
+    s['progress'] = pr
+    save_settings(s)
+
+
+def build_workflow(tb, win, items):
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QLabel
+    info = {p[0]: p for p in PLUGINS}
+    title = QLabel("  %s:  " % tb._bar_name)
+    title.setStyleSheet("font-weight: bold;")
+    ta = tb.addWidget(title)
+    ta._wf = True
+    n = 0
+    for entry in items:
+        if entry == DIVIDER:
+            sep = tb.addSeparator()
+            sep.setObjectName(TOOLBAR_NAME + "_divider")
+            continue
+        nm, note = split_step(entry)
+        if nm not in info:
+            continue
+        name, shortcut, label, icon = info[nm]
+        n += 1
+        act = QAction(make_icon(icon), "", tb)
+        act.setObjectName("%s_step%d" % (TOOLBAR_NAME, n))
+        act._plugin = (name, shortcut)
+        act._step = n - 1
+        short = note or label
+        act._label = "%d %s" % (n, short if len(short) <= 16 else short[:15] + "\u2026")
+        act._tip = "Step %d: %s%s  (%s)" % (n, name, (" - " + note) if note else "", shortcut)
+        act.triggered.connect(lambda checked=False, n_=name, s_=shortcut, k=n - 1:
+                              step_clicked(tb, win, n_, s_, k))
+        tb.addAction(act)
+    again = QAction(make_icon("again"), "Start again", tb)
+    again._wf = True
+    again.setObjectName(TOOLBAR_NAME + "_again")
+    again.setToolTip("Clears the ticks, back to step 1.")
+    again.triggered.connect(lambda checked=False: reset_workflow(tb))
+    tb.addAction(again)
+    style_workflow(tb)
+
+
+def style_workflow(tb):
+    """Ticks on the steps you've done, and the next step lit up."""
+    done = wf_done(tb._bar_id)
+    steps = [a for a in tb.actions() if hasattr(a, '_step')]
+    nxt = next((a._step for a in steps if a._step not in done), None)
+    for a in steps:
+        is_done = a._step in done
+        a.setText(("\u2713 " if is_done else "") + a._label)
+        a.setToolTip(a._tip + ("   - done" if is_done else ("   - next" if a._step == nxt else "")))
+        w = tb.widgetForAction(a)
+        if w is not None:
+            w.setStyleSheet(NEXT_CSS if a._step == nxt else (DONE_CSS if is_done else ""))
+
+
+def step_clicked(tb, win, name, shortcut, k):
+    run_plugin(win, name, shortcut)
+    done = wf_done(tb._bar_id)
+    done.add(k)
+    wf_set_done(tb._bar_id, done)
+    style_workflow(tb)
+
+
+def reset_workflow(tb):
+    wf_set_done(tb._bar_id, set())
+    style_workflow(tb)
+
+
+def skip_step(tb):
+    done = wf_done(tb._bar_id)
+    steps = [a._step for a in tb.actions() if hasattr(a, '_step')]
+    nxt = next((k for k in steps if k not in done), None)
+    if nxt is not None:
+        done.add(nxt)
+        wf_set_done(tb._bar_id, done)
+        style_workflow(tb)
+
+
 def _make_bar(win, bar):
     from PySide6.QtWidgets import QToolBar
     from PySide6.QtCore import Qt, QSize
     tb = QToolBar(bar['name'] if bar['id'] == MAIN_ID else "3D Plugins - " + bar['name'], win)
     tb.setObjectName(bar_object_name(bar['id']))
     tb._bar_id = bar['id']
+    tb._workflow = bool(bar.get('workflow'))
+    tb._bar_name = bar['name']
     tb.setIconSize(QSize(28, 28))
-    tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if load_settings().get('labels', True)
+    tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if (tb._workflow or load_settings().get('labels', True))
                           else Qt.ToolButtonIconOnly)
     win.addToolBar(Qt.TopToolBarArea, tb)
     tb.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -770,6 +969,8 @@ def sync_toolbars(win=None):
                 broke = True
             tb = _make_bar(win, b)
         tb.setWindowTitle(b['name'] if b['id'] == MAIN_ID else "3D Plugins - " + b['name'])
+        tb._workflow = bool(b.get('workflow'))
+        tb._bar_name = b['name']
         build_buttons(tb, win, b['items'])
         tb._quiet = True
         tb.setVisible(bool(b.get('visible', True)) and bool(b['items']))
@@ -797,7 +998,9 @@ def arrange_buttons(tb=None):
     note = QLabel("Every toolbar and its buttons. Pick a button and move it up or down - past the top or "
                   "bottom of a toolbar it goes onto the next one - or send it straight to another toolbar. "
                   "Tick the buttons you want to see. Each toolbar can be dragged anywhere on the window by "
-                  "its handle.")
+                  "its handle.\n\nWorkflow toolbars are steps to work through in order: copy any buttons "
+                  "onto one (the same plugin as often as you like), put them in order and give each step a "
+                  "note. On the toolbar the next step is lit up and each gets a tick when it's done.")
     note.setWordWrap(True)
     lay.addWidget(note)
     row = QHBoxLayout()
@@ -818,8 +1021,13 @@ def arrange_buttons(tb=None):
     b_new, b_ren, b_del = QPushButton("New toolbar..."), QPushButton("Rename toolbar..."), QPushButton("Delete toolbar")
     b_bar_up, b_bar_down = QPushButton("Toolbar up"), QPushButton("Toolbar down")
     b_one, b_grp = QPushButton("All on one toolbar"), QPushButton("A toolbar for each kind")
-    for w in (b_up, b_down, QLabel(""), cb_to, b_to, QLabel(""), b_div, b_rem, QLabel(""), b_new, b_ren, b_del,
-              b_bar_up, b_bar_down, QLabel("Ready-made:"), b_one, b_grp):
+    b_copy = QPushButton("Copy to toolbar")
+    b_note = QPushButton("Step note...")
+    b_wf = QPushButton("New workflow toolbar...")
+    b_rem.setText("Remove divider / step")
+    b_ready = [QPushButton("Workflow: " + nm) for nm in WORKFLOWS]
+    for w in [b_up, b_down, QLabel(""), cb_to, b_to, b_copy, QLabel(""), b_div, b_rem, b_note, QLabel(""), b_new,
+              b_wf, b_ren, b_del, b_bar_up, b_bar_down, QLabel("Ready-made:"), b_one, b_grp] + b_ready:
         col.addWidget(w)
     col.addStretch(1)
     row.addLayout(col)
@@ -829,19 +1037,31 @@ def arrange_buttons(tb=None):
     info = {p[0]: p for p in PLUGINS}
     ROLE = Qt.UserRole
 
+    def bar_title(bid, name, wf):
+        return name + ("   (main toolbar)" if bid == MAIN_ID else ("   (workflow - steps in order)" if wf else ""))
+
     def bar_item(bar):
-        top = QTreeWidgetItem([bar['name'] + ("   (main toolbar)" if bar['id'] == MAIN_ID else "")])
-        top.setData(0, ROLE, ('bar', bar['id'], bar['name']))
+        wf = bool(bar.get('workflow'))
+        top = QTreeWidgetItem([bar_title(bar['id'], bar['name'], wf)])
+        top.setData(0, ROLE, ('bar', bar['id'], bar['name'], wf))
         f = top.font(0)
         f.setBold(True)
         top.setFont(0, f)
         top.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         return top
 
-    def button_item(entry, shown=True):
+    def is_wf(top):
+        return top is not None and bool(top.data(0, ROLE)[3])
+
+    def button_item(entry, shown=True, wf=False):
         if entry == DIVIDER:
             it = QTreeWidgetItem(["-----------  divider  -----------"])
             it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        elif wf:
+            nm, _note = split_step(entry)
+            it = QTreeWidgetItem([nm])
+            it.setIcon(0, make_icon(info[nm][3]))
+            it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)      # steps always show: no tick
         else:
             it = QTreeWidgetItem([entry])
             it.setIcon(0, make_icon(info[entry][3]))
@@ -850,15 +1070,63 @@ def arrange_buttons(tb=None):
         it.setData(0, ROLE, ('item', entry))
         return it
 
-    def fill(bars, hidden):
+    def renumber():
+        """Workflow steps: '1. 3D Floor Plan - note'."""
+        for i in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(i)
+            if not is_wf(top):
+                continue
+            n = 0
+            for j in range(top.childCount()):
+                it = top.child(j)
+                e = it.data(0, ROLE)[1]
+                if e == DIVIDER:
+                    continue
+                n += 1
+                nm, note = split_step(e)
+                it.setText(0, "%d.  %s%s" % (n, nm, ("   - " + note) if note else ""))
+
+    def as_item(it, wf):
+        """The same button for a toolbar of the other sort (a step keeps its note on a workflow)."""
+        e = it.data(0, ROLE)[1]
+        if e == DIVIDER:
+            return button_item(DIVIDER)
+        nm, note = split_step(e)
+        return button_item(join_step(nm, note) if wf else nm, True, wf)
+
+    def fill(bars, hidden, keep_workflows=False):
+        keep = []
+        if keep_workflows:
+            keep = [b for b in read_tree()[0] if b.get('workflow')]
         tree.clear()
-        for b in bars:
+        for b in list(bars) + keep:
             top = bar_item(b)
             tree.addTopLevelItem(top)
+            wf = bool(b.get('workflow'))
             for e in b['items']:
-                top.addChild(button_item(e, e not in hidden))
+                top.addChild(button_item(e, split_step(e)[0] not in hidden, wf))
             top.setExpanded(True)
+        renumber()
         fill_targets()
+
+    def read_tree():
+        bars_, hidden_ = [], []
+        for i in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(i)
+            _k, bid, name, wf = top.data(0, ROLE)
+            items = []
+            for j in range(top.childCount()):
+                it = top.child(j)
+                e = it.data(0, ROLE)[1]
+                if e == DIVIDER and (not items or items[-1] == DIVIDER):
+                    continue                     # two dividers together count as one
+                items.append(e)
+                if not wf and e != DIVIDER and it.checkState(0) != Qt.Checked:
+                    hidden_.append(e)
+            while items and items[-1] == DIVIDER:
+                items.pop()
+            bars_.append({'id': bid, 'name': name, 'items': items, 'workflow': bool(wf)})
+        return bars_, hidden_
 
     def fill_targets():
         cb_to.clear()
@@ -883,15 +1151,16 @@ def arrange_buttons(tb=None):
         if 0 <= i + d < par.childCount():
             par.takeChild(i)
             par.insertChild(i + d, it)
-        elif d < 0 and n > 0:                      # off the top: onto the end of the toolbar before
-            par.takeChild(i)
+        elif d < 0 and n > 0 and is_wf(tree.topLevelItem(n - 1)) == is_wf(par):
+            par.takeChild(i)                       # off the top: onto the end of the toolbar before
             tree.topLevelItem(n - 1).addChild(it)
-        elif d > 0 and n < tree.topLevelItemCount() - 1:   # off the bottom: onto the start of the next
-            par.takeChild(i)
+        elif d > 0 and n < tree.topLevelItemCount() - 1 and is_wf(tree.topLevelItem(n + 1)) == is_wf(par):
+            par.takeChild(i)                       # off the bottom: onto the start of the next
             tree.topLevelItem(n + 1).insertChild(0, it)
         else:
-            return
+            return                                 # (onto or off a workflow: use Copy to toolbar)
         tree.setCurrentItem(it)
+        renumber()
 
     def move_to():
         it, par, i = picked()
@@ -901,10 +1170,67 @@ def arrange_buttons(tb=None):
         dest = tree.topLevelItem(int(n))
         if dest is par:
             return
+        if is_wf(dest) and not is_wf(par):
+            return copy_to()                       # onto a workflow, a button is copied, not moved
+        if is_wf(par) and not is_wf(dest):
+            QMessageBox.information(dlg, PLUGIN_NAME, "That plugin is on your ordinary toolbars already. To "
+                                    "take a step off the workflow, use 'Remove divider / step'.")
+            return
+        new = as_item(it, is_wf(dest))
         par.takeChild(i)
-        dest.addChild(it)
+        dest.addChild(new)
         dest.setExpanded(True)
-        tree.setCurrentItem(it)
+        tree.setCurrentItem(new)
+        renumber()
+
+    def copy_to():
+        it, par, i = picked()
+        n = cb_to.currentData()
+        if par is None or n is None:
+            return
+        dest = tree.topLevelItem(int(n))
+        if not is_wf(dest):
+            QMessageBox.information(dlg, PLUGIN_NAME, "Copies go on workflow toolbars - pick one in the list "
+                                    "above (or make one with 'New workflow toolbar...'). On your ordinary "
+                                    "toolbars each button is only once: use 'Move to toolbar'.")
+            return
+        if it.data(0, ROLE)[1] == DIVIDER:
+            return
+        new = as_item(it, True)
+        if dest is par:
+            par.insertChild(i + 1, new)            # the same step again, just after it
+        else:
+            dest.addChild(new)
+        dest.setExpanded(True)
+        tree.setCurrentItem(new)
+        renumber()
+
+    def step_note():
+        it, par, i = picked()
+        if par is None or not is_wf(par) or it.data(0, ROLE)[1] == DIVIDER:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Pick a step on a workflow toolbar first.")
+            return
+        nm, note = split_step(it.data(0, ROLE)[1])
+        normal = QLineEdit.EchoMode.Normal if hasattr(QLineEdit, 'EchoMode') else QLineEdit.Normal
+        res = QInputDialog.getText(dlg, "Step note", "What this step is for (shown on its button, e.g. "
+                                   "'Front windows'). Empty = the plugin's own name:", normal, note)
+        new, ok = (res[0], res[1]) if isinstance(res, (tuple, list)) else (res, bool(res))
+        if ok:
+            it.setData(0, ROLE, ('item', join_step(nm, new)))
+            renumber()
+
+    def ready_workflow(name):
+        ids = [tree.topLevelItem(i).data(0, ROLE)[1] for i in range(tree.topLevelItemCount())]
+        bar = {'id': _new_id([{'id': x} for x in ids]), 'name': name, 'workflow': True,
+               'items': [join_step(p, nt) for p, nt in WORKFLOWS[name] if p in info]}
+        top = bar_item(bar)
+        tree.addTopLevelItem(top)
+        for e in bar['items']:
+            top.addChild(button_item(e, True, True))
+        top.setExpanded(True)
+        tree.setCurrentItem(top)
+        renumber()
+        fill_targets()
 
     def add_div():
         it, par, i = picked()
@@ -918,18 +1244,24 @@ def arrange_buttons(tb=None):
 
     def rem_div():
         it, par, i = picked()
-        if par is not None and it.data(0, ROLE)[1] == DIVIDER:
+        if par is not None and (it.data(0, ROLE)[1] == DIVIDER or is_wf(par)):
             par.takeChild(i)
+            renumber()
 
-    def new_bar():
+    def new_bar(workflow=False):
         normal = QLineEdit.EchoMode.Normal if hasattr(QLineEdit, 'EchoMode') else QLineEdit.Normal
-        res = QInputDialog.getText(dlg, "New toolbar", "A name for the new toolbar (e.g. Walls):", normal, "")
+        if workflow:
+            res = QInputDialog.getText(dlg, "New workflow toolbar", "A name for the workflow (e.g. Make a "
+                                       "signal box). Then copy buttons onto it in the order you'll use "
+                                       "them:", normal, "")
+        else:
+            res = QInputDialog.getText(dlg, "New toolbar", "A name for the new toolbar (e.g. Walls):", normal, "")
         name, ok = (res[0], res[1]) if isinstance(res, (tuple, list)) else (res, bool(res))
         name = (name or "").strip()
         if not ok or not name:
             return
         ids = [tree.topLevelItem(i).data(0, ROLE)[1] for i in range(tree.topLevelItemCount())]
-        top = bar_item({'id': _new_id([{'id': x} for x in ids]), 'name': name})
+        top = bar_item({'id': _new_id([{'id': x} for x in ids]), 'name': name, 'workflow': workflow})
         tree.addTopLevelItem(top)
         top.setExpanded(True)
         tree.setCurrentItem(top)
@@ -941,14 +1273,14 @@ def arrange_buttons(tb=None):
         top = par or it
         if top is None:
             return
-        kind, bid, name = top.data(0, ROLE)
+        kind, bid, name, wf = top.data(0, ROLE)
         normal = QLineEdit.EchoMode.Normal if hasattr(QLineEdit, 'EchoMode') else QLineEdit.Normal
         res = QInputDialog.getText(dlg, "Rename toolbar", "New name:", normal, name)
         new, ok = (res[0], res[1]) if isinstance(res, (tuple, list)) else (res, bool(res))
         new = (new or "").strip()
         if ok and new:
-            top.setData(0, ROLE, (kind, bid, new))
-            top.setText(0, new + ("   (main toolbar)" if bid == MAIN_ID else ""))
+            top.setData(0, ROLE, (kind, bid, new, wf))
+            top.setText(0, bar_title(bid, new, wf))
             fill_targets()
 
     def del_bar():
@@ -962,7 +1294,10 @@ def arrange_buttons(tb=None):
             return
         main = tree.topLevelItem(0)
         while top.childCount():
-            main.addChild(top.takeChild(0))       # its buttons go back to the main toolbar
+            ch = top.takeChild(0)
+            if not is_wf(top):
+                main.addChild(ch)                 # its buttons go back to the main toolbar
+            # (a workflow's steps are copies: they just go)
         tree.takeTopLevelItem(tree.indexOfTopLevelItem(top))
         fill_targets()
 
@@ -985,39 +1320,32 @@ def arrange_buttons(tb=None):
     b_up.clicked.connect(lambda: move(-1))
     b_down.clicked.connect(lambda: move(1))
     b_to.clicked.connect(move_to)
+    b_copy.clicked.connect(copy_to)
+    b_note.clicked.connect(step_note)
+    b_wf.clicked.connect(lambda: new_bar(True))
+    for b_, nm_ in zip(b_ready, WORKFLOWS):
+        b_.clicked.connect(lambda checked=False, nm_=nm_: ready_workflow(nm_))
     b_div.clicked.connect(add_div)
     b_rem.clicked.connect(rem_div)
-    b_new.clicked.connect(new_bar)
+    b_new.clicked.connect(lambda: new_bar(False))
     b_ren.clicked.connect(ren_bar)
     b_del.clicked.connect(del_bar)
     b_bar_up.clicked.connect(lambda: move_bar(-1))
     b_bar_down.clicked.connect(lambda: move_bar(1))
     b_one.clicked.connect(lambda: fill([{'id': MAIN_ID, 'name': "3D Plugins", 'visible': True,
-                                         'items': [p[0] for p in PLUGINS]}], set()))
-    b_grp.clicked.connect(lambda: fill(grouped_bars(), set()))
+                                         'items': [p[0] for p in PLUGINS]}], set(), keep_workflows=True))
+    b_grp.clicked.connect(lambda: fill(grouped_bars(), set(), keep_workflows=True))
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     eddy_window(dlg, PLUGIN_NAME + ' - arrange', EDDY_TIPS, place=True)  # eddy-window
     if dlg.exec() != QDialog.Accepted:
         return
     old = {b['id']: b for b in current_bars()}
-    bars, hidden = [], []
-    for i in range(tree.topLevelItemCount()):
-        top = tree.topLevelItem(i)
-        _k, bid, name = top.data(0, ROLE)
-        items = []
-        for j in range(top.childCount()):
-            it = top.child(j)
-            e = it.data(0, ROLE)[1]
-            if e == DIVIDER and (not items or items[-1] == DIVIDER):
-                continue                         # two dividers together count as one
-            items.append(e)
-            if e != DIVIDER and it.checkState(0) != Qt.Checked:
-                hidden.append(e)
-        while items and items[-1] == DIVIDER:
-            items.pop()
-        bars.append({'id': bid, 'name': name, 'items': items,
-                     'visible': old.get(bid, {}).get('visible', True)})
+    bars, hidden = read_tree()
+    for b in bars:
+        b['visible'] = old.get(b['id'], {}).get('visible', True)
+        if b['workflow'] and old.get(b['id'], {}).get('items') != b['items']:
+            wf_set_done(b['id'], set())          # the steps changed: start the workflow again
     if bars[0]['id'] != MAIN_ID:                 # (the main one can't be moved, but be sure)
         bars.sort(key=lambda b: b['id'] != MAIN_ID)
     save_bars(bars)
@@ -1105,8 +1433,16 @@ def choose_buttons(tb, where=None):
     from PySide6.QtCore import Qt, QTimer
     menu = QMenu(tb)
     menu.setObjectName(TOOLBAR_NAME + "_menu")
-    menu.addSection("Buttons on this toolbar")
-    for act in tb.actions():
+    wf = getattr(tb, '_workflow', False)
+    if wf:
+        menu.addSection("Workflow: " + getattr(tb, '_bar_name', ''))
+        again = menu.addAction("Start again (clear the ticks)")
+        again.triggered.connect(lambda: reset_workflow(tb))
+        skip = menu.addAction("Skip the next step (tick it)")
+        skip.triggered.connect(lambda: skip_step(tb))
+    else:
+        menu.addSection("Buttons on this toolbar")
+    for act in ([] if wf else tb.actions()):
         info = getattr(act, '_plugin', None)
         if not info or getattr(act, '_missing', False):
             continue
@@ -1142,14 +1478,15 @@ def choose_buttons(tb, where=None):
 
     def set_labels(on):
         for _b, t in all_toolbars(tb.parent()):
-            t.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if on else Qt.ToolButtonIconOnly)
+            if not getattr(t, '_workflow', False):     # workflow steps always show their numbers
+                t.setToolButtonStyle(Qt.ToolButtonTextUnderIcon if on else Qt.ToolButtonIconOnly)
         s = load_settings()
         s['labels'] = bool(on)
         save_settings(s)
     show_all.triggered.connect(all_on)
     labels.toggled.connect(set_labels)
     menu.addSeparator()
-    arrange = menu.addAction("Arrange toolbars... (move buttons, make small toolbars)")
+    arrange = menu.addAction("Arrange toolbars... (move buttons, small toolbars, workflows)")
     arrange.triggered.connect(lambda: QTimer.singleShot(0, lambda: arrange_buttons(tb)))
     menu.addSeparator()
     hide = menu.addAction("Hide this toolbar")
@@ -1183,7 +1520,7 @@ EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil
               "loft", "print_scaler", "part_splitter", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
-              "pieces_in", "blend", "plugins_toolbar")
+              "pieces_in", "blend", "subframe", "floor_plan", "openings", "plugins_toolbar")
 EDDY_EXTRA_NAMES = ()
 
 
@@ -1544,6 +1881,14 @@ EDDY_TIPS = {'OK': 'Keeps the new layout of the toolbars.',
  'Move down': 'Moves the picked button down the list (right along the toolbar).',
  'Add divider': 'Puts a divider line on the toolbar after the picked button.',
  'Remove divider': 'Takes away the picked divider.',
+ 'Copy to toolbar': 'Copies the picked button onto the workflow toolbar chosen above, as a new step. '
+                    'The same plugin can be a step as often as you like.',
+ 'Step note...': 'A note for the picked workflow step, shown on its button (e.g. Front windows).',
+ 'New workflow toolbar...': 'Makes a workflow toolbar: steps to work through in order. Copy buttons onto it.',
+ 'Remove divider / step': 'Takes away the picked divider, or the picked step of a workflow.',
+ 'Workflow: Make a building': 'Ready-made workflow: floor plan, bricks, windows, doors, frame, roof tiles, '
+                              'chimneys, gutters, colours, scale and print. Change it as you like.',
+ 'Workflow: Get it ready to print': 'Ready-made workflow: check the parts, scale and pieces, fit the bed.',
  'Cancel': 'Leaves the buttons as they were.'}
 EDDY_TIPS_END = None
 
