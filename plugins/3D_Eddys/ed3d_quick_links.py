@@ -24,8 +24,46 @@ import json
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Quick Links"
+VERSION = "1.4"           # shown in the window title, so you can tell which file is loaded
 LINKS_FILE = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Quick Links.json")
 FIRST_SET = "My links"
+# Notes on what + File / + Folder were doing, so a crash can be tracked down (1.3)
+LOG_FILE = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Quick Links log.txt")
+
+
+def log_step(text, start=False):
+    try:
+        import time
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "w" if start else "a", encoding="utf-8") as f:
+            f.write("%s  %s %s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), PLUGIN_NAME, VERSION, text))
+    except Exception:
+        pass
+
+
+class _CrashCatcher:
+    """While a picker is open: if Python itself falls over, where it was goes in the log."""
+    def __enter__(self):
+        self.f = None
+        try:
+            import faulthandler
+            self.was = faulthandler.is_enabled()
+            if not self.was:
+                self.f = open(LOG_FILE, "a", encoding="utf-8")
+                faulthandler.enable(self.f)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *a):
+        try:
+            import faulthandler
+            if self.f is not None:
+                faulthandler.disable()
+                self.f.close()
+        except Exception:
+            pass
+        return False
 PLUGIN_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -99,7 +137,23 @@ def load_links():
         sets = {FIRST_SET: starter_links()}
     order = [n for n in d.get('order', []) if n in sets] + sorted(n for n in sets if n not in d.get('order', []))
     cur = d.get('current') if d.get('current') in sets else order[0]
-    return {'sets': sets, 'order': order, 'current': cur}
+    last = d.get('last_folder') if isinstance(d.get('last_folder'), str) else ""
+    return {'sets': sets, 'order': order, 'current': cur, 'last_folder': last}
+
+
+PICTURE_TYPES = ("png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "ico", "svg")
+
+
+def picker_places():
+    """The shortcuts down the side of the picker (only the ones that exist)."""
+    home = os.path.expanduser("~")
+    places = [home]
+    for sub in ("Desktop", "Documents", "Pictures", "Downloads", "Videos",
+                os.path.join("OneDrive", "Pictures"), os.path.join("OneDrive", "Desktop"),
+                os.path.join("Documents", "IngeTrazo Presets")):
+        places.append(os.path.join(home, sub))
+    places.append(PLUGIN_FOLDER)
+    return [p for p in places if os.path.isdir(p)]
 
 
 def save_links(d):
@@ -134,7 +188,7 @@ def open_target(target):
 def make_window(parent):
     from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel,
                                    QListWidget, QListWidgetItem, QInputDialog, QMessageBox, QMenu,
-                                   QFileDialog, QFileIconProvider, QAbstractItemView, QLineEdit)
+                                   QFileDialog, QAbstractItemView, QLineEdit, QStyle)
     from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
     from PySide6.QtCore import Qt, QFileInfo, QSize, QPointF, QRectF
 
@@ -212,12 +266,11 @@ def make_window(parent):
     class QuickLinksWindow(QDialog):
         def __init__(self, parent):
             super().__init__(parent)
-            self.setWindowTitle(PLUGIN_NAME)
+            self.setWindowTitle("%s %s" % (PLUGIN_NAME, VERSION))
             self.setModal(False)
             # floats over IngeTrazo and never gets lost behind it
             self.setWindowFlags(Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
             self.data = load_links()
-            self.icons = QFileIconProvider()
             self._web, self._missing = web_icon(), missing_icon()
             self.resize(300, 380)
             lay = QVBoxLayout(self)
@@ -354,8 +407,10 @@ def make_window(parent):
                 return self._web
             if k == 'missing':
                 return self._missing
+            # plain Qt icons, not the Windows ones (asking Windows for icons can crash IngeTrazo)
             try:
-                return self.icons.icon(QFileInfo(local_path(target)))
+                return self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon if k == 'folder'
+                                                 else QStyle.StandardPixmap.SP_FileIcon)
             except Exception:
                 return QIcon()
 
@@ -411,16 +466,124 @@ def make_window(parent):
             elif targets:
                 self.note("Already in this set.")
 
+        def _picker(self, title, mode, pictures=False):
+            """Qt's own picker with plain icons: no Windows picker and no Windows icons, both of
+            which can crash IngeTrazo. Shortcuts down the side, opens where you last picked from,
+            and (for files) a preview of the picture you click on (1.4)."""
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QImageReader
+            from PySide6.QtWidgets import QGridLayout
+            start = self.data.get('last_folder') or ""
+            if not os.path.isdir(start):
+                pics = os.path.join(os.path.expanduser("~"), "Pictures")
+                start = pics if (pictures and os.path.isdir(pics)) else os.path.expanduser("~")
+            dlg = QFileDialog(self, title, start)
+            dlg.setFileMode(mode)
+            dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+            try:
+                from PySide6.QtGui import QAbstractFileIconProvider
+                self._plain_icons = QAbstractFileIconProvider()
+                dlg.setIconProvider(self._plain_icons)
+            except Exception as e:
+                log_step("plain icons not set (%s)" % e)
+            try:
+                dlg.setSidebarUrls([QUrl.fromLocalFile(p) for p in picker_places()])
+            except Exception:
+                pass
+            dlg.setViewMode(QFileDialog.ViewMode.Detail)     # names, sizes and dates
+            dlg.resize(1050, 620)
+            if mode != QFileDialog.FileMode.Directory:
+                pic = "Pictures (%s)" % " ".join("*." + t for t in PICTURE_TYPES)
+                dlg.setNameFilters([pic, "All files (*)"] if pictures else ["All files (*)", pic])
+                # the preview on the right
+                prev = QLabel("Click a picture\nto see it here")
+                prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                prev.setFixedWidth(280)
+                prev.setMinimumHeight(220)
+                prev.setWordWrap(True)
+                prev.setStyleSheet("border: 1px solid #bbb; background: #fafafa; color: gray;")
+                lay = dlg.layout()
+                if isinstance(lay, QGridLayout):
+                    lay.addWidget(prev, 0, lay.columnCount(), lay.rowCount(), 1)
+
+                def show_preview(path):
+                    try:
+                        if not path or not os.path.isfile(path) or \
+                                os.path.splitext(path)[1][1:].lower() not in PICTURE_TYPES:
+                            prev.setPixmap(QPixmap())
+                            prev.setText("Click a picture\nto see it here")
+                            return
+                        r = QImageReader(path)
+                        r.setAutoTransform(True)
+                        sz = r.size()
+                        if sz.isValid() and sz.width() > 0 and sz.height() > 0:
+                            k = min(270.0 / sz.width(), 400.0 / sz.height(), 1.0)
+                            r.setScaledSize(QSize(max(1, int(sz.width() * k)), max(1, int(sz.height() * k))))
+                        img = r.read()
+                        if img.isNull():
+                            prev.setPixmap(QPixmap())
+                            prev.setText("Can't show this one")
+                            return
+                        prev.setPixmap(QPixmap.fromImage(img))
+                        prev.setToolTip("%s\n%d x %d" % (os.path.basename(path), sz.width(), sz.height()))
+                    except Exception as e:
+                        prev.setText("Can't show this one")
+                        log_step("preview: %s" % e)
+                dlg.currentChanged.connect(show_preview)
+            return dlg
+
+        def _remember_folder(self, dlg):
+            try:
+                d = dlg.directory().absolutePath()
+                if os.path.isdir(d):
+                    self.data['last_folder'] = os.path.normpath(d)
+            except Exception:
+                pass
+
         def add_folder(self):
-            d = QFileDialog.getExistingDirectory(self, "Pick a folder to add", os.path.expanduser("~"))
-            if d:
-                self.add_links([d])
+            # Qt's own folder picker, not the Windows one: the Windows folder picker can take
+            # the whole of IngeTrazo down with it (fixed in 1.3)
+            log_step("+ Folder clicked", start=True)
+            with _CrashCatcher():
+                try:
+                    dlg = self._picker("Pick a folder to add", QFileDialog.FileMode.Directory)
+                    dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+                    log_step("folder picker opening")
+                    if not dlg.exec():
+                        log_step("folder picker cancelled")
+                        return
+                    picked = dlg.selectedFiles()
+                    if picked and os.path.isdir(picked[0]):
+                        self.data['last_folder'] = os.path.dirname(os.path.normpath(picked[0])) or picked[0]
+                    log_step("picked %s" % picked)
+                except Exception as e:
+                    log_step("error: %s" % e)
+                    self.note("Couldn't pick a folder (%s)" % e, bad=True)
+                    return
+                if picked and os.path.isdir(picked[0]):
+                    self.add_links([picked[0]])
+                log_step("added - all fine")
 
         def add_file(self):
-            res = QFileDialog.getOpenFileNames(self, "Pick files to add", os.path.expanduser("~"))
-            files = res[0] if isinstance(res, (tuple, list)) else res
-            if files:
-                self.add_links(list(files))
+            # Qt's own file picker, not the Windows one, which can crash IngeTrazo (fixed in 1.3)
+            log_step("+ File clicked", start=True)
+            with _CrashCatcher():
+                try:
+                    dlg = self._picker("Pick files to add", QFileDialog.FileMode.ExistingFiles, pictures=False)
+                    log_step("file picker opening")
+                    if not dlg.exec():
+                        log_step("file picker cancelled")
+                        return
+                    self._remember_folder(dlg)
+                    files = [f for f in dlg.selectedFiles() if os.path.isfile(f)]
+                    log_step("picked %s" % files)
+                except Exception as e:
+                    log_step("error: %s" % e)
+                    self.note("Couldn't pick a file (%s)" % e, bad=True)
+                    return
+                if files:
+                    self.add_links(files)
+                log_step("added - all fine")
 
         def add_web(self):
             url = self.ask_name("Add a web page", "The web address (copy it from the address bar):", "https://")
