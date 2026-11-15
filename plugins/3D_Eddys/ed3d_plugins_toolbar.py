@@ -11,7 +11,7 @@
 # PURPOSE. See the LICENSE file or <https://www.gnu.org/licenses/> for details.
 
 """
-3D Plugins Toolbar - one-click icons for your IngeTrazo plugins
+3D Plugins Toolbar (version 2) - one-click icons for your IngeTrazo plugins
 A toolbar along the top of the IngeTrazo window with a button for each of the
 3D plugins (Print Scaler, Part Splitter, Brick & Block Studio, Loft, Gutters & Downpipes,
 Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
@@ -64,6 +64,7 @@ PLUGINS = [
     ("3D Subframe", "Ctrl+Alt+Y", "Subframe", "subframe"),
     ("3D Floor Plan", "Ctrl+Alt+Shift+F", "Floor plan", "floorplan"),
     ("3D Openings", "Ctrl+Shift+O", "Openings", "openings"),
+    ("3D Show / Hide", "Ctrl+Alt+Shift+H", "Show/hide", "eye"),
 ]
 
 
@@ -481,6 +482,21 @@ def make_icon(kind):
             p.setBrush(QColor(*col))
             p.drawPolygon(QPolygonF([QPointF(4, y + 4), QPointF(16, y - 2), QPointF(28, y + 4),
                                      QPointF(16, y + 10)]))
+    elif kind == "eye":
+        # an eye: show / hide
+        p.setPen(QPen(QColor(50, 50, 50), 1.6))
+        p.setBrush(QColor(250, 250, 245))
+        eye = QPainterPath()
+        eye.moveTo(3, 16)
+        eye.quadTo(16, 3, 29, 16)
+        eye.quadTo(16, 29, 3, 16)
+        eye.closeSubpath()
+        p.drawPath(eye)
+        p.setBrush(QColor(70, 120, 170))
+        p.drawEllipse(QRectF(10.5, 10.5, 11, 11))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(30, 30, 30))
+        p.drawEllipse(QRectF(13.5, 13.5, 5, 5))
     p.end()
     return QIcon(pm)
 
@@ -652,7 +668,7 @@ GROUPS = [
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In"]),
-    ("Notes & set-up", ["3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
+    ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
 ]
 MAIN_ID = "main"
 

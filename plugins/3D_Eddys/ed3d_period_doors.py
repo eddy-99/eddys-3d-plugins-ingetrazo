@@ -29,6 +29,7 @@ section, flat with the back of the wall, so each wall lays flat and prints as on
 picks built doors up again later, to change them or take them out.
 """
 
+import re
 import os
 import json
 import math
@@ -41,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "6"             # shown in the window title, so you can tell which file is loaded
+VERSION = "2.4"  # shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -72,7 +73,7 @@ FANLIGHTS = [("none", "No fanlight"), ("plain", "Plain glass"), ("bars", "Uprigh
 ARCH_BARS = [("grid", "Grid carries on into the arch"), ("fan", "Fan bars in the arch"),
              ("plain", "Plain glass in the arch")]
 STEPS = [("stone", "Stone doorstep"), ("brick", "Brick-on-edge step"), ("none", "No step")]
-FLIGHT_TO = [("wall", "The bottom of the wall"), ("ground", "The ground (0 in the model)")]
+FLIGHT_TO = [("wall", "The bottom of the wall"), ("ground", "The ground (bottom of the plinth, or 0)")]
 HEADS = [("stone", "Stone lintel / stone arch"), ("brick", "Brick soldier course / brick arch"),
          ("none", "No head")]
 
@@ -329,6 +330,9 @@ class Solid:
         s.faces = [[fn(p) for p in f] for f in self.faces]
         s.kind = getattr(self, 'kind', 'part')
         s.mortar = getattr(self, 'mortar', False)
+        s.part = getattr(self, 'part', None)
+        s.paint = getattr(self, 'paint', None)
+        s.paint_kind = getattr(self, 'paint_kind', None)
         return s.fix()
 
 
@@ -1002,16 +1006,57 @@ def _mesh_low_z(mesh):
     return min(zs) if zs else None
 
 
-def door_drop(frame, poly, mesh, v):
-    """How far (mm) the bottom of the door is above the bottom of its wall (or the ground)."""
+# the wall being built (whole building page): its scene, group and plain mesh, for door_drop
+_WALL_CTX = {'scene': None, 'group': None, 'mesh': None}
+
+
+def _building_low(scene, g):
+    """The lowest point (world z, metres) of the building a wall group is in - its plinth or base
+    plate included, the plugins' own work (windows, doors, steps...) left out. None if not found."""
+    for t in _items(getattr(scene, 'groups', None)):
+        pl = _placements(t)
+        if not any(gg is g for gg, _m in pl):
+            continue
+        skip = _plugin_built([t])
+        low = None
+        for gg, m in pl:
+            if id(gg) in skip:
+                continue
+            mesh = getattr(gg, 'mesh', None)
+            for f in _items(getattr(mesh, 'faces', None)):
+                for p in _items(getattr(f, 'vertices', None)):
+                    q = _pos(p)
+                    if q is not None:
+                        z = _wmap(m, q)[2]
+                        low = z if low is None else min(low, z)
+        return low
+    return None
+
+
+def door_drop(frame, poly, mesh, v, scene=None, group=None):
+    """How far (mm) the bottom of the door is above the bottom of its wall, or the ground: 0 in the
+    model, or lower if the building goes lower there (a plinth or base plate below 0)."""
     try:
         O, U, V, N = frame
         if abs(N[2]) > 0.5 or V[2] < 0.5:
             return 0.0                             # not on an upright wall
+        mesh = mesh if mesh is not None else _WALL_CTX['mesh']
+        scene = scene if scene is not None else _WALL_CTX['scene']
+        if group is None:
+            group = _WALL_CTX['group'] if _WALL_CTX['group'] is not None else (
+                _group_of_mesh(scene, mesh) if scene is not None and mesh is not None else None)
         y0 = min(q[1] for q in poly)
         zdoor = O[2] + V[2] * y0 * SCALE
         if v.get('flight_to') == 'ground':
-            zlow = 0.0
+            # measured in the model as a whole (the wall's group may be moved or raised)
+            m = _world_matrix(scene, group) if scene is not None and group is not None else None
+            pw = _wmap(m, v_add(O, v_mul(V, y0 * SCALE)))
+            vz = _wvec(m, V)[2]
+            if vz < 0.5:
+                return 0.0
+            low = _building_low(scene, group) if scene is not None and group is not None else None
+            zg = 0.0 if low is None else min(0.0, low)
+            return max(0.0, (pw[2] - zg) / SCALE / vz)
         else:
             zlow = _mesh_low_z(mesh) if mesh is not None else None
             if zlow is None:
@@ -2863,7 +2908,12 @@ def fit_kind_shape(poly, v):
 
 def kind_parts(sh, vv):
     built = build_door(sh, vv)
-    return built['door'] + built['step'] + built['head']
+    out = []
+    for grp in ('door', 'step', 'head'):
+        for so in built[grp]:
+            so.part = grp                  # which part it is, for colouring it when it's built into a wall
+            out.append(so)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2998,7 +3048,7 @@ def _wall_meshes(scene):
 # groups the plugins build (and everything inside them) aren't walls: the subframe and its glazing
 # frames and trusses, windows, doors and so on - their holes aren't openings to fill
 NOT_WALLS = ("subframe", "glazing", "truss", "window", "door", "gutter", "downpipe", "chimney",
-             "canopy", "fence", "gate", "pipe")
+             "canopy", "fence", "gate", "pipe", "barge", "finial", "fascia", "soffit")
 
 
 def _plugin_built(tops):
@@ -3203,7 +3253,48 @@ def find_building_openings(scene, flip=False, door_tol=15.0):
             if (out <= 0) != bool(flip) and not (rec and _built_on(rec, fi)):
                 continue                               # the inside face of the wall
             _face_openings_into(found, g, mesh, look, face, fi, rec, gname, door_tol, count)
-    return found
+    return _drop_doubles(found)
+
+
+def _drop_doubles(found, tol=0.03):
+    """The same opening can turn up twice in one wall (on two faces of it lying over each other, or
+    the inside face as well as the outside one): same size, same place along the wall. Keeps one -
+    the one with a window/door built in, otherwise the one with the back of the wall found - and
+    numbers the openings of that wall again."""
+    def middle(op):
+        x0, x1, y0, y1 = bbox(op['poly'])
+        return to_world(op['frame'])(((x0 + x1) / 2, (y0 + y1) / 2, 0.0))
+
+    def score(op):
+        return (1 if op.get('built') else 0, 1 if op.get('depth') is not None else 0)
+
+    keep, redo = [], set()
+    for op in found:
+        c = middle(op)
+        twin = None
+        for i, o in enumerate(keep):
+            if o['group'] is not op['group'] or abs(o['w'] - op['w']) > 2.0 or abs(o['h'] - op['h']) > 2.0:
+                continue
+            _O, U, V, N = o['frame']
+            if abs(v_dot(N, op['frame'][3])) < 0.99:
+                continue
+            d = v_sub(c, middle(o))
+            if abs(v_dot(d, U)) < tol and abs(v_dot(d, V)) < tol and abs(v_dot(d, N)) < WALL_MAX:
+                twin = i
+                break
+        if twin is None:
+            keep.append(op)
+            continue
+        redo.add(id(op['group']))
+        if score(op) > score(keep[twin]):
+            keep[twin] = op
+    for gid in redo:
+        n = 0
+        for op in keep:
+            if id(op['group']) == gid:
+                n += 1
+                op['name'] = re.sub(r'(Door|Window) \d+$', lambda m: "%s %d" % (m.group(1), n), op['name'])
+    return keep
 
 
 def _built_on(rec, fi):
@@ -3216,6 +3307,15 @@ def _is_wall_face(face, m):
 
 
 NOTCH_K = 1000          # openings cut up from the bottom edge of a wall (doorways) count from here
+DOOR_UP_MAX = 600.0     # mm: a tall opening starting no higher than this up the wall is a door (one with
+                        # a step up, or a wall face that runs on down past the floor) - not a window
+
+
+def _is_door(up, h, tol):
+    """Is an opening a door? up = how far its bottom is above the bottom of the wall face, h its height
+    (mm). Right at the bottom, or a little way up (less than a quarter of its own height, and no more
+    than DOOR_UP_MAX) - a window's sill is always well up compared with how tall the window is."""
+    return up <= tol or (up <= DOOR_UP_MAX and up < h * 0.25)
 
 
 def _bottom_notches(poly, tol):
@@ -3287,6 +3387,7 @@ def _face_openings_into(found, g, mesh, look, face, fi, rec, gname, door_tol, co
     O, U, V, N = frame
     ybot = min(v_dot(v_sub(p, O), V) / SCALE for p in pts)
     tw0 = to_world(frame)
+    face_area = abs(area2([(v_dot(v_sub(p, O), U) / SCALE, v_dot(v_sub(p, O), V) / SCALE) for p in pts]))
     for k, h in enumerate(holes):
         hp = [p for p in (_pos(v) for v in _items(h)) if p is not None]
         if len(hp) < 3:
@@ -3296,13 +3397,15 @@ def _face_openings_into(found, g, mesh, look, face, fi, rec, gname, door_tol, co
             continue
         if area2(poly) < 0:
             poly = list(reversed(poly))
+        if face_area > 0 and area2(poly) > face_area * 0.88 and k not in built_here:
+            continue                                   # the inside of a frame or trim, not an opening
         x0, x1, y0, y1 = bbox(poly)
         try:
             back = _back_depth(look, [tw0((x, y, 0.0)) for x, y in poly], N, face)
         except Exception:
             back = None
         count[0] += 1
-        door = (y0 - ybot) <= door_tol
+        door = _is_door(y0 - ybot, y1 - y0, door_tol)
         found.append(dict(group=g, mesh=mesh, face=face if rec is None else None, fi=fi, k=k,
                           up=y0 - ybot,
                           poly=poly, frame=frame, depth=back[1] if back else None, door=door,
@@ -3545,12 +3648,191 @@ def join_into_wall(mesh, solids):
         _removed, created = solid_tools.run(solid_tools.UNION, pieces)
         created = [c for c in (created or []) if c is not None and getattr(c, 'mesh', None) is not None]
         if len(created) == 1 and _items(getattr(created[0].mesh, 'faces', None)):
+            # the Union cuts every flat face into triangles: join them back into whole faces
+            try:
+                tidy, bad = _mesh_from(_merge_flat_faces(_faces_of_mesh(created[0].mesh)))
+                if not bad and _items(getattr(tidy, 'faces', None)):
+                    return tidy, True, None
+            except Exception as e:
+                print("%s: couldn't tidy the wall's faces (%s)" % (PLUGIN_NAME, e))
             return created[0].mesh, True, None
         why = "the join came out as %d pieces" % len(created)
     except Exception as e:
         why = str(e) or e.__class__.__name__
     new, _bad = _mesh_from(_faces_of_mesh(mesh) + _faces_of_solids(solids))
     return new, False, why
+
+
+def _merge_flat_faces(faces, ptol=1e-5, ktol=1e-6):
+    """The Union (joining windows or doors into a wall) hands back each flat face cut into a fan of
+    triangles - the lines across the wall. This joins the faces that lie flat in the same plane and
+    touch back into one face each (with the openings as holes), so the wall reads cleanly.
+    faces = [(outer points, [hole points])] in metres. Any plane that doesn't come out right is
+    left as it was, so nothing can be lost."""
+    def key(p):
+        return (round(p[0] / ktol), round(p[1] / ktol), round(p[2] / ktol))
+
+    def raw_area(pts, n):
+        s = (0.0, 0.0, 0.0)
+        for i in range(len(pts)):
+            s = v_add(s, v_cross(pts[i], pts[(i + 1) % len(pts)]))
+        return 0.5 * v_dot(s, n)
+
+    planes = []                                  # [normal, point on it, [face indices]]
+    norms = []
+    for i, (pts, _h) in enumerate(faces):
+        n = _newell(pts) if len(pts) >= 3 else (0.0, 0.0, 0.0)
+        norms.append(n)
+        if v_len(n) < 0.5:
+            planes.append([n, None, [i]])
+            continue
+        for pl in planes:
+            if pl[1] is not None and v_dot(pl[0], n) > 1.0 - 1e-7 and abs(v_dot(v_sub(pts[0], pl[1]), pl[0])) < ptol:
+                pl[2].append(i)
+                break
+        else:
+            planes.append([n, pts[0], [i]])
+    out = []
+    for n, p0, idx in planes:
+        if p0 is None or len(idx) < 2:
+            out += [faces[i] for i in idx]
+            continue
+        try:
+            got = _merge_plane([faces[i] for i in idx], n, key, raw_area)
+        except Exception:
+            got = None
+        out += got if got else [faces[i] for i in idx]
+    return out
+
+
+def _merge_plane(group, n, key, raw_area):
+    """One plane's faces joined: [(outer, [holes])], or None if it can't be done cleanly."""
+    pos = {}
+    edges = {}
+    want = 0.0
+    for pts, hls in group:
+        loops = [list(pts) if raw_area(pts, n) > 0 else list(reversed(pts))]
+        want += abs(raw_area(pts, n))
+        for h in hls:
+            if len(h) >= 3:
+                loops.append(list(h) if raw_area(h, n) < 0 else list(reversed(h)))
+                want -= abs(raw_area(h, n))
+        for lp in loops:
+            ks = [key(p) for p in lp]
+            for p, k in zip(lp, ks):
+                pos.setdefault(k, p)
+            for i in range(len(ks)):
+                a, b = ks[i], ks[(i + 1) % len(ks)]
+                if a == b:
+                    continue
+                if edges.get((b, a), 0) > 0:          # the same edge the other way: inside, so it goes
+                    edges[(b, a)] -= 1
+                    if not edges[(b, a)]:
+                        del edges[(b, a)]
+                else:
+                    edges[(a, b)] = edges.get((a, b), 0) + 1
+    nxt = {}
+    for (a, b), c in edges.items():
+        nxt.setdefault(a, []).extend([b] * c)
+    loops = []
+    guard = 0
+    while nxt:
+        a0 = next(iter(nxt))
+        lp = [a0]
+        cur = a0
+        while True:
+            guard += 1
+            if guard > 200000:
+                return None
+            outs = nxt.get(cur)
+            if not outs:
+                return None                          # doesn't close up: leave this plane alone
+            b = outs.pop()
+            if not outs:
+                del nxt[cur]
+            if b == a0:
+                break
+            lp.append(b)
+            cur = b
+        if len(lp) >= 3:
+            loops.append([pos[k] for k in lp])
+    outers = [lp for lp in loops if raw_area(lp, n) > 0]
+    holes = [lp for lp in loops if raw_area(lp, n) <= 0]
+    got = sum(raw_area(lp, n) for lp in loops)
+    if not outers or abs(got - want) > 1e-6 * max(1.0, abs(want)) + 1e-9:
+        return None
+    U = v_norm(v_sub(outers[0][1], outers[0][0]))
+    V = v_cross(n, U)
+
+    def flat(lp):
+        return [(v_dot(p, U), v_dot(p, V)) for p in lp]
+
+    def inside(q, poly):
+        x, y = q
+        c = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            (xi, yi), (xj, yj) = poly[i], poly[j]
+            if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                c = not c
+            j = i
+        return c
+    res = [(o, []) for o in outers]
+    fl = [flat(o) for o in outers]
+    for h in holes:
+        hf = flat(h)
+        q = ((hf[0][0] + hf[1][0]) * 0.5, (hf[0][1] + hf[1][1]) * 0.5)
+        home = [i for i in range(len(outers)) if inside(q, fl[i])]
+        if not home:
+            return None
+        # the smallest outline round it
+        i = min(home, key=lambda i: abs(raw_area(outers[i], n)))
+        res[i][1].append(h)
+    return res
+
+
+def _fill_opening(rec, op):
+    """Fills a window opening (a hole) back in, in the plain wall kept on the record: the hole goes
+    from the front and back faces and its reveals go. Faces and holes are emptied, not removed, so
+    the other windows' and doors' numbers stay right. False for a doorway cut up from the bottom."""
+    fi, k = op['fi'], op['k']
+    orig = rec['orig']
+    if k >= NOTCH_K or fi is None or fi >= len(orig) or k >= len(orig[fi][1]):
+        return False
+    O, U, V, N = op['frame']
+    O, U, V, N = tuple(O), tuple(U), tuple(V), tuple(N)
+
+    def mm(p):
+        d = v_sub(tuple(p), O)
+        return (v_dot(d, U) / SCALE, v_dot(d, V) / SCALE, v_dot(d, N) / SCALE)
+    x0, x1, y0, y1 = bbox(op['poly'])
+    d_mm = (op['depth'] or 0.0) / SCALE
+    tol = 1.0
+    orig[fi][1][k] = []
+    for j, (pts, hls) in enumerate(orig):
+        if j == fi or len(pts) < 3:
+            continue
+        # the same hole in the back face
+        for hi, h in enumerate(hls):
+            if len(h) < 3:
+                continue
+            q = [mm(p) for p in h]
+            hb = bbox([(a, b) for a, b, _c in q])
+            if all(abs(c + d_mm) < tol for _a, _b, c in q) and all(
+                    abs(a_ - b_) < tol for a_, b_ in zip(hb, (x0, x1, y0, y1))):
+                hls[hi] = []
+        # its reveals: faces across the wall, wholly inside the opening's outline
+        q = [mm(p) for p in pts]
+        if hls and any(len(h) >= 3 for h in hls):
+            continue
+        n = _newell([tuple(p) for p in pts])
+        if abs(v_dot(n, N)) > 0.1:
+            continue
+        zs = [c for _a, _b, c in q]
+        if (all(x0 - tol <= a <= x1 + tol and y0 - tol <= b <= y1 + tol for a, b, _c in q)
+                and min(zs) > -d_mm - tol and max(zs) < tol and max(zs) - min(zs) > 0.5 * d_mm):
+            orig[j] = [[], []]
+    return True
 
 
 def wall_swap_command(swaps):
@@ -3583,6 +3865,181 @@ def wall_swap_command(swaps):
             self._set(scene, False)
 
     return WallWindowsCommand()
+
+
+
+# ---------------------------------------------------------------------------
+# Colours for windows and doors built into their walls (just for looks: they don't change the print).
+# Each face of the new wall is painted by the part it lies on - with 3D Layers & Colours' colours when
+# that plugin is loaded, otherwise plain ones - and the wall's own faces keep the colour they had.
+# (The same in 3D Period Windows and 3D Period Doors.)
+# ---------------------------------------------------------------------------
+PAINT_RGB = (("mortar", (200, 194, 178)), ("knob", (40, 40, 44)), ("hinge", (40, 40, 44)),
+             ("rail", (40, 40, 44)), ("hanger", (40, 40, 44)), ("brick", (170, 82, 60)),
+             ("stone", (205, 198, 182)), ("door", (52, 96, 72)), ("window", (242, 242, 236)))
+
+
+def paint_name(so, kind, vals):
+    """What a part of a built-in window or door is called, for picking its colour."""
+    if getattr(so, 'mortar', False):
+        return "mortar"
+    grp = getattr(so, 'part', None)
+    if grp == 'glass':
+        return "glass"
+    if grp in ('step', 'sill', 'head'):
+        m = vals.get(grp, 'stone')
+        return m if m in ('stone', 'brick') else 'stone'
+    k = getattr(so, 'kind', '') or ''
+    return ("%s %s" % (kind, k)).strip() if k != 'part' else kind
+
+
+def tag_parts(built, kind, vals):
+    """Marks each solid of a built window / door with its part and colour name, so its faces can be
+    coloured part by part even when the whole thing is joined into one solid."""
+    for grp, sols in built.items():
+        if grp == 'info' or not isinstance(sols, list):
+            continue
+        for so in sols:
+            so.part = grp
+            so.paint = paint_name(so, kind, vals)
+            so.paint_kind = kind
+
+
+def _plain_rgb(name):
+    low = name.lower()
+    for word, rgb in PAINT_RGB:
+        if word in low:
+            return rgb
+    return (200, 200, 200)
+
+
+def _face_axes(pts, n):
+    for i in range(len(pts)):
+        e = v_sub(pts[(i + 1) % len(pts)], pts[i])
+        if v_dot(e, e) > 1e-14:
+            U = v_norm(e)
+            return U, v_cross(n, U)
+    return None, None
+
+
+def _face_samples(pts, hls, n, U, V, most=24):
+    """Points just inside a face (off the middle of its edges), not in its holes."""
+    out = []
+    step = max(1, len(pts) // most)
+    for i in range(0, len(pts), step):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        e = v_sub(b, a)
+        if v_dot(e, e) < 1e-14:
+            continue
+        q = v_add(v_mul(v_add(a, b), 0.5), v_mul(v_norm(v_cross(n, e)), 1e-4))
+        if _pip3(q, pts, U, V) and not any(_pip3(q, h, U, V) for h in hls):
+            out.append(q)
+    return out
+
+
+def paint_wall(scene, new_mesh, old_mesh, sols):
+    """Colours the faces of a wall with its windows / doors built in. Returns the faces painted."""
+    import sys as _sys
+    lc = None
+    for nm, mod in list(_sys.modules.items()):
+        if nm.endswith("ed3d_layers_colours") and hasattr(mod, '_pick_row'):
+            lc = mod
+            break
+    palette = None
+    if lc is not None:
+        try:
+            palette = lc.load_settings()['palette']
+        except Exception:
+            lc = None
+    cache = {}
+
+    def attrs_for(name, kind):
+        if (name, kind) in cache:
+            return cache[(name, kind)]
+        a = None
+        if lc is not None:
+            try:
+                row = lc._pick_row(palette, [name], "3D Period Doors" if kind == 'door' else "3D Period Windows")
+                if row is not None:
+                    # a colour changed in 3D Layers & Colours' own table is used even when the model
+                    # already has that material (otherwise the model's material, which may be yours, stays)
+                    std = next((r for r in getattr(lc, 'DEFAULT_PALETTE', []) if r[0] == row[0]), None)
+                    changed = std is not None and (tuple(row[1]) != tuple(std[1]) or
+                                                   abs(float(row[2]) - float(std[2])) > 1e-6)
+                    a = lc._paint_attrs(scene, row, changed)
+            except Exception as e:
+                print("%s: colour %r: %s" % (PLUGIN_NAME, name, e))
+        if a is None:
+            a = {"color": tuple(c / 255.0 for c in _plain_rgb(name))}
+        cache[(name, kind)] = a
+        return a
+
+    def pts_of(f):
+        pts = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+        hls = []
+        for h in _items(getattr(f, 'holes', None)):
+            hp = [p for p in (_pos(v) for v in _items(h)) if p is not None]
+            if len(hp) >= 3:
+                hls.append(hp)
+        return pts, hls
+
+    planes = []
+    for so in sols:
+        name = getattr(so, 'paint', None)
+        if not name:
+            continue
+        for f in so.faces:
+            if len(f) >= 3:
+                n = _newell(f)
+                planes.append((n, v_dot(n, f[0]), f, name, getattr(so, 'paint_kind', 'window')))
+    olds = []
+    for f in _items(getattr(old_mesh, 'faces', None)):
+        a = getattr(f, 'attrs', None)
+        if not a:
+            continue
+        pts, hls = pts_of(f)
+        if len(pts) >= 3:
+            n = _newell(pts)
+            olds.append((n, v_dot(n, pts[0]), pts, hls, dict(a)))
+    if not planes and not olds:
+        return 0
+    TOL = 2e-5
+    count = 0
+    for f in _items(getattr(new_mesh, 'faces', None)):
+        pts, hls = pts_of(f)
+        if len(pts) < 3:
+            continue
+        n = _newell(pts)
+        d = v_dot(n, pts[0])
+        U, V = _face_axes(pts, n)
+        if U is None:
+            continue
+        qs = _face_samples(pts, hls, n, U, V)
+        if not qs:
+            continue
+        cand = [p for p in planes if v_dot(p[0], n) > 0.999 and abs(p[1] - d) < TOL]
+        votes = {}
+        for q in qs:
+            hit = next(((nm, kd) for _n, _d, pf, nm, kd in cand if _pip3(q, pf, U, V)), None)
+            votes[hit] = votes.get(hit, 0) + 1
+        best = max(votes.items(), key=lambda kv: kv[1])[0]
+        a = None
+        if best is not None:
+            a = attrs_for(*best)
+        else:
+            for on, od, opts, ohs, oa in olds:
+                if v_dot(on, n) > 0.999 and abs(od - d) < TOL and any(
+                        _pip3(q, opts, U, V) and not any(_pip3(q, h, U, V) for h in ohs) for q in qs[:6]):
+                    a = oa
+                    break
+        if a is None:
+            continue
+        try:
+            f.attrs = dict(a)
+            count += 1
+        except Exception:
+            pass
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -3688,7 +4145,7 @@ FIELDS = {
     'flight': ("Steps down when the door is off the ground", "When the bottom of the door is above the "
                "ground, a flight of steps goes down from the doorstep to it - as many as it needs, all the "
                "same height, none taller than the most a step can rise (AA)."),
-    'flight_to': ("Steps go down to", "The bottom of the wall the door is in, or the ground (0 in the model)."),
+    'flight_to': ("Steps go down to", "The bottom of the wall the door is in, or the ground: 0 in the model, or the bottom of the building's plinth or base plate if it goes lower than 0."),
     'rise_max': ("Most a step can rise", 50.0, 500.0, 0, " mm", "The most each step can rise. The steps are "
                                                                 "evened out, so they may come out a bit less."),
     'going': ("Step going (tread)", 100.0, 1000.0, 0, " mm", "How deep each step is, front to back."),
@@ -4109,6 +4566,20 @@ class DoorsDialog(QDialog):
         brow2.addWidget(self.b_build, 2)
         brow2.addWidget(self.b_takeout, 1)
         lay.addLayout(brow2)
+        self.cb_fill = QCheckBox("Taking out also fills the opening in (so a new one can be cut)")
+        self.cb_fill.setToolTip(("With this ticked, 'Take out ticked %(ns)s' also closes up the opening - the "
+                                 "hole and its reveals go and the wall is solid there again - so you can cut "
+                                 "a new opening somewhere else with 3D Openings. Works on empty openings "
+                                 "too. (A doorway cut up from the bottom of the wall can't be filled this "
+                                 "way.) One Undo puts it all back.") % WB_WORDS)
+        lay.addWidget(self.cb_fill)
+        self.cb_colour = QCheckBox("Colour the %(ns)s when building (just for looks - prints the same)" % WB_WORDS)
+        self.cb_colour.setChecked(True)
+        self.cb_colour.setToolTip(("Paints each part of the %(ns)s built into the walls - frame, door or sash, "
+                                   "step or sill, head, knob - in its own colour, so the model looks the "
+                                   "part. With 3D Layers & Colours loaded its colours are used (change "
+                                   "them there); the wall keeps its own colour.") % WB_WORDS)
+        lay.addWidget(self.cb_colour)
         self.lbl_found = QLabel()
         self.lbl_found.setWordWrap(True)
         lay.addWidget(self.lbl_found)
@@ -4715,7 +5186,7 @@ class PeriodDoorsTool(Tool):
             for poly in polys:
                 n += 1
                 vv = dict(v)
-                vv['_drop'] = door_drop(frame, poly, mesh, v)
+                vv['_drop'] = door_drop(frame, poly, mesh, v, scene)
                 zlift = gap                     # no wall behind: just sit a hair off the face
                 if info is not None:
                     # cut right through: everything sits on the back of the wall
@@ -4743,6 +5214,7 @@ class PeriodDoorsTool(Tool):
                 except ValueError as e:
                     problems.append("Opening %d: %s" % (n, e))
                     continue
+                tag_parts(built, 'door', vv)
                 if info is not None:
                     ol = cut_outline(sh, vv)
                     if gap > 0:
@@ -4779,13 +5251,15 @@ class PeriodDoorsTool(Tool):
         type(self)._saved = dict(v)
         dlg.remember()
         ops = dlg.ticked_openings()
-        if take_out:
+        fill = bool(take_out and getattr(dlg, 'cb_fill', None) is not None and dlg.cb_fill.isChecked())
+        if take_out and not fill:
             ops = [op for op in ops if op.get('built')]
         if not ops:
             QMessageBox.information(dlg, PLUGIN_NAME, ("Tick the ones you want taken out (marked 'has a "
                                     "window' or 'has a door')." if take_out else "Click 'Find openings' "
                                     "first, and tick the openings you want %s in." % WB_WORDS['ns']))
             return
+        filled, cant_fill = 0, []
         overlap = dlg.sp_overlap.value()
         stale = [op for op in ops if getattr(op['group'], 'mesh', None) is not op['mesh']
                  or (op['face'] is not None
@@ -4809,6 +5283,11 @@ class PeriodDoorsTool(Tool):
                     'items': []}
                 walls.append((op['group'], op['mesh'], rec))
             rec['items'] = [w_ for w_ in rec['items'] if not (w_['fi'] == op['fi'] and w_['k'] == op['k'])]
+            if fill:
+                if _fill_opening(rec, op):
+                    filled += 1
+                else:
+                    cant_fill.append(op['name'])
             if not take_out:
                 O, U, V_, N = op['frame']
                 rec['items'].append({
@@ -4818,16 +5297,24 @@ class PeriodDoorsTool(Tool):
                     'values': dict(keep_v), 'overlap': overlap})
         swaps, problems, loose = [], [], []
         for g, mesh, rec in walls:
-            plain, _bad = _mesh_from([(pts, hls) for pts, hls in rec['orig']])
+            plain, _bad = _mesh_from([(pts, hls) for pts, hls in rec['orig'] if len(pts) >= 3])
             sols, kept = [], []
+            _WALL_CTX.update(scene=getattr(dlg.viewport, 'scene', None), group=g, mesh=plain)
             for w_ in rec['items']:
                 try:
-                    sols += item_solids(w_, WB_KIND)
+                    got = item_solids(w_, WB_KIND)
+                    vals = dict(DEFAULTS)
+                    vals.update(w_.get('values') or {})
+                    for so in got:
+                        so.paint = paint_name(so, w_.get('kind', 'window'), vals)
+                        so.paint_kind = w_.get('kind', 'window')
+                    sols += got
                     kept.append(w_)
                 except ValueError as e:
                     problems.append("%s: %s" % (w_.get('name', 'an opening'), e))
                     if w_.get('kind') != WB_KIND:
                         kept.append(w_)          # not ours: never lose it
+            _WALL_CTX.update(scene=None, group=None, mesh=None)
             rec['items'] = kept
             if sols:
                 new, ok, why = join_into_wall(plain, sols)
@@ -4836,6 +5323,11 @@ class PeriodDoorsTool(Tool):
                 new_rec = rec
             else:
                 new, new_rec = plain, None           # nothing left in it: the plain wall again
+            try:
+                want = getattr(dlg, 'cb_colour', None) is None or dlg.cb_colour.isChecked()
+                paint_wall(getattr(dlg.viewport, 'scene', None), new, mesh, sols if want else [])
+            except Exception as e:
+                print("%s: couldn't colour %s: %s" % (PLUGIN_NAME, getattr(g, 'name', 'a wall'), e))
             old_rec = wall_record(g)
             swaps.append((g, mesh, new, json.loads(json.dumps(old_rec)) if old_rec else None, new_rec))
         try:
@@ -4849,7 +5341,13 @@ class PeriodDoorsTool(Tool):
             pass
         pl = lambda n: "" if n == 1 else "s"
         if take_out:
-            lines = ["%d taken out." % len(ops)]
+            nb = sum(1 for op in ops if op.get('built'))
+            lines = ["%d taken out." % nb] if nb else []
+            if fill:
+                lines.append("%d opening%s filled in - the wall is solid there again." % (filled, pl(filled)))
+                if cant_fill:
+                    lines.append("Not filled (doorways cut up from the bottom of the wall): " +
+                                 ", ".join(cant_fill))
         else:
             lines = ["%d %s%s built into %d wall section%s." % (len(ops), WB_WORDS['n'], pl(len(ops)),
                                                                len(swaps), pl(len(swaps)))]
@@ -4996,6 +5494,12 @@ class PeriodDoorsTool(Tool):
                     g.mesh = mesh
                     groups = [g]
                 for g in groups:
+                    try:
+                        # each part its own colour (frame, sill, head...) before Layers & Colours
+                        # colours whatever is left by the window's name
+                        paint_wall(scene, g.mesh, None, solids)
+                    except Exception as e:
+                        print("%s: couldn't colour %s: %s" % (PLUGIN_NAME, name, e))
                     _ed3d_organise(scene, g)
                     if hasattr(scene, 'add_group'):
                         scene.add_group(g)

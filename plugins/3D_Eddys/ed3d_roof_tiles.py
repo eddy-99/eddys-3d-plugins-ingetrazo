@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "6"
+VERSION = "7"
 
 
 def _ed3d_organise(scene, group):
@@ -97,7 +97,7 @@ FINIAL_FACES = [("out", "Facing out (seen from the gable end)"), ("along", "Alon
 RIDGE_DEFAULTS = dict(ridge=False, ridge_style='round', ridge_w=150.0, ridge_h=110.0, ridge_len=450.0,
                       ridge_gap=10.0, crest='none', crest_h=90.0, crest_t=32.0, finial='none',
                       finial_h=350.0, finial_w=90.0, finial_t=32.0, finial_ends='both',
-                      finial_face='out')
+                      finial_face='out', ridge_apart=True)
 DEFAULTS = dict(tile='plain', print_mode=True, round_chimneys=True, stepped=False, step=8.0, gap=2.0, cgap=2.0, lift=0.01, backing=40.0, turn=0, flip=False,
                 **dict(TILE_INFO['plain'][1], **RIDGE_DEFAULTS))
 # ready-made settings for printing at 1:80 with a 0.4 mm nozzle (real-world mm: x 80 = model)
@@ -2042,6 +2042,13 @@ class TilesDialog(QDialog):
         self.cb_ridge.setToolTip("Each roof face gets its half of the ridge (so it prints flat with "
                                  "the slope); the halves on the two slopes meet in the middle.")
         rf.addRow(self.cb_ridge)
+        self.cb_rapart = QCheckBox("Ridge as its own piece for printing (not on the slopes)")
+        self.cb_rapart.setChecked(True)
+        self.cb_rapart.setToolTip("The ridge (both halves, with its finials) comes out as a piece of its "
+                                  "own beside the slopes, so it prints on its own and the slopes print "
+                                  "flat without it. In Scale Studio's Pieces page 'Groups 1 level in' "
+                                  "then gives each slope and the ridge as separate pieces.")
+        rf.addRow(self.cb_rapart)
         self.cb_rstyle = QComboBox()
         for k, lab in RIDGES:
             self.cb_rstyle.addItem(lab, k)
@@ -2148,7 +2155,7 @@ class TilesDialog(QDialog):
                  finial_ends=self.cb_fends.currentData() or 'both',
                  finial_face=self.cb_fface.currentData() or 'out',
                  turn=self.cb_turn.currentData() or 0, flip=self.cb_flip.isChecked(),
-                 round_chimneys=self.cb_chim.isChecked())
+                 round_chimneys=self.cb_chim.isChecked(), ridge_apart=self.cb_rapart.isChecked())
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
         v.update(flashing_values(self))
@@ -2176,6 +2183,7 @@ class TilesDialog(QDialog):
             self.cb_bond.setChecked(bool(d.get('bond', True)))
             self.cb_flip.setChecked(bool(d.get('flip', False)))
             self.cb_chim.setChecked(bool(d.get('round_chimneys', True)))
+            self.cb_rapart.setChecked(bool(d.get('ridge_apart', True)))
             for i in range(self.cb_turn.count()):
                 if self.cb_turn.itemData(i) == d.get('turn', 0):
                     self.cb_turn.setCurrentIndex(i)
@@ -2441,6 +2449,8 @@ class RoofTilesTool(Tool):
         chims = find_chimneys(scene) if (v.get('round_chimneys', True) and scene is not None) else []
         clear = max(10.0, v.get('cgap', 0.0) if v.get('print_mode') else v.get('gap', 0.0))
         went_round = 0
+        apart = bool(v.get('ridge_apart', True))
+        ridge_sols, fin_sols = [], []
         for i, (tw, outline, holes, up, from_group) in enumerate(slopes):
             cuts = []
             if chims:
@@ -2469,10 +2479,16 @@ class RoofTilesTool(Tool):
             k = nslopes
             pieces = [("Slope %d - tiles - %s - %d tiles" % (k, tile_name, count), [s.mapped(tw) for s in tiles])]
             if rids:
-                pieces.append(("Slope %d - ridge half - %d ridge tiles" % (k, nr), [s.mapped(tw) for s in rids]))
+                if apart:
+                    ridge_sols += [s.mapped(tw) for s in rids]
+                else:
+                    pieces.append(("Slope %d - ridge half - %d ridge tiles" % (k, nr), [s.mapped(tw) for s in rids]))
                 ridges += nr
             if fins:
-                pieces.append(("Slope %d - finials" % k, [s.mapped(tw) for s in fins]))
+                if apart:
+                    fin_sols += [s.mapped(tw) for s in fins]
+                else:
+                    pieces.append(("Slope %d - finials" % k, [s.mapped(tw) for s in fins]))
             if fl:
                 pieces.append(("Slope %d - flashing" % k, [s.mapped(tw) for s in fl]))
             slope_parts.append(("Slope %d (%d pieces)" % (k, len(pieces)) if len(pieces) > 1 else None, pieces))
@@ -2480,6 +2496,14 @@ class RoofTilesTool(Tool):
         if not slope_parts:
             QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No tiles fitted on that face.")
             return
+        if ridge_sols or fin_sols:
+            # the ridge on its own, beside the slopes: both halves together, with its finials
+            rp = []
+            if ridge_sols:
+                rp.append(("Ridge - %d ridge tiles" % ridges, ridge_sols))
+            if fin_sols:
+                rp.append(("Ridge - finials", fin_sols))
+            slope_parts.append(("Ridge (%d pieces)" % len(rp) if len(rp) > 1 else None, rp))
         top = "Roof - %s%s" % (tile_name, " (for 3D printing)" if v['print_mode'] else "")
         if len(slope_parts) == 1 and slope_parts[0][0]:
             slope_parts = [(top, slope_parts[0][1])]        # one slope: its group is the roof

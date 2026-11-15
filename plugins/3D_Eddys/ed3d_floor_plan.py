@@ -25,6 +25,8 @@
                 panels that drop in inside the walls (on ledges), or none.
   Extras        Inside walls across or along the building, a base plate (plinth) under it all
                 and a top plate (flat roof / ceiling) on top.
+  Gables        Gable ends on top of the end walls (or the front and back, or the walls you
+                pick), from the roof pitch or the ridge height - each its own piece.
 
 Every wall section, floor and plate is its own plain group, so Scale Studio's Pieces page
 can lay each one flat on the print bed. Sizes are real-world mm, like the other plugins -
@@ -44,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Floor Plan"
-VERSION = "1.0"
+VERSION = "2.1"
 
 
 def _ed3d_organise(scene, group):
@@ -74,6 +76,11 @@ HEIGHT_MODES = [("Each floor its own height", 'each'), ("Divide the total height
 FLOOR_STYLES = [("Slabs - each storey stands on its floor", 'stacked'),
                 ("Drop-in panels inside the walls", 'dropin'),
                 ("No floors - walls only", 'none')]
+GABLE_ON = [("The two ends (left and right) - ridge along the length", 'ends'),
+            ("Front and back - ridge across the building", 'sides'),
+            ("The walls I pick (by number)", 'pick')]
+TOP_MODES = [("On top of the walls (a flat roof)", 'over'),
+             ("Inside the walls, sitting on the inside walls (a ceiling)", 'inside')]
 GROUPINGS = [("A group for each floor, inside 'Floor plan'", 'storeys'),
              ("Every piece in one 'Floor plan' group", 'one'),
              ("Every piece a plain group on its own (no holder)", 'loose')]
@@ -85,11 +92,14 @@ DEFAULTS = dict(
     height_mode='each', storey_heights='', total_h=0.0, storeys=1,
     floor_style='stacked', floor_t=0.0, fit=0.0, lip_h=0.0, lip_fit=0.0,
     ledges=False, ledge_w=0.0, ledge_h=0.0, one_piece=False,
-    cross_x='', cross_y='', part_t=0.0,
-    base=False, base_t=0.0, base_over=0.0, top=False, top_t=0.0, top_over=0.0,
+    cross_x='', cross_y='', part_t=0.0, part_room=0.0, part_join=False,
+    base=False, base_t=0.0, base_over=0.0, top=False, top_t=0.0, top_over=0.0, top_mode='over', top_room=0.0,
+    top_join=False,
+    gables=False, gable_on='ends', gable_walls='', gable_pitch=45.0, ridge_h=0.0, gable_join=False,
     grouping='storeys')
 SIZE_KEYS = ('length', 'width', 'cut_l', 'cut_w', 'wall_t', 'split_len', 'gap', 'total_h', 'floor_t', 'fit',
-             'lip_h', 'lip_fit', 'ledge_w', 'ledge_h', 'part_t', 'base_t', 'base_over', 'top_t', 'top_over')
+             'lip_h', 'lip_fit', 'ledge_w', 'ledge_h', 'part_t', 'part_room', 'base_t', 'base_over', 'top_t', 'top_over',
+             'gable_pitch', 'ridge_h', 'top_room')
 
 BUILTIN_PRESETS = {
     "Two-storey house 7.5 x 6 m": dict(
@@ -116,11 +126,16 @@ BUILTIN_PRESETS = {
         shape='U', length=30000.0, width=15000.0, cut_l=14000.0, cut_w=8000.0, wall_t=350.0, joint='mitre',
         split_len=8000.0, height_mode='each', storey_heights='4000, 3500', storeys=2, floor_style='stacked',
         floor_t=250.0, lip_h=150.0, lip_fit=25.0, base=True, base_t=300.0, base_over=200.0),
+    "Cottage with gable ends (45°)": dict(
+        shape='rect', length=7000.0, width=5000.0, wall_t=300.0, joint='swap', height_mode='each',
+        storey_heights='2600, 2400', storeys=2, floor_style='stacked', floor_t=200.0, lip_h=150.0, lip_fit=20.0,
+        cross_x='3500', part_t=150.0, base=True, base_t=150.0, base_over=100.0,
+        gables=True, gable_on='ends', gable_pitch=45.0, ridge_h=0.0),
 }
 
 COLOURS = {'wall': (196, 120, 90), 'wall2': (176, 104, 78), 'slab': (205, 185, 150), 'floor': (215, 195, 160),
            'ledge': (110, 85, 60), 'part': (225, 170, 120), 'base': (150, 150, 145), 'top': (120, 120, 125),
-           'lip': (160, 140, 110)}
+           'lip': (160, 140, 110), 'gable': (186, 96, 70)}
 STOREY_NAMES = ["Ground floor", "First floor", "Second floor", "Third floor", "Fourth floor", "Fifth floor"]
 
 
@@ -199,6 +214,15 @@ def plan_params(v):
         raise ValueError("A floor is lower than the floor slab is thick (H).")
     p['_cross_x'] = parse_list(p.get('cross_x', ''), "Inside walls across")
     p['_cross_y'] = parse_list(p.get('cross_y', ''), "Inside walls along")
+    p['_gable_walls'] = []
+    if p.get('gables'):
+        if p['ridge_h'] <= 0 and not (0 < p['gable_pitch'] < 89):
+            raise ValueError("Set the roof pitch (X, on the Gables page) - or the ridge height (Y).")
+        if p.get('gable_on') == 'pick':
+            nums = parse_list(p.get('gable_walls', ''), "Gable walls")
+            if not nums:
+                raise ValueError("Type the numbers of the walls to put gables on (Gables page), like 2, 4.")
+            p['_gable_walls'] = [int(round(x)) - 1 for x in nums]
     return p
 
 
@@ -274,6 +298,18 @@ def offset(poly, d):
         if q is not None:
             out.append(q)
     return clean(out)
+
+
+def _inset_ok(inner, outer, d):
+    """True if every corner of inner is at least d in from every side of outer (an inset that
+    hasn't turned itself inside out)."""
+    def seg_dist(q, a, b):
+        ax, ay = b[0] - a[0], b[1] - a[1]
+        L = ax * ax + ay * ay
+        t = 0.0 if L <= 0 else max(0.0, min(1.0, ((q[0] - a[0]) * ax + (q[1] - a[1]) * ay) / L))
+        return math.hypot(q[0] - a[0] - ax * t, q[1] - a[1] - ay * t)
+    n = len(outer)
+    return all(seg_dist(q, outer[i], outer[(i + 1) % n]) >= d * 0.999 for q in inner for i in range(n))
 
 
 def clip_half(poly, q, d):
@@ -450,6 +486,7 @@ def split_quad(quad, u, max_len, gap):
 def partition_rects(inner, p):
     """The inside walls: across the building at each x, along it at each y (from the outline's corner)."""
     pt, gap = p['part_t'], p['gap']
+    room = max(0.0, p.get('part_room', 0.0))      # stops short of the outside walls (room for a frame)
     xs = [q[0] for q in p['_outline']]
     ys = [q[1] for q in p['_outline']]
     x0, y0 = min(xs), min(ys)
@@ -459,12 +496,13 @@ def partition_rects(inner, p):
         cx = x0 + c
         xcuts.append(cx)
         for a, b in spans_on_line(inner, 0, cx):
-            a, b = a + gap, b - gap
+            a, b = a + gap + room, b - gap - room
             if b - a > pt:
                 out.append(([(cx - pt / 2, a), (cx + pt / 2, a), (cx + pt / 2, b), (cx - pt / 2, b)], 'across'))
     for c in p['_cross_y']:
         cy = y0 + c
         for a, b in spans_on_line(inner, 1, cy):
+            a, b = a + room, b - room
             # broken where an across wall runs through it
             cuts = sorted(x for x in xcuts if a < x < b)
             pieces = []
@@ -478,6 +516,83 @@ def partition_rects(inner, p):
                 if b2 - a2 > pt:
                     out.append(([(a2, cy - pt / 2), (b2, cy - pt / 2), (b2, cy + pt / 2), (a2, cy + pt / 2)], 'along'))
     return [(clean(r), k) for r, k in out if clean(r)]
+
+
+def join_rects(rects):
+    """The inside walls that touch or cross joined into one piece each: [(outline, [holes], kind)].
+    Walls that meet nothing stay as they are. A ring of walls (a closed room) keeps its hole."""
+    R = [[(round(q[0], 4), round(q[1], 4)) for q in r] for r, _k in rects]
+    if not R:
+        return []
+    xs = sorted(set(q[0] for r in R for q in r))
+    ys = sorted(set(q[1] for r in R for q in r))
+    boxes = [(min(q[0] for q in r), min(q[1] for q in r), max(q[0] for q in r), max(q[1] for q in r)) for r in R]
+    nx_, ny_ = len(xs) - 1, len(ys) - 1
+
+    def covered(i, j):
+        if not (0 <= i < nx_ and 0 <= j < ny_):
+            return False
+        cx, cy = (xs[i] + xs[i + 1]) / 2.0, (ys[j] + ys[j + 1]) / 2.0
+        return any(b[0] < cx < b[2] and b[1] < cy < b[3] for b in boxes)
+    cov = {(i, j) for i in range(nx_) for j in range(ny_) if covered(i, j)}
+    # the edges round the covered cells, counter-clockwise, without the ones between two covered cells
+    nxt = {}
+    for (i, j) in cov:
+        a, b, c, d = (i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)
+        for (p0, p1, nb) in ((a, b, (i, j - 1)), (b, c, (i + 1, j)), (c, d, (i, j + 1)), (d, a, (i - 1, j))):
+            if nb not in cov:
+                nxt.setdefault(p0, []).append(p1)
+    loops = []
+    while nxt:
+        start = next(iter(nxt))
+        loop = [start]
+        cur = start
+        while True:
+            outs = nxt.get(cur)
+            if not outs:
+                break
+            nb = outs.pop()
+            if not outs:
+                del nxt[cur]
+            if nb == start:
+                break
+            loop.append(nb)
+            cur = nb
+        pts = [(xs[i], ys[j]) for i, j in loop]
+        # drop the corners in the middle of a straight run
+        changed = True
+        while changed and len(pts) > 3:
+            changed = False
+            for k in range(len(pts)):
+                a, b, c = pts[k - 1], pts[k], pts[(k + 1) % len(pts)]
+                if abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) < 1e-9:
+                    pts.pop(k)
+                    changed = True
+                    break
+        if len(pts) >= 3:
+            loops.append(pts)
+    outers = [l_ for l_ in loops if area2(l_) > 0]
+    holes = [l_ for l_ in loops if area2(l_) < 0]
+
+    def inside(q, poly):
+        c = False
+        for k in range(len(poly)):
+            (x1, y1), (x2, y2) = poly[k - 1], poly[k]
+            if (y1 > q[1]) != (y2 > q[1]) and q[0] < x1 + (q[1] - y1) * (x2 - x1) / (y2 - y1):
+                c = not c
+        return c
+    out = []
+    for o in outers:
+        hs = [h for h in holes if inside(((h[0][0] + h[1][0]) / 2.0 + 1e-3 * (h[1][1] - h[0][1]),
+                                          (h[0][1] + h[1][1]) / 2.0 - 1e-3 * (h[1][0] - h[0][0])), o)]
+        dx = max(q[0] for q in o) - min(q[0] for q in o)
+        dy = max(q[1] for q in o) - min(q[1] for q in o)
+        if len(o) == 4 and not hs:
+            kind = 'across' if dx < dy else 'along'
+        else:
+            kind = 'joined'
+        out.append((o, hs, kind))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +649,40 @@ def prism(poly, z0, z1):
     return s.fix()
 
 
+def prism_holes(poly, holes, z0, z1):
+    """A prism with holes right through it (a ring of inside walls round a room)."""
+    s = PSolid()
+    s.add([(x, y, z1) for x, y in poly], holes=[[(x, y, z1) for x, y in h] for h in holes])
+    s.add([(x, y, z0) for x, y in reversed(poly)], holes=[[(x, y, z0) for x, y in reversed(h)] for h in holes])
+    for loop in [poly] + list(holes):
+        n = len(loop)
+        for i in range(n):
+            (ax, ay), (bx, by) = loop[i], loop[(i + 1) % n]
+            s.add([(ax, ay, z0), (bx, by, z0), (bx, by, z1), (ax, ay, z1)])
+    return s.fix()
+
+
+def plate_with_walls(plate, z0, z1, feet, zd0):
+    """A plate (z0 to z1) with walls standing down from its underside to zd0 - all one piece.
+    feet: [(outline, [holes])] of the walls, each well inside the plate."""
+    s = PSolid()
+    s.add([(x, y, z1) for x, y in plate])
+    for i in range(len(plate)):
+        (ax, ay), (bx, by) = plate[i], plate[(i + 1) % len(plate)]
+        s.add([(ax, ay, z0), (bx, by, z0), (bx, by, z1), (ax, ay, z1)])
+    s.add([(x, y, z0) for x, y in reversed(plate)], holes=[[(x, y, z0) for x, y in o] for o, _h in feet])
+    for o, hs in feet:
+        for h in hs:                                # the plate's underside again, inside a ring of walls
+            s.add([(x, y, z0) for x, y in h])
+        for loop in [o] + list(hs):
+            n = len(loop)
+            for i in range(n):
+                (ax, ay), (bx, by) = loop[i], loop[(i + 1) % n]
+                s.add([(ax, ay, zd0), (bx, by, zd0), (bx, by, z0), (ax, ay, z0)])
+        s.add([(x, y, zd0) for x, y in reversed(o)], holes=[[(x, y, zd0) for x, y in reversed(h)] for h in hs])
+    return s.fix()
+
+
 def stepped(poly, z0, z1, lip, lip_h):
     """A slab from z0 to z1 with a lip (a smaller outline) standing down lip_h underneath it."""
     s = PSolid()
@@ -555,12 +704,77 @@ def stepped(poly, z0, z1, lip, lip_h):
 # ---------------------------------------------------------------------------
 # The whole building
 # ---------------------------------------------------------------------------
+def gable_solid(poly, z0, u, mid, half, tanp, zbase=None):
+    """A gable: the wall's plan (poly) standing on z0, its top sloping up from each end of
+    the side (mid - half, mid + half along u) to the ridge in the middle. zbase: where the
+    slope starts (the top of the walls) when the gable is joined to the wall below it."""
+    zb = z0 if zbase is None else zbase
+
+    def s(q):
+        return q[0] * u[0] + q[1] * u[1]
+
+    def zt(q):
+        return zb + max(0.0, half - abs(s(q) - mid)) * tanp
+    pts = []
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        pts.append(a)
+        fa, fb = s(a) - mid, s(b) - mid
+        if (fa < -1e-9 and fb > 1e-9) or (fa > 1e-9 and fb < -1e-9):
+            t_ = fa / (fa - fb)                     # a corner where the ridge crosses
+            pts.append((a[0] + t_ * (b[0] - a[0]), a[1] + t_ * (b[1] - a[1])))
+
+    def face(qs):
+        out = []
+        for q in qs:
+            if not out or max(abs(q[j] - out[-1][j]) for j in range(3)) > 1e-6:
+                out.append(q)
+        while len(out) > 1 and max(abs(out[0][j] - out[-1][j]) for j in range(3)) <= 1e-6:
+            out.pop()
+        return out if len(out) >= 3 else None
+    S = PSolid()
+    S.add([(x, y, z0) for x, y in reversed(poly)])
+    # each side one whole face (the ridge corner sits in its top edge, not down its middle), so
+    # other plugins - Openings, Subframe - see the wall's front and back as one face each
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        top = [(a[0], a[1], zt(a))]
+        fa, fb = s(a) - mid, s(b) - mid
+        if (fa < -1e-9 and fb > 1e-9) or (fa > 1e-9 and fb < -1e-9):
+            t_ = fa / (fa - fb)
+            r = (a[0] + t_ * (b[0] - a[0]), a[1] + t_ * (b[1] - a[1]))
+            top.append((r[0], r[1], zt(r)))
+        top.append((b[0], b[1], zt(b)))
+        f_ = face([(a[0], a[1], z0), (b[0], b[1], z0)] + list(reversed(top)))
+        if f_:
+            S.add(f_)
+    for keep in (lambda q: s(q) <= mid + 1e-6, lambda q: s(q) >= mid - 1e-6):
+        f_ = face([(q[0], q[1], zt(q)) for q in pts if keep(q)])
+        if f_:
+            S.add(f_)
+    return S.fix()
+
+
 class Piece:
-    def __init__(self, name, kind, storey, poly, z0, z1, lip=None, lip_h=0.0):
+    def __init__(self, name, kind, storey, poly, z0, z1, lip=None, lip_h=0.0, prof=None):
         self.name, self.kind, self.storey = name, kind, storey
         self.poly, self.z0, self.z1, self.lip, self.lip_h = poly, z0, z1, lip, lip_h
+        self.prof = prof                            # gables: (u, mid, half, tanp[, zbase])
+        self.holes = []                             # joined inside walls round a room
+        self.feet = None                            # top plate joined to the walls under it
+        self.parts = None                           # [(name, solid)]: made as a group of these
+        self.feet_z = 0.0
+        self.inside = False                         # top plate inside the walls
 
     def solid(self):
+        if self.feet:
+            return plate_with_walls(self.poly, self.z0, self.z1, self.feet, self.feet_z)
+        if self.holes:
+            return prism_holes(self.poly, self.holes, self.z0, self.z1)
+        if self.prof:
+            return gable_solid(self.poly, self.z0, *self.prof)
         if self.lip and self.lip_h > 0:
             return stepped(self.poly, self.z0, self.z1, self.lip, self.lip_h)
         return prism(self.poly, self.z0, self.z1)
@@ -614,6 +828,61 @@ def build_plan(p, outline):
             for j, pc in enumerate(parts):
                 nm = "%s - %s%s" % (label, names[i], (" part %d" % (j + 1)) if len(parts) > 1 else "")
                 pieces.append(Piece(nm, 'wall', k, pc, wz0, wz1))
+    # gable ends on top of the walls (on the top plate, if there is one)
+    gable_notes = []
+    if p.get('gables'):
+        if p.get('gable_join') and p.get('top') and p.get('top_mode') != 'inside':
+            raise ValueError("Gables can't be joined to their walls with a top plate in the way - untick the "
+                             "top plate (Base & top page) or 'Join each gable to its wall'.")
+        kg = storeys[-1]
+        joined = bool(p.get('gable_join'))
+        wall_at = {pc.name: (idx, pc) for idx, pc in enumerate(pieces) if pc.kind == 'wall' and pc.storey == kg}
+        drop = set()
+        label = "Walls" if one_piece else storey_name(kg)
+        zg = H + (p['top_t'] if p.get('top') and p.get('top_mode') != 'inside' else 0.0)
+        on = p.get('gable_on', 'ends')
+        if on == 'pick':
+            chosen = set(i for i in p['_gable_walls'] if 0 <= i < n_out)
+            bad = [i + 1 for i in p['_gable_walls'] if not 0 <= i < n_out]
+            if bad:
+                raise ValueError("Gable walls: there's no wall %s - this shape has walls 1 to %d."
+                                 % (", ".join(str(b) for b in bad), n_out))
+        else:
+            want = ('left', 'right') if on == 'ends' else ('front', 'back')
+            chosen = set(i for i in range(n_out) if side_name(us[i]) in want)
+        for quad, i in wall_quads(outline, t, p['joint'], kg):
+            if i not in chosen:
+                continue
+            u = us[i]
+            sa = outline[i][0] * u[0] + outline[i][1] * u[1]
+            sb = outline[(i + 1) % n_out][0] * u[0] + outline[(i + 1) % n_out][1] * u[1]
+            mid, half = (sa + sb) / 2.0, abs(sb - sa) / 2.0
+            if half <= 0:
+                continue
+            tanp = p['ridge_h'] / half if p['ridge_h'] > 0 else math.tan(math.radians(p['gable_pitch']))
+            parts = split_quad(quad, u, p['split_len'], gap)
+            for j, pc in enumerate(parts):
+                ss = [q[0] * u[0] + q[1] * u[1] for q in pc]
+                if min(ss) <= mid <= max(ss):
+                    rise = half * tanp                  # the ridge is on this piece
+                else:
+                    rise = max(max(0.0, half - abs(x - mid)) * tanp for x in ss)
+                if rise <= 1e-6:
+                    continue
+                part_txt = (" part %d" % (j + 1)) if len(parts) > 1 else ""
+                below = wall_at.get("%s - %s%s" % (label, names[i], part_txt))
+                if joined and below is not None:
+                    # the gable and the wall under it in one piece
+                    drop.add(below[0])
+                    nm = "%s - %s with gable%s" % (label, names[i], part_txt)
+                    pieces.append(Piece(nm, 'gable', kg, pc, below[1].z0, zg + rise,
+                                        prof=(u, mid, half, tanp, zg)))
+                else:
+                    nm = "%s - Gable on %s%s" % (label, names[i], part_txt)
+                    pieces.append(Piece(nm, 'gable', kg, pc, zg, zg + rise, prof=(u, mid, half, tanp)))
+            gable_notes.append((i, half * tanp, math.degrees(math.atan(tanp))))
+        if drop:
+            pieces = [pc for idx, pc in enumerate(pieces) if idx not in drop]
     # floors
     ledge_ring = None
     if style == 'stacked':
@@ -635,23 +904,88 @@ def build_plan(p, outline):
                                                                          storey_name(k).lower()), 'ledge', k - 1, q,
                                         zs[k] - p['ledge_h'], zs[k]))
     # inside walls, standing on each floor up to the next
-    rects = partition_rects(inner, p) if (p['_cross_x'] or p['_cross_y']) else []
+    rects = []
+    if p['_cross_x'] or p['_cross_y']:
+        if p.get('part_join'):
+            # joined where they cross: one piece each (a cross, a T, an L...), stood on end to print
+            q_ = dict(p)
+            q_['gap'] = 0.0                         # the pieces must touch to join
+            rects = [(o, hs, kd) for o, hs, kd in join_rects(partition_rects(inner, q_))]
+        else:
+            rects = [(r, [], kd) for r, kd in partition_rects(inner, p)]
+    top_in = bool(p.get('top')) and p.get('top_mode') == 'inside'
+    top_room = p['top_room']
+    tplate = None
+    if top_in:
+        tplate = offset(inner, top_room) if top_room > 0 else inner
+        if tplate is None or area2(tplate) <= 0 or (top_room > 0 and not _inset_ok(tplate, inner, top_room)):
+            raise ValueError("The top plate's room for a subframe (Z) leaves no top plate.")
+    joined_top = top_in and p.get('top_join') and bool(rects)
+    feet = []
+    if joined_top:
+        # the top floor's inside walls, joined where they cross and stopped just inside the plate's edge
+        q_ = dict(p)
+        q_['gap'] = 0.0
+        q_['part_room'] = max(p['part_room'], top_room) + 0.5
+        feet = [(o, h_) for o, h_, _kd in join_rects(partition_rects(inner, q_))]
+
+        def in_plate(q):
+            c = False
+            for i_ in range(len(tplate)):
+                (x1, y1), (x2, y2) = tplate[i_ - 1], tplate[i_]
+                if (y1 > q[1]) != (y2 > q[1]) and q[0] < x1 + (q[1] - y1) * (x2 - x1) / (y2 - y1):
+                    c = not c
+            return c
+        if not all(in_plate(q) for o, _h in feet for q in o):
+            raise ValueError("An inside wall reaches past the edge of the top plate, so they can't be joined - "
+                             "move it further from the outside walls, or untick 'Join the top plate to the "
+                             "inside walls'.")
     for k in range(len(hs)):
         z0 = zs[k] + ft
         z1 = zs[k + 1]
+        if top_in and k == len(hs) - 1:
+            z1 -= p['top_t']                        # the top plate sits on them, its top level with the walls
+            if joined_top:
+                continue                            # they're part of the top plate
         if style == 'stacked' and k < len(hs) - 1 and lip_ok:
             z1 -= p['lip_h']                        # clear of the lip under the floor above
         if style == 'dropin' and k < len(hs) - 1 and p.get('ledges'):
             z1 -= p['ledge_h']
         if z1 - z0 <= 1e-6:
             continue
-        for j, (r, kind) in enumerate(rects):
-            pieces.append(Piece("%s - Inside wall %d (%s)" % (storey_name(k), j + 1, kind), 'part', k, r, z0, z1))
+        for j, (r, hs_, kind) in enumerate(rects):
+            pc = Piece("%s - Inside wall %d (%s)" % (storey_name(k), j + 1, kind), 'part', k, r, z0, z1)
+            pc.holes = hs_
+            pieces.append(pc)
     # base and top plates
     if p.get('base'):
-        bp = offset(outline, -p['base_over']) if p['base_over'] > 0 else outline
+        # stands out (plus) or tucked in under the walls (minus)
+        bp = offset(outline, -p['base_over']) if p['base_over'] != 0 else outline
+        if len(bp) < 3 or (p['base_over'] < 0 and not _inset_ok(bp, outline, -p['base_over'])):
+            bp = outline                            # tucked in too far: it vanished, so keep it flush
         pieces.append(Piece("Base plate", 'base', -1, bp, -p['base_t'], 0.0))
-    if p.get('top'):
+    if top_in:
+        zt0 = H - p['top_t']
+        if zt0 <= zs[-2] + ft:
+            raise ValueError("The top plate (R) is as thick as the top floor is high.")
+        if joined_top:
+            # a group of two parts - the plate, and the walls under it - so the plate can be hidden on
+            # its own to see into the rooms; '(one piece)' tells Scale Studio to print them as one
+            pc = Piece("Top plate with walls under it (one piece)", 'top', len(hs), tplate, zt0, H)
+            pc.feet, pc.feet_z = feet, zs[-2] + ft
+            walls_ = PSolid()
+            for o_, h_ in feet:
+                w_ = prism_holes(o_, h_, zs[-2] + ft, zt0) if h_ else prism(o_, zs[-2] + ft, zt0)
+                base_ = len(walls_.faces)
+                walls_.faces += w_.faces
+                walls_.holes.update({base_ + i_: hl for i_, hl in w_.holes.items()})
+            pc.parts = [("Top plate (joined to the walls under it)", prism(tplate, zt0, H)),
+                        ("%s - Inside walls under the top plate" % storey_name(len(hs) - 1), walls_)]
+        else:
+            pc = Piece("Top plate", 'top', len(hs), tplate, zt0, H)
+        pc.inside = True
+        pieces.append(pc)
+    elif p.get('top'):
         tp = offset(outline, -p['top_over']) if p['top_over'] > 0 else outline
         lp = None
         if lip_ok:
@@ -661,7 +995,8 @@ def build_plan(p, outline):
     notes = dict(H=H, zs=zs, inner_area=abs(area2(inner)) / 1e6, outer_area=abs(area2(outline)) / 1e6,
                  walls=len(outline), wall_len=sum(math.hypot(outline[(i + 1) % n_out][0] - outline[i][0],
                                                              outline[(i + 1) % n_out][1] - outline[i][1])
-                                                  for i in range(n_out)) / 1000.0)
+                                                  for i in range(n_out)) / 1000.0,
+                 gables=gable_notes, wall_names=names)
     return pieces, notes
 
 
@@ -934,6 +1269,28 @@ EDDY_TIPS = {
                                         "a plinth, or a base to fix it down.",
     'Top plate (flat roof / ceiling)': "A plate on top of the walls: a flat roof, or a ceiling for the "
                                        "roof to sit on.",
+    'Gable ends': "Pointed gable ends on top of the walls, for a pitched roof to sit on. Each gable is its own "
+                  "piece, standing on the top of the walls (or on the top plate, if you have one).",
+    'Join each gable to its wall': "The gable and the top floor's wall under it come out as one piece - "
+                                   "a wall with a pointed top - so there's no join to glue. Can't be used "
+                                   "with a top plate, as the plate sits between them.",
+    'Gables on': "Which walls get a gable: the two ends (the roof's ridge runs along the length), the front "
+                 "and back (the ridge runs across), or the walls you pick by number.",
+    'Walls (by number)': "The numbers of the walls to put gables on, commas between, like 2, 4. The walls are "
+                         "numbered as they're named in the model - 'Wall 2 (right)' is 2.",
+    'Join the inside walls where they cross': "Inside walls that cross or meet are joined into one piece - a "
+                                              "cross, a T or an L - instead of being cut where they meet. "
+                                              "Scale Studio stands a joined piece on its end to print, so it "
+                                              "comes out as the cross shape, upright, with no joins to glue.",
+    'Top plate goes': "On top of the walls: a flat roof, standing on them (and past them, with S). Inside the "
+                      "walls: a ceiling, sitting on the top floor's inside walls with its top level with the "
+                      "outside walls, kept clear of a subframe by Z.",
+    'Join the top plate to the inside walls': "The top plate and the top floor's inside walls come out as one "
+                                              "piece - print it plate down, with the walls standing up from "
+                                              "it. The walls stop just inside the plate's edge (Z), clear of "
+                                              "the subframe.",
+    'Show floors...': "A small window to hide and show each floor (and the plates), so you can see into the "
+                      "rooms to add windows and doors. Close it with its X - it opens where you left it.",
     'Pieces go': "How the pieces are grouped. Every piece is always its own plain group (not a component), "
                  "so Scale Studio can lay each one flat.",
     'Build floor plan': "Builds it at the origin of the model, from the Shape page.",
@@ -963,6 +1320,13 @@ WALL_FIELDS = [
                                                      "of room to fit together. 0 = they just touch."),
     ('part_t', "T   Inside wall thickness", 0.0, 10000.0, 1, "How thick the inside walls are. 0 = half the wall "
                                                              "thickness."),
+    ('part_room', "W   Room for a subframe", 0.0, 10000.0, 1, "The inside walls stop this far short of the "
+                                                               "outside walls at each end, so they butt up "
+                                                               "against the frame from Subframe instead of "
+                                                               "going through it, and the frame stays whole. "
+                                                               "Set it to Subframe's bar depth (plus its "
+                                                               "'lift' if you use one). 0 = right up to the "
+                                                               "walls."),
 ]
 FLOOR_FIELDS = [
     ('total_h', "G   Total height", 0.0, 500000.0, 1, "The height from the bottom of the walls to the top, "
@@ -982,13 +1346,26 @@ FLOOR_FIELDS = [
 PLATE_FIELDS = [
     ('base_t', "P   Base plate thickness", 0.0, 10000.0, 1, "How thick the base plate is. 0 = the floor "
                                                             "thickness."),
-    ('base_over', "Q   Base plate stands out", 0.0, 10000.0, 1, "How far the base plate stands out past the "
-                                                                "walls all round. 0 = flush."),
+    ('base_over', "Q   Base plate stands out", -10000.0, 10000.0, 1, "How far the base plate stands out past "
+                                                                     "the walls all round. 0 = flush. Minus = "
+                                                                     "tucked in under the walls by that much."),
     ('top_t', "R   Top plate thickness", 0.0, 10000.0, 1, "How thick the top plate is. 0 = the floor thickness."),
     ('top_over', "S   Top plate overhang", 0.0, 10000.0, 1, "How far the top plate hangs past the walls (eaves "
                                                             "of a flat roof). 0 = flush."),
+    ('top_room', "Z   Top plate room for a subframe", 0.0, 10000.0, 1, "Inside the walls: the top plate stops "
+                                                                       "this far short of the outside walls all "
+                                                                       "round, so it clears the frame from "
+                                                                       "Subframe. Set it to Subframe's bar depth. "
+                                                                       "0 = right up to the walls."),
 ]
-ALL_FIELDS = SHAPE_FIELDS + WALL_FIELDS + FLOOR_FIELDS + PLATE_FIELDS
+GABLE_FIELDS = [
+    ('gable_pitch', "X   Roof pitch", 0.0, 85.0, 1, "The angle of the roof, from level. 45 is a steep cottage "
+                                                    "roof, 30 to 35 a typical Victorian slate roof."),
+    ('ridge_h', "Y   Ridge height", 0.0, 100000.0, 1, "How high the top of the gable is above the top of the walls. "
+                                                       "0 = worked out from the pitch (X). Set it and the pitch "
+                                                       "follows from it."),
+]
+ALL_FIELDS = SHAPE_FIELDS + WALL_FIELDS + FLOOR_FIELDS + PLATE_FIELDS + GABLE_FIELDS
 
 INFO_TEXT = ("<b>How to use it</b><br>"
              "Pick a shape and type the overall size (Shape page), the wall thickness (Walls page) and the "
@@ -1007,6 +1384,21 @@ INFO_TEXT = ("<b>How to use it</b><br>"
              "group with faces (smallest pieces)' and tick 'Lay each piece flat'. Long walls can be cut to fit "
              "your print bed (U). Add the windows and doors with Period Windows and Period Doors, and the "
              "frame with Subframe.<br><br>"
+             "<b>Inside walls</b><br>Tick 'Join the inside walls where they cross' (Walls page) and the "
+             "walls across and along come out as one piece where they meet - a cross, a T or an L - to "
+             "print standing on end, with no joins.<br><br>"
+             "<b>Top plate inside the walls</b><br>On the Base & top page, 'Top plate goes' can put it "
+             "inside the walls as a ceiling, sitting on the top floor's inside walls, its top level with the "
+             "walls, kept back from them by Z so a subframe fits. Tick 'Join the top plate to the inside walls' "
+             "to print the plate and those walls as one piece, plate down.<br><br>"
+             "<b>Show floors</b><br>'Show floors...' opens a little window with two ticks for each storey - "
+             "its walls and its floor - and one for each plate. Untick the floors and plates (or click 'Hide "
+             "floors & plates') to see down into the rooms with all the walls still there. It uses IngeTrazo's own "
+             "Hide, so Edit > Undo works too. Close it with its X - it comes back where you left it.<br><br>"
+             "<b>Gable ends</b><br>Tick 'Gable ends' on the Gables page and pick which walls get them. "
+             "Give the roof pitch (X) or the ridge height (Y). Each gable is its own piece, standing on the "
+             "top of the walls (or on the top plate), split for the print bed like the wall below it. Tick "
+             "'Join each gable to its wall' to have the wall and its gable as one piece.<br><br>"
              "Sizes are real-world mm - Scale Studio takes it down to your model scale.")
 
 
@@ -1017,12 +1409,13 @@ def _auto_sizes(v):
 
 
 PIECE_KEYS = [
+    ("Gable", ('gable_pitch', 'ridge_h', 'wall_t')),
     ("Floor slab", ('floor_t', 'lip_h', 'lip_fit')),
     ("Floor panel", ('floor_t', 'fit')),
     ("Ledge", ('ledge_w', 'ledge_h')),
-    ("Inside wall", ('part_t',)),
+    ("Inside wall", ('part_t', 'part_room')),
     ("Base plate", ('base_t', 'base_over')),
-    ("Top plate", ('top_t', 'top_over', 'lip_h')),
+    ("Top plate", ('top_t', 'top_over', 'lip_h', 'top_room')),
     ("Wall", ('wall_t', 'split_len', 'gap', 'length', 'width')),
 ]
 
@@ -1041,7 +1434,7 @@ class KeyDrawing(QWidget):
     """A drawing that shows what each lettered size is."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(360, 660)
+        self.setMinimumSize(360, 820)
 
     def paintEvent(self, _ev):
         from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
@@ -1050,7 +1443,7 @@ class KeyDrawing(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(250, 250, 246))
-        k = min(float(self.width()) / 360.0, self.height() / 660.0)
+        k = min(float(self.width()) / 360.0, self.height() / 820.0)
         p.scale(k, k)
         red = QColor(200, 40, 40)
         wallc, inside = QColor(196, 120, 90), QColor(240, 232, 215)
@@ -1144,6 +1537,24 @@ class KeyDrawing(QWidget):
         dim(wx + wt + 26, 420, wx + wt + 26, 438, "N", wx + wt + 38, 430)
         dim(wx + wt, 394, wx + wt + 6, 394, "J", wx + wt + 3, 384)
 
+        # ---- a gable end, seen from the end
+        p.setPen(QColor(60, 60, 60))
+        p.setFont(f)
+        p.drawText(QRectF(10, 572, 340, 18), Qt.AlignLeft, "Gable end, seen from the end")
+        gx0, gx1, gz, gtop = 90.0, 270.0, 670.0, 600.0
+        box(gx0, gz, gx1 - gx0, 40, wallc)                                  # the wall below
+        poly([(gx0, gz), (gx1, gz), ((gx0 + gx1) / 2, gtop)], QColor(186, 96, 70))   # the gable
+        p.setPen(QPen(QColor(120, 70, 50), 1.0, Qt.DashLine))
+        p.drawLine(QPointF(gx0, gz), QPointF(gx1, gz))                       # where it stands on the walls
+        p.setPen(QPen(red, 1.1))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(gx0 - 34, gz - 34, 68, 68), 0, int(37.9 * 16))     # the pitch, from level
+        p.setPen(red)
+        p.drawText(QRectF(gx0 + 34, gz - 22, 20, 16), Qt.AlignCenter, "X")
+        dim(gx1 + 20, gz, gx1 + 20, gtop, "Y", gx1 + 32, (gz + gtop) / 2)
+        p.setPen(QColor(90, 90, 90))
+        p.drawText(QRectF(gx0, gz + 12, gx1 - gx0, 14), Qt.AlignCenter, "end wall")
+
         f2 = QFont()
         f2.setPointSizeF(8.5)
         p.setFont(f2)
@@ -1153,9 +1564,10 @@ class KeyDrawing(QWidget):
                  "J  floor fit", "K  locating lip depth", "L  lip fit", "M  ledge width", "N  ledge height",
                  "P  base plate thickness", "Q  base plate stands out", "R  top plate thickness",
                  "S  top plate overhang", "T  inside wall thickness", "U  longest wall piece",
-                 "V  gap between pieces"]
+                 "V  gap between pieces", "W  room for a subframe", "X  roof pitch (gables)",
+                 "Y  ridge height (gables)", "Z  top plate room (inside)"]
         for i, t_ in enumerate(notes):
-            p.drawText(QRectF(10 if i < 10 else 185, 570 + (i % 10) * 9.0, 175, 10),
+            p.drawText(QRectF(10 if i < 12 else 185, 704 + (i % 12) * 9.0, 175, 10),
                        Qt.AlignLeft | Qt.AlignVCenter, t_)
         p.end()
 
@@ -1235,7 +1647,8 @@ class PlanPreview(QWidget):
             if pc.kind == 'base':
                 draw(pc.poly, COLOURS['base'])
         draw(self.inner, (240, 232, 215))
-        shown = [pc for pc in self.pieces if pc.storey == st or (pc.kind == 'wall' and pc.name.startswith("Walls"))]
+        shown = [pc for pc in self.pieces if pc.storey == st or (pc.kind in ('wall', 'gable')
+                                                                 and pc.name.startswith("Walls"))]
         for pc in shown:
             if pc.kind in ('slab', 'floor'):
                 draw(pc.poly, COLOURS[pc.kind], alpha=110)
@@ -1246,6 +1659,17 @@ class PlanPreview(QWidget):
                 k += 1
             elif pc.kind in ('part', 'ledge'):
                 draw(pc.poly, COLOURS[pc.kind])
+                for h_ in pc.holes:
+                    draw(h_, (240, 232, 215))
+        for pc in self.pieces:
+            if pc.feet and st == len(self.notes['zs']) - 2:
+                for o_, h_ in pc.feet:
+                    draw(o_, COLOURS['part'])
+                    for hh in h_:
+                        draw(hh, (240, 232, 215))
+        for pc in shown:
+            if pc.kind == 'gable':                  # the gables, over the walls they stand on
+                draw(pc.poly, COLOURS['gable'], width=1.6)
         p.setPen(QColor(110, 110, 110))
         p.setFont(QFont())
         p.drawText(QRectF(12, H - 20, pw - 24, 16), Qt.AlignCenter, "front - %s" % (
@@ -1266,11 +1690,16 @@ class PlanPreview(QWidget):
         span = sw * 0.9
         for pc in self.pieces:
             if pc.kind in ('slab', 'base', 'top', 'floor'):
-                x_a = x0 + (wall_w + 4 if pc.kind == 'floor' else (-6 if pc.kind in ('base', 'top') else 0))
+                x_a = x0 + (wall_w + 4 if pc.kind == 'floor' or pc.inside else
+                            (-6 if pc.kind in ('base', 'top') else 0))
                 col = QColor(*COLOURS[pc.kind])
                 p.setPen(QPen(col.darker(160), 0.8))
                 p.setBrush(col)
                 p.drawRect(QRectF(x_a, Z(pc.z1), x0 + span - x_a, Z(pc.z0) - Z(pc.z1)))
+                if pc.feet:                         # the walls hanging under it, joined on
+                    col = QColor(*COLOURS['part'])
+                    p.setBrush(col)
+                    p.drawRect(QRectF(x0 + wall_w + span * 0.35, Z(pc.z0), span * 0.1, Z(pc.feet_z) - Z(pc.z0)))
                 if pc.lip and pc.lip_h > 0:
                     col = QColor(*COLOURS['lip'])
                     p.setBrush(col)
@@ -1289,6 +1718,16 @@ class PlanPreview(QWidget):
                 p.setPen(QPen(col.darker(160), 0.8))
                 p.setBrush(col)
                 p.drawRect(QRectF(x0 + wall_w, Z(pc.z1), wall_w * 0.6, Z(pc.z0) - Z(pc.z1)))
+        gs = [pc for pc in self.pieces if pc.kind == 'gable']
+        if gs:                                      # the gable, seen from the end, over the walls
+            zg0 = gs[0].prof[4] if len(gs[0].prof) > 4 else gs[0].z0
+            zg1 = max(pc.z1 for pc in gs)
+            col = QColor(*COLOURS['gable'])
+            p.setPen(QPen(col.darker(160), 0.8))
+            col.setAlpha(170)
+            p.setBrush(col)
+            p.drawPolygon(QPolygonF([QPointF(x0, Z(zg0)), QPointF(x0 + span, Z(zg0)),
+                                     QPointF(x0 + span / 2, Z(zg1))]))
         p.setPen(QColor(90, 90, 90))
         f3 = QFont()
         f3.setPointSizeF(7.5)
@@ -1296,7 +1735,7 @@ class PlanPreview(QWidget):
         for kk in range(len(zs) - 1):
             p.drawText(QRectF(x0 + wall_w + 6, Z(zs[kk + 1]) + 2, span, 12), Qt.AlignLeft,
                        "%s  %.0f" % (storey_name(kk), zs[kk + 1] - zs[kk]))
-        p.drawText(QRectF(x0, H - 20, sw, 16), Qt.AlignCenter, "side - %.0f mm high" % zs[-1])
+        p.drawText(QRectF(x0, H - 20, sw, 16), Qt.AlignCenter, "side - %.0f mm high" % zhi)
         p.end()
 
 
@@ -1464,6 +1903,9 @@ class PlanDialog(QDialog):
         for e_ in (self.ed_cx, self.ed_cy):
             e_.textChanged.connect(self.changed)
         spin_rows(fw, WALL_FIELDS[3:])
+        self.ck_join = QCheckBox("Join the inside walls where they cross")
+        fw.addRow(self.ck_join)
+        self.ck_join.toggled.connect(self.changed)
         self.lbl_walls = QLabel()
         self.lbl_walls.setWordWrap(True)
         self.lbl_walls.setStyleSheet("color: gray;")
@@ -1517,14 +1959,52 @@ class PlanDialog(QDialog):
         spin_rows(fp, PLATE_FIELDS[:2])
         self.ck_top = QCheckBox("Top plate (flat roof / ceiling)")
         fp.addRow(self.ck_top)
+        self.cb_topmode = QComboBox()
+        for lab_, k_ in TOP_MODES:
+            self.cb_topmode.addItem(lab_, k_)
+        fp.addRow("Top plate goes", self.cb_topmode)
+        self.cb_topmode.currentIndexChanged.connect(self.changed)
         spin_rows(fp, PLATE_FIELDS[2:])
+        self.ck_topjoin = QCheckBox("Join the top plate to the inside walls")
+        fp.addRow(self.ck_topjoin)
+        self.ck_topjoin.toggled.connect(self.changed)
         for c_ in (self.ck_base, self.ck_top):
             c_.toggled.connect(self.changed)
-        np_ = QLabel("0 = the floor thickness (or the wall thickness). With slabs and a lip (K), the top plate "
-                     "gets a lip too, so it sits square.")
+        np_ = QLabel("0 = the floor thickness (or the wall thickness). On top of the walls, with slabs and a lip "
+                     "(K), the top plate gets a lip too, so it sits square. Inside the walls it rests on the top "
+                     "floor's inside walls (they're cut down by its thickness) - so add some inside walls for it "
+                     "to sit on.")
         np_.setWordWrap(True)
         np_.setStyleSheet("color: gray;")
         fp.addRow(np_)
+
+        # ---- Gables
+        page = QWidget()
+        fg = QFormLayout(page)
+        self.tabs.addTab(page, "Gables")
+        self.ck_gables = QCheckBox("Gable ends")
+        fg.addRow(self.ck_gables)
+        self.cb_gable_on = QComboBox()
+        for lab_, k_ in GABLE_ON:
+            self.cb_gable_on.addItem(lab_, k_)
+        fg.addRow("Gables on", self.cb_gable_on)
+        self.ed_gwalls = QLineEdit()
+        self.ed_gwalls.setPlaceholderText("e.g. 2, 4")
+        self.lbl_gwalls = QLabel("Walls (by number)")
+        fg.addRow(self.lbl_gwalls, self.ed_gwalls)
+        spin_rows(fg, GABLE_FIELDS)
+        self.ck_gjoin = QCheckBox("Join each gable to its wall")
+        fg.addRow(self.ck_gjoin)
+        self.ck_gjoin.toggled.connect(self.changed)
+        self.sp['gable_pitch'][0].setSuffix("°")
+        self.sp['ridge_h'][0].setSpecialValueText("from the pitch (X)")
+        self.ck_gables.toggled.connect(self.changed)
+        self.cb_gable_on.currentIndexChanged.connect(self.changed)
+        self.ed_gwalls.textChanged.connect(self.changed)
+        self.lbl_gables = QLabel()
+        self.lbl_gables.setWordWrap(True)
+        self.lbl_gables.setStyleSheet("color: gray;")
+        fg.addRow(self.lbl_gables)
 
         # ---- Output
         page = QWidget()
@@ -1535,7 +2015,7 @@ class PlanDialog(QDialog):
             self.cb_group.addItem(lab_, k_)
         fo.addRow("Pieces go", self.cb_group)
         self.cb_group.currentIndexChanged.connect(self.changed)
-        no_ = QLabel("Every piece - each wall section, floor, ledge and plate - is a plain group of its own (not "
+        no_ = QLabel("Every piece - each wall section, gable, floor, ledge and plate - is a plain group of its own (not "
                      "a component), named for its floor and side, like 'First floor - Wall 2 (right)'. In Scale "
                      "Studio's Pieces page pick 'Every group with faces (smallest pieces)' and tick 'Lay each "
                      "piece flat' to print them.")
@@ -1583,6 +2063,11 @@ class PlanDialog(QDialog):
         self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
         brow.addWidget(self.b_add)
         brow.addWidget(self.b_face)
+        self.b_floors = QPushButton("Show floors...")
+        self.b_floors.setToolTip("A small window to hide and show each floor (and the plates), so you can see "
+                                 "into the rooms to add windows and doors. Close it with its X when you're done.")
+        self.b_floors.clicked.connect(lambda: open_floors_window(self.viewport, self))
+        brow.addWidget(self.b_floors)
         brow.addStretch(1)
         self.b_info = QPushButton("Info")
         self.b_info.setCheckable(True)
@@ -1629,7 +2114,11 @@ class PlanDialog(QDialog):
                  storey_heights=self.ed_heights.text().strip(),
                  cross_x=self.ed_cx.text().strip(), cross_y=self.ed_cy.text().strip(),
                  ledges=self.ck_ledges.isChecked(), one_piece=self.ck_one.isChecked(),
-                 base=self.ck_base.isChecked(), top=self.ck_top.isChecked())
+                 part_join=self.ck_join.isChecked(),
+                 base=self.ck_base.isChecked(), top=self.ck_top.isChecked(),
+                 gables=self.ck_gables.isChecked(), gable_on=self.cb_gable_on.currentData() or 'ends',
+                 gable_walls=self.ed_gwalls.text().strip(), gable_join=self.ck_gjoin.isChecked(),
+                 top_mode=self.cb_topmode.currentData() or 'over', top_join=self.ck_topjoin.isChecked())
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
         return v
@@ -1638,21 +2127,29 @@ class PlanDialog(QDialog):
         self._busy = True
         try:
             for cb, key in ((self.cb_shape, 'shape'), (self.cb_joint, 'joint'), (self.cb_hmode, 'height_mode'),
-                            (self.cb_fstyle, 'floor_style'), (self.cb_group, 'grouping')):
+                            (self.cb_fstyle, 'floor_style'), (self.cb_group, 'grouping'),
+                            (self.cb_gable_on, 'gable_on'), (self.cb_topmode, 'top_mode')):
                 i_ = cb.findData(d.get(key, DEFAULTS[key]))
                 cb.setCurrentIndex(max(0, i_))
             self.sp_storeys.setValue(int(d.get('storeys', DEFAULTS['storeys']) or 1))
             self.ed_corners.setPlainText(str(d.get('corners_text', '') or ''))
-            for ed, key in ((self.ed_heights, 'storey_heights'), (self.ed_cx, 'cross_x'), (self.ed_cy, 'cross_y')):
+            for ed, key in ((self.ed_heights, 'storey_heights'), (self.ed_cx, 'cross_x'), (self.ed_cy, 'cross_y'),
+                            (self.ed_gwalls, 'gable_walls')):
                 val = d.get(key, DEFAULTS[key])
                 if isinstance(val, (list, tuple)):
                     val = ", ".join("%g" % x for x in val)
                 ed.setText(str(val or ''))
-            for c_, key in ((self.ck_ledges, 'ledges'), (self.ck_one, 'one_piece'), (self.ck_base, 'base'),
-                            (self.ck_top, 'top')):
+            for c_, key in ((self.ck_ledges, 'ledges'), (self.ck_one, 'one_piece'), (self.ck_join, 'part_join'),
+                            (self.ck_base, 'base'),
+                            (self.ck_top, 'top'), (self.ck_gables, 'gables'),
+                            (self.ck_gjoin, 'gable_join'), (self.ck_topjoin, 'top_join')):
                 c_.setChecked(bool(d.get(key, DEFAULTS[key])))
             for key, (s, _) in self.sp.items():
-                s.setValue(float(d.get(key, DEFAULTS[key]) or 0.0))
+                try:
+                    val = float(d.get(key, DEFAULTS[key]))
+                except (TypeError, ValueError):
+                    val = float(DEFAULTS[key] or 0.0)
+                s.setValue(val)
         finally:
             self._busy = False
         self.changed()
@@ -1688,10 +2185,23 @@ class PlanDialog(QDialog):
         self.sp['ledge_h'][0].setEnabled(fsy == 'dropin' and v['ledges'])
         self.ck_one.setEnabled(fsy != 'stacked')
         self.sp['part_t'][0].setEnabled(bool(v['cross_x'] or v['cross_y']))
+        self.sp['part_room'][0].setEnabled(bool(v['cross_x'] or v['cross_y']))
+        self.ck_join.setEnabled(bool(v['cross_x'] and v['cross_y']))
         for k_ in ('base_t', 'base_over'):
             self.sp[k_][0].setEnabled(v['base'])
-        for k_ in ('top_t', 'top_over'):
-            self.sp[k_][0].setEnabled(v['top'])
+        t_in = v['top'] and v['top_mode'] == 'inside'
+        self.cb_topmode.setEnabled(v['top'])
+        self.sp['top_t'][0].setEnabled(v['top'])
+        self.sp['top_over'][0].setEnabled(v['top'] and not t_in)
+        self.sp['top_room'][0].setEnabled(t_in)
+        self.ck_topjoin.setEnabled(t_in and bool(v['cross_x'] or v['cross_y']))
+        g_on = v['gables']
+        self.cb_gable_on.setEnabled(g_on)
+        self.ed_gwalls.setEnabled(g_on and v['gable_on'] == 'pick')
+        self.lbl_gwalls.setEnabled(g_on and v['gable_on'] == 'pick')
+        self.sp['gable_pitch'][0].setEnabled(g_on and v['ridge_h'] <= 0)
+        self.sp['ridge_h'][0].setEnabled(g_on)
+        self.ck_gjoin.setEnabled(g_on and not (v['top'] and v['top_mode'] != 'inside'))
         # the floors in the 'Floor shown' list
         try:
             n = len(plan_params(v)['_heights'])
@@ -1724,6 +2234,22 @@ class PlanDialog(QDialog):
             self.lbl_floors.setText(str(e))
             self.lbl_floors.setStyleSheet("color: #b35900;")
         nt = self.preview.notes if self.preview.pieces else {}
+        if not v['gables']:
+            self.lbl_gables.setText("No gables - tick 'Gable ends' to put them on.")
+            self.lbl_gables.setStyleSheet("color: gray;")
+        elif not nt:
+            self.lbl_gables.setText(self.preview.msg)
+            self.lbl_gables.setStyleSheet("color: #b35900;")
+        elif not nt.get('gables'):
+            self.lbl_gables.setText("None of the walls picked get a gable - try another choice in 'Gables on'.")
+            self.lbl_gables.setStyleSheet("color: #b35900;")
+        else:
+            lines = ["%s: ridge %.0f mm above the walls, %.1f°" % (nt['wall_names'][i], r, a)
+                     for i, r, a in nt['gables']]
+            extra = (" They stand on the top plate." if v['top'] and v['top_mode'] != 'inside' else
+                     " Each is joined to the wall below it - one piece." if v['gable_join'] else "")
+            self.lbl_gables.setText("Gables on:\n" + "\n".join(lines) + "\n" + extra.strip())
+            self.lbl_gables.setStyleSheet("color: gray;")
         if nt:
             self.lbl_walls.setText("%d wall sections a floor, %.2f m round the outside. Inside each floor: "
                                    "%.1f m²." % (nt['walls'], nt['wall_len'], nt['inner_area']))
@@ -1898,6 +2424,313 @@ class PlanDialog(QDialog):
         return True
 
 
+# ---------------------------------------------------------------------------
+# Show floors: a little window to hide and show the walls and the floors of each storey
+# ---------------------------------------------------------------------------
+FLOOR_WORDS = ("Floor slab", "Floor panel", "Ledge")
+
+
+def _storey_of(name):
+    """('Ground floor', 'Wall 1 (front)') for one of our pieces, (label, None) for a holder."""
+    nm = str(name or '')
+    labels = [storey_name(k) for k in range(len(STOREY_NAMES))]
+    if nm.startswith("Floor ") and nm[6:].split(" ")[0].isdigit():
+        labels.append("Floor " + nm[6:].split(" ")[0])
+    labels.append("Walls")
+    for sn in labels:
+        if nm.startswith(sn + " - "):
+            return sn, nm[len(sn) + 3:]
+        if nm == sn or nm.startswith(sn + " ("):
+            return sn, None
+    return None, None
+
+
+def _is_hidden(e):
+    a = getattr(e, 'attrs', None)
+    if isinstance(a, dict) and getattr(e, 'children', None) is None and getattr(e, 'mesh', None) is None:
+        return bool(a.get('hidden'))                # a face
+    return bool(getattr(e, 'hidden', False))
+
+
+def _plate_faces(g):
+    """The joined top plate's own faces (not the walls under it)."""
+    faces = _items(getattr(getattr(g, 'mesh', None), 'faces', None))
+    zs_ = {}
+    pts_of = []
+    for f_ in faces:
+        ps = [q for q in (_pos(v) for v in _items(getattr(f_, 'vertices', None))) if q is not None]
+        pts_of.append(ps)
+        for q in ps:
+            zs_[round(q[2], 7)] = q[2]
+    levels = sorted(zs_.values())
+    if len(levels) < 3:
+        return []
+    z0 = levels[-2]                                 # the plate's underside (the top is levels[-1])
+    return [f_ for f_, ps in zip(faces, pts_of) if ps and min(q[2] for q in ps) >= z0 - 1e-7]
+
+
+def floor_groups(scene):
+    """{label: {'walls': [...], 'floor': [...]}} for every storey (and the plates) in the model,
+    and every holder group of ours (so 'Show all' can bring back anything hidden the old way)."""
+    rows, holders = {}, []
+
+    def row(lab):
+        return rows.setdefault(lab, {'walls': [], 'floor': []})
+
+    def walk(e, depth):
+        nm = str(getattr(e, 'name', '') or '')
+        if nm.startswith("Top plate with walls"):
+            holders.append(e)
+            kids = _items(getattr(e, 'children', None))
+            if not kids:                             # built by 1.5 to 1.7: one mesh, hide its plate faces
+                row("Top plate")['floor'].extend(_plate_faces(e) or [e])
+                return
+            for c in kids:
+                walk(c, depth + 1)
+            return
+        if nm.startswith("Top plate"):
+            row("Top plate")['floor'].append(e)
+            return
+        if nm.startswith("Base plate"):
+            row("Base plate")['floor'].append(e)
+            return
+        lab, piece = _storey_of(nm)
+        if lab and piece:
+            row("Walls (full height)" if lab == "Walls" else lab)[
+                'floor' if any(w in piece for w in FLOOR_WORDS) else 'walls'].append(e)
+            return
+        if lab or nm == "Floor plan":
+            holders.append(e)
+        if depth < 8:
+            for c in _items(getattr(e, 'children', None)):
+                walk(c, depth + 1)
+    for g in _items(getattr(scene, 'groups', None)):
+        walk(g, 0)
+    return rows, holders
+
+
+def _floor_order(lab):
+    if lab == "Base plate":
+        return -1
+    if lab == "Top plate":
+        return 999
+    if lab == "Walls (full height)":
+        return 500
+    for k in range(50):
+        if lab == storey_name(k):
+            return k
+    return 600
+
+
+def set_hidden(viewport, ents, hidden):
+    """Hides (or shows) groups or faces the way IngeTrazo's own Edit > Hide does (it can be undone)."""
+    ents = [e for e in ents if _is_hidden(e) != bool(hidden)]
+    if not ents:
+        return
+    try:
+        from core.history import HideCommand
+        viewport.history.execute(HideCommand(ents, bool(hidden)))
+    except Exception as e:
+        print("%s: hide by hand (%s)" % (PLUGIN_NAME, e))
+        for x in ents:
+            try:
+                a = getattr(x, 'attrs', None)
+                if isinstance(a, dict) and getattr(x, 'mesh', None) is None:
+                    if hidden:
+                        a['hidden'] = True
+                    else:
+                        a.pop('hidden', None)
+                else:
+                    x.hidden = bool(hidden)
+            except Exception:
+                pass
+        try:
+            viewport.scene._dirty_group_chunks = True
+        except Exception:
+            pass
+        try:
+            viewport.scene.version += 1
+        except Exception:
+            pass
+    try:
+        viewport.notify_scene_changed()
+    except Exception:
+        pass
+    try:
+        viewport.update()
+    except Exception:
+        pass
+
+
+class FloorsWindow(QDialog):
+    """For each storey a tick for its walls and one for its floor; the plates on their own. Untick to
+    hide. Close it with the X - it opens where you left it."""
+    def __init__(self, viewport, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QGridLayout
+        self.setWindowTitle("Show floors  (Floor Plan %s)" % VERSION)
+        self.setModal(False)
+        try:
+            # a floating tool window: it stays over the model while you click and work there
+            from PySide6.QtCore import Qt as _Qt
+            self.setWindowFlags(_Qt.Tool | _Qt.WindowTitleHint | _Qt.WindowCloseButtonHint)
+            self.setAttribute(_Qt.WA_ShowWithoutActivating, False)
+        except Exception:
+            pass
+        self.viewport = viewport
+        self.checks = {}
+        self._labels = None
+        self._ver = None
+        lay = QVBoxLayout(self)
+        self.lbl = QLabel()
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+        self.grid_w = QWidget()
+        self.grid = QGridLayout(self.grid_w)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.grid_w)
+        row = QHBoxLayout()
+        b_all = QPushButton("Show all")
+        b_all.setToolTip("Shows every wall, floor and plate again.")
+        b_all.clicked.connect(self.show_all)
+        b_fl = QPushButton("Hide floors && plates")
+        b_fl.setToolTip("Hides every floor slab, floor panel and plate but keeps all the walls - the "
+                        "inside walls too - so you can see every room from above.")
+        b_fl.clicked.connect(self.hide_floors)
+        row.addWidget(b_all)
+        row.addWidget(b_fl)
+        lay.addLayout(row)
+        self.refresh()
+        try:
+            from PySide6.QtCore import QTimer
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self.watch)
+            self._timer.start(1000)                 # keeps up with undo, new builds and deleting
+        except Exception:
+            pass
+
+    def scene(self):
+        return getattr(self.viewport, 'scene', None)
+
+    def watch(self):
+        v = getattr(self.scene(), 'version', None)
+        if v != self._ver:
+            self.refresh()
+
+    def refresh(self):
+        sc = self.scene()
+        self._ver = getattr(sc, 'version', None)
+        rows, _h = floor_groups(sc) if sc is not None else ({}, [])
+        labels = sorted(rows, key=_floor_order)
+        shape = [(l_, bool(rows[l_]['walls']), bool(rows[l_]['floor'])) for l_ in labels]
+        if shape != self._labels:
+            self._labels = shape
+            while self.grid.count():
+                it = self.grid.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.deleteLater()
+            self.checks = {}
+            from PySide6.QtCore import Qt as _Qt
+            mid = _Qt.AlignHCenter | _Qt.AlignVCenter
+            self.grid.setColumnMinimumWidth(1, 70)
+            self.grid.setColumnMinimumWidth(2, 90)
+            if labels:
+                for c_, txt in ((1, "Walls"), (2, "Floor / plate")):
+                    h = QLabel("<b>%s</b>" % txt)
+                    h.setAlignment(mid)
+                    self.grid.addWidget(h, 0, c_, mid)
+            for r, (lab, has_w, has_f) in enumerate(shape, start=1):
+                self.grid.addWidget(QLabel(lab), r, 0, _Qt.AlignLeft | _Qt.AlignVCenter)
+                for c_, part, has in ((1, 'walls', has_w), (2, 'floor', has_f)):
+                    if not has:
+                        continue
+                    cb = QCheckBox()
+                    cb.setToolTip("Untick to hide the %s %s." % (lab.lower(), "walls" if part == 'walls' else
+                                  ("floor" if lab not in ("Top plate", "Base plate") else "")))
+                    cb.toggled.connect(lambda on, l_=lab, p_=part: self.toggle(l_, p_, on))
+                    self.grid.addWidget(cb, r, c_, mid)
+                    self.checks[(lab, part)] = cb
+        for (lab, part), cb in self.checks.items():
+            ents = rows.get(lab, {}).get(part, [])
+            cb.blockSignals(True)
+            cb.setChecked(not (ents and all(_is_hidden(e) for e in ents)))
+            cb.blockSignals(False)
+        self.lbl.setText("Untick to hide. To see into the rooms, hide the floors and plates - the walls "
+                         "(inside walls too) stay." if labels else
+                         "No floor plan in the model yet - build one and its floors show up here.")
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def toggle(self, lab, part, on):
+        sc = self.scene()
+        if sc is None:
+            return
+        rows, _h = floor_groups(sc)
+        set_hidden(self.viewport, rows.get(lab, {}).get(part, []), not on)
+        self._ver = None
+
+    def show_all(self):
+        sc = self.scene()
+        if sc is None:
+            return
+        rows, holders = floor_groups(sc)
+        set_hidden(self.viewport, holders + [e for r in rows.values() for e in r['walls'] + r['floor']], False)
+        self.refresh()
+
+    def hide_floors(self):
+        sc = self.scene()
+        if sc is None:
+            return
+        rows, holders = floor_groups(sc)
+        set_hidden(self.viewport, [e for r in rows.values() for e in r['floor']], True)
+        set_hidden(self.viewport, holders + [e for r in rows.values() for e in r['walls']], False)
+        self.refresh()
+
+
+def _show_hide_hub():
+    """3D Show / Hide (the one small window with a tab for each kind of thing), if it's loaded."""
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if mod is not None and (name == "ed3d_show_hide" or name.endswith("_ed3d_show_hide")) \
+                and hasattr(mod, 'open_show_hide'):
+            return mod
+    return None
+
+
+def open_floors_window(viewport, parent=None):
+    h = _show_hide_hub()
+    if h is not None:
+        try:
+            return h.open_show_hide(viewport, 'floors')     # the shared Show / hide window
+        except Exception as e:
+            print("%s: Show / Hide window didn't open (%s)" % (PLUGIN_NAME, e))
+    w = getattr(FloorPlanTool, '_floors', None)
+    try:
+        if w is not None and w.isVisible():
+            w.viewport = viewport
+            w.refresh()
+            w.raise_()
+            w.activateWindow()
+            return w
+    except Exception:
+        pass
+    # it belongs to IngeTrazo's main window (not the Floor Plan window), so it stays on top of the
+    # model when you click there, and stays open when the Floor Plan window is closed
+    main = None
+    try:
+        main = viewport.window()
+    except Exception:
+        main = None
+    w = FloorsWindow(viewport, main or parent)
+    FloorPlanTool._floors = w
+    eddy_window(w, PLUGIN_NAME + " - Show floors", {}, place=True)   # opens where you left it
+    w.show()
+    return w
+
+
 class VertexWrapper(QVector3D):
     def __init__(self, x, y, z):
         super().__init__(float(x), float(y), float(z))
@@ -1915,7 +2748,7 @@ class FloorPlanTool(Tool):
     shortcut = "Ctrl+Alt+Shift+F"
     description = "The shell of a building from its floor plan: walls set in from the outline, flat or " \
                   "mitred corners, split at each floor, with floor slabs or drop-in floors, inside walls " \
-                  "and base and top plates - every piece its own group, ready to print."
+                  "base and top plates and gable ends - every piece its own group, ready to print."
 
     _dialog = None
 
@@ -1977,7 +2810,7 @@ class FloorPlanTool(Tool):
         msg = "Added %d pieces: %d wall sections (%d a floor%s)" % (
             len(pieces), nw, notes['walls'], ", some split to fit the print bed" if p['split_len'] > 0 and
             nw > notes['walls'] * (1 if p.get('one_piece') and p['floor_style'] != 'stacked' else len(hs)) else "")
-        for kind, word in (('slab', "floor slabs"), ('floor', "drop-in floor panels"), ('ledge', "ledges"),
+        for kind, word in (('gable', "gable pieces"), ('slab', "floor slabs"), ('floor', "drop-in floor panels"), ('ledge', "ledges"),
                            ('part', "inside walls"), ('base', "base plate"), ('top', "top plate")):
             c = sum(1 for pc in pieces if pc.kind == kind)
             if c:
@@ -2028,8 +2861,8 @@ class FloorPlanTool(Tool):
             from core.group import Group
             by_storey = {}
             order = []
-            for pc in pieces:
-                so = pc.solid().mapped(to_world)
+            def mesh_of(solid):
+                so = solid.mapped(to_world)
                 mesh = Mesh()
                 verts = {}
 
@@ -2055,14 +2888,30 @@ class FloorPlanTool(Tool):
                     except Exception as e:
                         stats['errors'] += 1
                         stats['err'] = e
-                if not made:
-                    continue
                 stats['faces'] += made
-                g = make_group(Group, mesh, pc.name)
+                return mesh, made
+
+            for pc in pieces:
+                if pc.parts:
+                    kids = []
+                    for nm_, sol_ in pc.parts:
+                        m_, n_ = mesh_of(sol_)
+                        if n_:
+                            k_ = make_group(Group, m_, nm_)
+                            k_.component = False
+                            kids.append(k_)
+                    g = holder(Group, pc.name, kids) if kids else None
+                    if g is None:
+                        continue
+                else:
+                    mesh, made = mesh_of(pc.solid())
+                    if not made:
+                        continue
+                    g = make_group(Group, mesh, pc.name)
                 g.component = False
                 if pc.kind in ('base', 'top'):
                     key = (2, 0)                    # the plates sit in 'Floor plan' itself
-                elif pc.kind == 'wall' and pc.name.startswith("Walls"):
+                elif pc.kind in ('wall', 'gable') and pc.name.startswith("Walls"):
                     key = (0, -1)                   # full-height walls: a group of their own
                 else:
                     key = (1, pc.storey)

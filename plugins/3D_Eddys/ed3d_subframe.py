@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.25"
+VERSION = "1.32"
 
 
 def _ed3d_organise(scene, group):
@@ -1466,7 +1466,62 @@ def _plan_centre(pts):
     return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0, (min(zs) + max(zs)) / 2.0)
 
 
+# 3D Period Windows / 3D Period Doors keep the plain wall (as it was before they were built into it)
+# on the wall group. The frame is made from that plain wall, so the windows, doors, steps and heads
+# built into it - hundreds of small faces - aren't framed as if they were walls.
+OPENINGS_KEY = "ed3d_openings"
+
+
+class _PlainFace:
+    """A face of a plain wall kept by the window and door plugins, in the world."""
+    def __init__(self, pts, holes):
+        self.vertices = [tuple(p) for p in pts]
+        self.holes = [[tuple(p) for p in h] for h in holes]
+        self.attrs = {}
+
+
+def _plain_wall(g):
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        return None
+    for key in (OPENINGS_KEY, "ed3d_period_windows"):
+        rec = ext.get(key)
+        if isinstance(rec, dict) and rec.get('orig'):
+            return rec['orig']
+    return None
+
+
+def _world_faces_plain(g):
+    """Like _world_faces, but a wall with windows or doors built into it gives its plain faces."""
+    places = _placements(g)
+    if not any(_plain_wall(e) for e, _m in places):
+        return None
+    out = []
+    seen = set()
+    for e, m in places:
+        mesh = getattr(e, 'mesh', None)
+        if mesh is None or id(mesh) in seen:
+            continue
+        seen.add(id(mesh))
+        to_w = _mapper(m)[0]
+        plain = _plain_wall(e)
+        if plain:
+            faces = [([tuple(q) for q in pts], [[tuple(q) for q in h] for h in hls]) for pts, hls in plain]
+        else:
+            faces = [(pts, hls) for pts, hls, _a in _faces_of(mesh)]
+        for pts, hls in faces:
+            if len(pts) >= 3:
+                out.append(_PlainFace([to_w(q) for q in pts], [[to_w(q) for q in h] for h in hls]))
+    return out
+
+
 def _world_faces(g):
+    try:
+        plain = _world_faces_plain(g)
+        if plain is not None:
+            return plain
+    except Exception as e:
+        print("%s: plain walls not used: %s" % (PLUGIN_NAME, e))
     try:
         from core.group import world_mesh
         m = world_mesh(g)
@@ -1488,6 +1543,312 @@ def _world_faces(g):
             walk(ch, depth + 1)
     walk(g)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Dividing walls: after the frame is made, their ends are brought back to meet it
+# ---------------------------------------------------------------------------
+_DIVIDER = ("inside wall", "divider", "dividing wall")
+
+
+def _is_divider(e):
+    nm = str(getattr(e, 'name', '') or '').lower()
+    return any(w in nm for w in _DIVIDER)
+
+
+def _placements(g):
+    """Every group under g (g too) with its matrix to the world: [(group, matrix or None)]."""
+    try:
+        from core.group import iter_placements
+        return list(iter_placements(g))
+    except Exception:
+        pass
+    places = []
+
+    def walk(e, base, depth):
+        m = getattr(e, 'xform', None)
+        if base is not None:
+            m = base if m is None else base * m
+        places.append((e, m))
+        if depth < 12:
+            for c in _items(getattr(e, 'children', None)) + _items(getattr(e, 'groups', None)):
+                if getattr(c, 'vertices', None) is None or getattr(c, 'mesh', None) is not None:
+                    walk(c, m, depth + 1)
+    walk(g, None, 0)
+    return places
+
+
+def _mapper(m):
+    """(to world, from world) for a group's matrix (None = it's already in the world)."""
+    if m is None:
+        return (lambda q: q), (lambda q: q)
+    inv = m.inverted()
+    inv = inv[0] if isinstance(inv, tuple) else inv
+
+    def go(mat):
+        def f(q):
+            r = mat.map(QVector3D(*q))
+            return (r.x(), r.y(), r.z())
+        return f
+    return go(m), go(inv)
+
+
+def _faces_of(mesh):
+    """A mesh's faces as [(points, holes, attrs)], in its own terms."""
+    out = []
+    for f in _items(getattr(mesh, 'faces', None)):
+        pts = [q for q in (_pos(v_) for v_ in _items(getattr(f, 'vertices', None))) if q is not None]
+        hls = []
+        for h in _items(getattr(f, 'holes', None)):
+            hp = [q for q in (_pos(x) for x in _items(getattr(h, 'vertices', None) or h)) if q is not None]
+            if len(hp) >= 3:
+                hls.append(hp)
+        if len(pts) >= 3:
+            out.append((pts, hls, dict(getattr(f, 'attrs', None) or {})))
+    return out
+
+
+def _mesh_from(face_list):
+    """A new mesh from [(points, holes, attrs)]. Returns (mesh, faces that failed)."""
+    from core.mesh import Mesh
+    mesh = Mesh()
+    tol = 1e-7
+    verts = {}
+    bad = 0
+
+    def vx(q):
+        k = (round(q[0] / tol), round(q[1] / tol), round(q[2] / tol))
+        if k not in verts:
+            verts[k] = VertexWrapper(*q)
+        return verts[k]
+    for pts, hls, attrs in face_list:
+        try:
+            outer = [vx(q) for q in pts]
+            hs = [[vx(q) for q in h] for h in hls]
+            if hs:
+                try:
+                    f_ = mesh.add_face(outer, hs)
+                except TypeError:
+                    f_ = mesh.add_face(outer)
+                    for h in hs:
+                        mesh.add_hole(f_, h)
+            else:
+                f_ = mesh.add_face(outer)
+            if attrs and f_ is not None:
+                try:
+                    f_.attrs = dict(attrs)
+                except Exception:
+                    pass
+        except Exception as e:
+            bad += 1
+            print("%s: a face couldn't be made: %s" % (PLUGIN_NAME, e))
+    return mesh, bad
+
+
+def fit_dividers(scene, groups, bars, gap_m=0.0):
+    """The dividing walls in and round the building, each end that runs into the new frame
+    brought back to stop against it. Only the end face moves (anything cut into the divider stays
+    as it is); an end with something cut too close to it is left alone. bars: the wall frame's
+    bars as solids in the world. Returns ([(group, old mesh, new mesh)], [notes])."""
+    if not bars:
+        return [], []
+    ids = set(id(g) for g in groups)
+    cands = list(groups) + [g for g in _items(getattr(scene, 'groups', None)) if id(g) not in ids and
+                            not str(getattr(g, 'name', '') or '').startswith(_OURS)]
+    swaps, notes, seen = [], [], set()
+    eps = 1e-6
+    for g in cands:
+        try:
+            places = _placements(g)
+        except Exception:
+            continue
+        under = set()
+        for e, _m in places:
+            if _is_divider(e):
+                for e2, _m2 in _placements(e):
+                    under.add(id(e2))
+        for e, m in places:
+            mesh = getattr(e, 'mesh', None)
+            if id(e) not in under or mesh is None or id(e) in seen:
+                continue
+            seen.add(id(e))
+            try:
+                faces = _faces_of(mesh)
+                if not faces:
+                    continue
+                _to_w, to_l = _mapper(m)
+                allv = [q for pts, hls, _a in faces for q in pts + [x for h in hls for x in h]]
+                lo = [min(q[k] for q in allv) for k in range(3)]
+                hi = [max(q[k] for q in allv) for k in range(3)]
+                # each way along it (both ways for a joined cross, T or L from Floor Plan): the ends
+                # that run into a bar of the frame come back to stop against it
+                moved = []
+                for ax in (0, 1):
+                    cx = 1 - ax
+                    a0, a1 = lo[ax], hi[ax]
+                    if (a1 - a0) * 3.0 < (hi[cx] - lo[cx]):
+                        continue                                     # its thickness, not a way along
+                    mid = (a0 + a1) / 2.0
+                    n0, n1 = a0, a1
+                    for pts, _edges, (blo, bhi) in bars:
+                        lp = [to_l(q) for q in pts]          # the bar's corners in the divider's terms
+                        bl = [min(q[k] for q in lp) for k in range(3)]
+                        bh = [max(q[k] for q in lp) for k in range(3)]
+                        if bh[2] <= lo[2] + eps or bl[2] >= hi[2] - eps:
+                            continue                                 # above or below it
+                        if bh[ax] <= a0 + eps or bl[ax] >= a1 - eps:
+                            continue                                 # past its ends
+                        if bl[ax] <= a0 + eps and bh[ax] >= a1 - eps:
+                            continue                                 # alongside the whole of it, not at an end
+                        end = a0 if (bl[ax] + bh[ax]) / 2.0 < mid else a1
+                        ev = [q[cx] for q in allv if abs(q[ax] - end) <= eps]
+                        if not ev or bh[cx] <= min(ev) + eps or bl[cx] >= max(ev) - eps:
+                            continue                                 # beside that end, not in its way
+                        if end == a0:
+                            n0 = max(n0, bh[ax] + gap_m)
+                        else:
+                            n1 = min(n1, bl[ax] - gap_m)
+                    if n0 <= a0 + eps and n1 >= a1 - eps:
+                        continue                                     # clear of the frame already
+                    if n1 - n0 < 0.25 * (a1 - a0):
+                        notes.append("%s: left as it is - it would be cut to almost nothing" % e.name)
+                        continue
+                    coords = sorted(set(round(q[ax] / eps) * eps for q in allv))
+                    for end, new, sgn in ((a0, n0, 1.0), (a1, n1, -1.0)):
+                        if abs(new - end) <= eps:
+                            continue
+                        # anything cut into it (a doorway) too close to this end: leave the end alone
+                        if any(sgn * (c - end) > eps and sgn * (new - c) > -eps for c in coords):
+                            notes.append("%s: one end left as it is - something cut into it is too close to "
+                                         "the end" % e.name)
+                            continue
+                        moved.append((ax, end, new))
+                if not moved:
+                    continue
+
+                def shift(q):
+                    q2 = list(q)
+                    for ax_, end, new in moved:
+                        if abs(q[ax_] - end) <= eps:
+                            q2[ax_] = new
+                    return tuple(q2)
+                nf = [([shift(q) for q in pts], [[shift(x) for x in h] for h in hls], at)
+                      for pts, hls, at in faces]
+                new, bad = _mesh_from(nf)
+                if bad:
+                    notes.append("%s: left as it is - its new shape couldn't be made" % e.name)
+                    continue
+                swaps.append((e, mesh, new))
+            except Exception as ex:
+                notes.append("%s: left as it is (%s)" % (getattr(e, 'name', '?'), ex))
+    return swaps, notes
+
+
+def swap_meshes_command(swaps):
+    """One undo step: each divider gets its shortened mesh (undo puts the old one back)."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+
+    class FitDividersCommand(Command):
+        def _tidy(self, scene):
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def do(self, scene):
+            for g, _old, new in swaps:
+                g.mesh = new
+            self._tidy(scene)
+
+        def undo(self, scene):
+            for g, old, _new in swaps:
+                g.mesh = old
+            self._tidy(scene)
+    return FitDividersCommand()
+
+
+# parts of a building that never get a frame: the base plate (plinth), the top plate, the floors
+# and the inside (dividing) walls - from Floor Plan, or any group you name the same way
+_NO_FRAME = ("base plate", "top plate", "inside wall", "divider", "dividing wall", "floor slab", "floor panel",
+             "ledge")
+
+
+def _no_frame(g):
+    nm = str(getattr(g, 'name', '') or '').lower()
+    return any(w in nm for w in _NO_FRAME)
+
+
+def _framable_faces(g):
+    """The faces of a picked group, less those in groups that never get a frame (base plate,
+    dividing walls...). Their faces are found in place in the world and left out of the rest."""
+    faces = _world_faces(g)
+    try:
+        try:
+            from core.group import iter_placements
+            places = list(iter_placements(g))
+        except Exception:
+            places = []
+
+            def walk(e, base, depth):
+                m = getattr(e, 'xform', None)
+                if base is not None:
+                    m = base if m is None else base * m
+                places.append((e, m))
+                if depth < 12:
+                    for c in _items(getattr(e, 'children', None)) + _items(getattr(e, 'groups', None)):
+                        if getattr(c, 'vertices', None) is None or getattr(c, 'mesh', None) is not None:
+                            walk(c, m, depth + 1)
+            walk(g, None, 0)
+        skip_ids = set()
+
+        def mark(e, depth=0):
+            skip_ids.add(id(e))
+            if depth < 50:
+                for c in _items(getattr(e, 'children', None)) + _items(getattr(e, 'groups', None)):
+                    mark(c, depth + 1)
+        for e, _m in places:
+            if _no_frame(e):
+                mark(e)
+        if not skip_ids:
+            return faces
+
+        def key(pts):
+            # the face's corners, to 0.02 mm - not just its middle: a dividing wall's end face has
+            # the same middle as the wall face it stands against, and that wall face must still be
+            # framed (matching middles only left it out, and the wall was framed from outside)
+            return frozenset(tuple(round(x / 2e-5) for x in q) for q in pts)
+        skip = set()
+        for e, m in places:
+            if id(e) not in skip_ids:
+                continue
+            for f in _items(getattr(getattr(e, 'mesh', None), 'faces', None)):
+                pts = []
+                for v_ in _items(getattr(f, 'vertices', None)):
+                    q = _pos(v_)
+                    if q is None:
+                        continue
+                    if m is not None:
+                        try:
+                            from PySide6.QtGui import QVector3D as _QV
+                            r = m.map(_QV(*q))
+                            q = (r.x(), r.y(), r.z())
+                        except Exception:
+                            pass
+                    pts.append(q)
+                if len(pts) >= 3:
+                    skip.add(key(pts))
+        out = []
+        for f in faces:
+            pts = [q for q in (_pos(v_) for v_ in _items(getattr(f, 'vertices', None))) if q is not None]
+            if len(pts) >= 3 and key(pts) in skip:
+                continue
+            out.append(f)
+        return out
+    except Exception:
+        return faces
 
 
 def _mesh_centre(scene, face):
@@ -1768,7 +2129,7 @@ def find_floor(every, walls, centre=None):
     best_z = None
     zb = min(q[2] for fi in wl for q in fi.pts)
     zt = max(q[2] for fi in wl for q in fi.pts)
-    best, area = None, 0.0
+    cands = []
     for fi in every:
         if not getattr(fi, 'ok', False) or fi.n[2] < 0.995:
             continue
@@ -1776,13 +2137,19 @@ def find_floor(every, walls, centre=None):
         if not (zb - 1e-6 <= z <= zb + 0.4 * (zt - zb)):
             continue
         poly = clean([(q[0], q[1]) for q in fi.pts])
-        if not poly or abs(area2(poly)) <= area:
+        if not poly:
             continue
         if abs(area2(poly)) < 0.1 * span * span and abs(area2(poly)) < 1.0:
             continue                   # a sill or a step, not a floor
         if centre is not None and not _pip((centre[0], centre[1]), poly):
             continue                   # not under this building
-        best, area, best_z = poly, abs(area2(poly)), z
+        cands.append((abs(area2(poly)), z, poly))
+    if not cands:
+        return None, None
+    # a floor panel dropped in on a base plate: the base is a little bigger, but the frame stands
+    # on the floor - so of the big ones (at least half the biggest), the highest
+    big = max(c[0] for c in cands)
+    a_, best_z, best = max((c for c in cands if c[0] >= 0.5 * big), key=lambda c: (c[1], c[0]))
     return best, best_z
 
 
@@ -1940,11 +2307,17 @@ def frame_panels(chosen, v, p):
     # inside corners: where two walls' frames would run into each other, the first stops short
     if v.get('corners', True):
         tol = max(1e-6, 0.4 * p['w'] * SCALE)
+
+        def framable(f):
+            # the end face of a thin wall (no wider than a bar or two) never gets a frame - it
+            # mustn't make a real wall stop short at the corner, or both walls stop short there
+            bx_ = bbox(f.outline)
+            return min(bx_[1] - bx_[0], bx_[3] - bx_[2]) >= 2.2 * p['w']
         for i, a in enumerate(ready):
-            if a.kind != 'wall':
+            if a.kind != 'wall' or not framable(a):
                 continue
             for b in ready[i + 1:]:
-                if b.kind != 'wall':
+                if b.kind != 'wall' or not framable(b):
                     continue
                 for ea, (pa, ta) in enumerate(a.ends):
                     for eb, (pb, tb) in enumerate(b.ends):
@@ -2057,6 +2430,8 @@ def frame_panels(chosen, v, p):
             top_ = p.get('glaze_t', 0.0) if _t == 'glaze' else (depth + lo_ if _t == 'ledge' else depth)
             for pc in pcs:
                 done.append(_prism(fi.tw, pc, lift, lift + top_))
+                if fi.kind == 'wall':
+                    p.setdefault('_wall_bars', []).append(done[-1])
             if _t == 'ledge':
                 p['_ledges_made'] += 1
         sols = solids_for(bars, lift, lift + depth, p.get('glaze_t', 0.0), lo_)
@@ -3497,6 +3872,9 @@ EDDY_TIPS = {
                                    "the frame for you.",
     'Frame along selected lines': "Draw lines with the line tool where you want bars, select them and the "
                                   "bars follow them, mitred at the corners.",
+    'Show / hide...': "Opens a small window to hide the roof, the fascia and barge boards, and the "
+                      "free-standing trusses - so you can see the frame inside. Untick to hide, tick to show. "
+                      "It stays open until you click its X, even with this window closed.",
 }
 EDDY_TIPS_END = None
 
@@ -3599,6 +3977,11 @@ INFO_TEXT = ("<b>How to use it</b><br>"
             "barge boards up the gables with a finial at each peak - all standing off the walls (X) to leave "
             "room for brick courses. Tick soffit boards for under the eaves, and roof panels for a plain roof on the "
             "trusses, hanging into the gutter, ready for tiles. Their sizes (V to AD) are on the second key page.<br><br>"
+            "<b>Show / hide</b><br>"
+            "Click 'Show / hide...' for a small window of ticks: untick the roof, the fascia and barge "
+            "boards or the free-standing trusses to hide them and see the frame inside. The wall frames "
+            "(and the gable end trusses in them) are never hidden. Ctrl+Z, or Edit > Unhide, works "
+            "too.<br><br>"
             "<b>Floors</b><br>"
             "If there's a floor in the building, the frame stands on top of it.<br><br>"
             "<b>Printing</b><br>Every bar is its own group: in Scale Studio's Pieces page pick 'Every group with "
@@ -4379,6 +4762,8 @@ class FrameDialog(QDialog):
         self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
         brow.addWidget(self.b_add)
         brow.addWidget(self.b_lines)
+        self.b_showhide = QPushButton("Show / hide...")
+        brow.addWidget(self.b_showhide)
         brow.addStretch(1)
         self.b_info = QPushButton("Info")
         self.b_info.setCheckable(True)
@@ -4401,6 +4786,7 @@ class FrameDialog(QDialog):
         b_dir.clicked.connect(self.open_folder)
         self.b_add.clicked.connect(lambda: self.tool.frame_selection(self))
         self.b_lines.clicked.connect(lambda: self.tool.frame_lines(self))
+        self.b_showhide.clicked.connect(self.open_show_hide)
         b_close.clicked.connect(self.close)
         self.refresh_presets()
         self.set_values(cur)
@@ -4445,6 +4831,30 @@ class FrameDialog(QDialog):
             if self.cb_bcol.itemData(i_) == 'own':
                 self.cb_bcol.setCurrentIndex(i_)
         self._show_board_colour()
+
+    def open_show_hide(self):
+        """The Show / hide pop-up: roof, boards and loose trusses on and off."""
+        h = _show_hide_hub()
+        if h is not None:
+            try:
+                h.open_show_hide(self.viewport, 'roof')       # the shared Show / hide window
+                return
+            except Exception as e:
+                print("%s: Show / Hide window didn't open (%s)" % (PLUGIN_NAME, e))
+        d = ShowHideDialog._open
+        try:
+            if d is not None and d.isVisible():
+                d.viewport = self.viewport
+                d.refresh()
+                d.raise_()
+                d.activateWindow()
+                return
+        except Exception:
+            pass
+        d = ShowHideDialog(self.viewport)
+        ShowHideDialog._open = d
+        eddy_window(d, PLUGIN_NAME + " - Show / hide", None, place=True)
+        d.show()
 
     def values(self):
         v = dict(side=self.cb_side.currentData() or 'auto',
@@ -4730,6 +5140,188 @@ class FrameDialog(QDialog):
         return True
 
 
+# ---------------------------------------------------------------------------
+# Show / hide pop-up: the roof, the boards and the loose trusses out of the way,
+# so you can see the frame inside. The wall frames themselves are never touched.
+# ---------------------------------------------------------------------------
+# (key, label, what its groups' names start with)
+SHOW_HIDE = [
+    ('roof', "Roof - roof panels, tiles, slates, sheeting", ("Roof panel", "Roof - ", "Sheeting - ")),
+    ('boards', "Fascia, barge and soffit boards (with finials)", ("Fascia", "Barge", "Soffit")),
+    ('trusses', "Free-standing roof trusses", ("Roof truss",)),
+]
+SHOW_HIDE_TIPS = {
+    'roof': "Subframe's roof panels, and roofs from 3D Roof Tiles and 3D Corrugated Iron. Untick to hide "
+            "them and see the trusses and frame underneath.",
+    'boards': "The fascia boards along the eaves, the barge boards and finials up the gables, and the "
+              "soffit boards.",
+    'trusses': "The trusses standing in the middle of the roof. The gable end trusses stay - they're part "
+               "of their end walls' frames.",
+}
+
+
+def _sh_kids(g):
+    return _items(getattr(g, 'children', None))
+
+
+def _show_hide_hub():
+    """3D Show / Hide (the one small window with a tab for each kind of thing), if it's loaded."""
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if mod is not None and (name == "ed3d_show_hide" or name.endswith("_ed3d_show_hide")) \
+                and hasattr(mod, 'open_show_hide'):
+            return mod
+    return None
+
+
+def show_hide_groups(scene):
+    """{key: [groups]} for each line of the Show / hide pop-up. Looks through the whole model, but
+    never inside a Subframe group (the wall and roof frames, with their gable end trusses)."""
+    found = {k: [] for k, _l, _s in SHOW_HIDE}
+    seen = set()
+
+    def walk(groups, depth=0):
+        if depth > 12:
+            return
+        for g in groups:
+            if g is None or id(g) in seen:
+                continue
+            seen.add(id(g))
+            name = str(getattr(g, 'name', '') or '')
+            if name.startswith("Subframe"):
+                continue
+            hit = None
+            for k, _l, starts in SHOW_HIDE:
+                if name.startswith(starts):
+                    hit = k
+                    break
+            if hit:
+                found[hit].append(g)
+                continue
+            walk(_sh_kids(g), depth + 1)
+    walk(_items(getattr(scene, 'groups', None)))
+    return found
+
+
+class ShowHideDialog(QWidget):
+    """A small window of ticks: ticked is shown, unticked is hidden. Each click is one Ctrl+Z step,
+    using IngeTrazo's own Hide, so Edit > Unhide brings things back as well.
+    A window of its own: it stays open (even with the Subframe window closed, and Esc or Enter
+    don't shut it) until you click its X or Close."""
+    _open = None            # the one that's open, kept here so it isn't thrown away
+
+    def __init__(self, viewport):
+        from PySide6.QtCore import QTimer, Qt
+        top = None
+        try:
+            top = viewport.window()
+        except Exception:
+            top = None
+        super().__init__(top)
+        self.setWindowFlags(Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.viewport = viewport
+        self.setWindowTitle("%s - Show / hide" % PLUGIN_NAME)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Ticked = shown. Untick to hide it - the wall frames stay put."))
+        self.ticks = {}
+        for k, lab, _s in SHOW_HIDE:
+            cb = QCheckBox(lab)
+            cb.setTristate(False)
+            cb.setToolTip(SHOW_HIDE_TIPS.get(k, ""))
+            cb.clicked.connect(lambda _on=False, k=k: self.flip(k))
+            lay.addWidget(cb)
+            self.ticks[k] = (cb, lab)
+        row = QHBoxLayout()
+        b_all = QPushButton("Show all")
+        b_all.setToolTip("Shows everything on this list again.")
+        b_close = QPushButton("Close")
+        b_close.setToolTip("Closes this window (so does its X). Anything hidden stays hidden.")
+        row.addWidget(b_all)
+        row.addStretch(1)
+        row.addWidget(b_close)
+        lay.addLayout(row)
+        b_all.clicked.connect(self.show_all)
+        b_close.clicked.connect(self.close)
+        self._ver = None
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start(700)
+        self.refresh()
+
+    def scene(self):
+        return getattr(self.viewport, 'scene', None)
+
+    def _poll(self):
+        # keeps the ticks right if things are hidden or shown some other way (Edit > Unhide, Ctrl+Z...)
+        sc = self.scene()
+        v = getattr(sc, 'version', None) if sc is not None else None
+        if v != self._ver:
+            self.refresh()
+
+    def refresh(self):
+        sc = self.scene()
+        self._ver = getattr(sc, 'version', None) if sc is not None else None
+        found = show_hide_groups(sc) if sc is not None else {}
+        for k, (cb, lab) in self.ticks.items():
+            gs = found.get(k, [])
+            cb.blockSignals(True)
+            if not gs:
+                cb.setText("%s - none in the model" % lab)
+                cb.setChecked(True)
+                cb.setEnabled(False)
+            else:
+                hid = sum(1 for g in gs if getattr(g, 'hidden', False))
+                cb.setEnabled(True)
+                cb.setText("%s (%d)" % (lab, len(gs)) if hid in (0, len(gs)) else
+                           "%s (%d, %d hidden)" % (lab, len(gs), hid))
+                cb.setChecked(hid == 0)
+            cb.blockSignals(False)
+
+    def _hide(self, groups, hidden):
+        groups = [g for g in groups if bool(getattr(g, 'hidden', False)) != hidden]
+        if not groups:
+            return
+        vp = self.viewport
+        try:
+            from core.history import HideCommand
+            vp.history.execute(HideCommand(groups, hidden))
+        except Exception as e:
+            QMessageBox.warning(self, PLUGIN_NAME, "Couldn't %s them:\n%s" % ("hide" if hidden else "show", e))
+            return
+        try:
+            vp.notify_scene_changed()
+        except Exception:
+            pass
+
+    def flip(self, key):
+        sc = self.scene()
+        if sc is None:
+            return
+        gs = show_hide_groups(sc).get(key, [])
+        # shown (or partly shown) -> hide them all; all hidden -> show them all
+        hide_them = any(not getattr(g, 'hidden', False) for g in gs)
+        self._hide(gs, hide_them)
+        self.refresh()
+
+    def show_all(self):
+        sc = self.scene()
+        if sc is None:
+            return
+        found = show_hide_groups(sc)
+        self._hide([g for gs in found.values() for g in gs], False)
+        self.refresh()
+
+    def closeEvent(self, ev):
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        if ShowHideDialog._open is self:
+            ShowHideDialog._open = None
+        super().closeEvent(ev)
+
+
 class VertexWrapper(QVector3D):
     def __init__(self, x, y, z):
         super().__init__(float(x), float(y), float(z))
@@ -4798,6 +5390,10 @@ class SubframeTool(Tool):
             return
         sel = _items(getattr(scene, 'selection', None))
         groups = [e for e in sel if getattr(e, 'mesh', None) is not None and not hasattr(e, 'loop')]
+        if groups and all(_no_frame(e) for e in groups) and not selected_faces(scene):
+            QMessageBox.information(dlg, PLUGIN_NAME, "That's a base plate, floor or dividing wall - those don't "
+                                    "get a frame. Select the building or its outside walls.")
+            return
         faces = selected_faces(scene)
         if not groups and not faces:
             if selected_lines(scene):
@@ -4808,14 +5404,17 @@ class SubframeTool(Tool):
         infos = []
         every = []                      # every face, to tell how thick the walls are
         gfs = []
+        allfs = []                      # every face of what's picked - floors and base plate too
         for g in groups:
-            gfs += [FaceInfo(f) for f in _world_faces(g)]
+            allfs += [FaceInfo(f) for f in _world_faces(g)]
+            gfs += [FaceInfo(f) for f in _framable_faces(g)]
         near = []
         bc = None                       # the middle of the building, in plan
         if gfs:
             # the whole building together: its middle tells which side is inside, and the outsides
-            # of thick walls are found across all of it - even when each wall is a group of its own
-            every += gfs
+            # of thick walls are found across all of it - even when each wall is a group of its own.
+            # The floors stay in 'every' (the frames stand on them); they just don't get frames.
+            every += allfs
             gp = [q for fi in gfs if fi.ok for q in fi.pts]
             c = _plan_centre(gp)
             near = _nearby(scene, gp, groups)
@@ -4851,6 +5450,20 @@ class SubframeTool(Tool):
         n = self.add_to_scene(dlg.viewport, panels, "Subframe", glaze_one=v.get('glaze_mode', 'wall'))
         if n is None:
             return
+        # the dividing walls: each end that runs into the new frame is brought back to meet it
+        fitted, fit_notes = [], []
+        if v.get('fit_dividers', True):
+            try:
+                fitted, fit_notes = fit_dividers(scene, groups, p.get('_wall_bars') or [],
+                                                 p.get('gap', 0.0) * SCALE)
+                if fitted:
+                    dlg.viewport.history.execute(swap_meshes_command(fitted))
+                    try:
+                        dlg.viewport.notify_scene_changed()
+                    except Exception:
+                        pass
+            except Exception as e:
+                fitted, fit_notes = [], ["Couldn't fit the dividing walls to the frame: %s" % e]
         total = sum(len(b) for _, b in panels)
         kinds = {}
         for t, _ in panels:
@@ -4861,6 +5474,12 @@ class SubframeTool(Tool):
         nmid = sum(len(b) for t, b in panels if t == "Roof trusses")
         msg = "Added %d pieces on %s. %s" % (total, ", ".join("%d %s%s" % (c, k.lower(), "s" if c > 1 else "")
                                                            for k, c in kinds.items()), PRINT_NOTE)
+        if fitted:
+            msg += "\nBrought %d dividing wall%s back to meet the frame (Ctrl+Z once puts %s back as %s " \
+                   "were)." % (len(fitted), "" if len(fitted) == 1 else "s", "it" if len(fitted) == 1 else "them",
+                               "it" if len(fitted) == 1 else "they")
+        for t_ in fit_notes[:4]:
+            msg += "\n" + t_
         if p.get('_floor'):
             msg += "\nKept the frame inside the floor."
         if p.get('_on_floor'):

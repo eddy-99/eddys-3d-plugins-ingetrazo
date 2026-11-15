@@ -15,7 +15,16 @@
 Soil pipe (110 / 82 mm) and waste pipe (32 / 40 / 50 mm) with bends, branches, tees,
 access pipes, boss connectors, vents, drain connectors, gullies, sockets and clips.
 Pick a part, set its sizes, and it is built in its own group. Select the open end of a
-part you placed and the next part joins onto it. Presets are saved as .json files.
+part you placed and the next part joins onto it. Or draw lines where the runs go, select
+them, and each run is built along its line with bends, collars, clips and end fittings.
+Or mark the runs with the plugin's own thick line (Mark the run), easy to see on a detailed
+building, and build along those.
+Presets are saved as .json files.
+Version 3: Mark the run - a thick marker line (size and colour to suit) that snaps to its own
+ends; arrow keys lock it to an axis; Esc or right-click ends a line (again: finished); the
+window hides while you mark. Everything built along lines goes into one group, and pipes
+going down to the ground step out round anything in the way (a plinth, a sill, a lean-to).
+Smaller preview.
 """
 
 import os
@@ -31,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Soil & Waste Pipes"
+VERSION = "3"             # shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -96,13 +106,15 @@ DEFAULTS = {
     'auto_fix': True, 's_spacing': 1800.0, 'w_spacing': 500.0,
     'chunky': False, 'chunk_mult': 3.0, 'detail': True, 'pipe_socket': True,
     'ears': False, 'swan_len': 150.0,
+    'r_system': 'soil', 'r_top': 'vent', 'r_bot': 'drain', 's_maxlen': 3000.0, 'w_maxlen': 3000.0,
+    'r_flip': False, 'r_avoid': True,
 }
 WALL_SIDES = [("Behind the part (+Y)", 0.0), ("On the left (-X)", 90.0),
               ("In front (-Y)", 180.0), ("On the right (+X)", 270.0)]
 PRESET_KEYS = ('s_size', 's_wall', 'w_size', 'w_wall', 'length', 'bend_turn', 'branch_len',
                'solid', 'along', 'drop', 'below', 'w_height', 'wall_gap',
                's_spacing', 'w_spacing', 'chunky', 'chunk_mult', 'detail', 'pipe_socket',
-               'ears', 'swan_len')
+               'ears', 'swan_len', 's_maxlen', 'w_maxlen', 'r_avoid')
 SYSTEM_KEYS = {'soil': ('s_size', 's_wall', 'solid'), 'waste': ('w_size', 'w_wall', 'solid')}
 OVERLAY = ('socket', 'clip', 'boss', 'adaptor')          # sit over a joint or along a pipe
 CLOSERS = ('vent', 'drain', 'gully', 'shoe', 'bigully')          # finish a run
@@ -591,8 +603,11 @@ def _build_part(key, s):
         d, e = roll_dirs(s['bend_dir'])
         if kind == 'clip':
             hw = 8 * m
-            sol.append(rect_sweep(x0, x1, d, e, r_out - 1, r_out + 35, hw))
-            sol.append(rect_sweep(x0 - 10, x1 + 10, d, e, r_out + 35, r_out + 35 + 4 * m, 25 + hw))
+            pt = 4 * m
+            reach = s.get('reach')           # pipe middle to the wall, when it is known
+            back = max(r_out + pt + 2.0, reach) if reach else r_out + 35 + pt
+            sol.append(rect_sweep(x0, x1, d, e, r_out - 1, back - pt, hw))
+            sol.append(rect_sweep(x0 - 10, x1 + 10, d, e, back - pt, back, 25 + hw))
             if detailed(s):
                 # hinged clip: a hinge knuckle on one side, bolt ears on the other
                 ee = (0.0, e[0], e[1])
@@ -1159,6 +1174,781 @@ def delete_preset_file(name):
 
 
 # ---------------------------------------------------------------------------
+# Following lines you've drawn. Draw lines where the run is to go (corner to corner),
+# select them and the whole run is built along them, bends and fittings and all.
+# The wall each line is drawn on is found from the model (or from wall faces you
+# select with the lines), so the run stands off the wall by the right amount.
+# ---------------------------------------------------------------------------
+MM = 0.001                     # sizes are in mm; the model is in metres
+
+
+def _r_is_group(e):
+    return getattr(e, 'mesh', None) is not None and not hasattr(e, 'loop')
+
+
+def _r_vpos(v):
+    p = _pos(v)
+    if p is None and v is not None:
+        p = _pos(getattr(v, 'position', None)) if getattr(v, 'position', None) is not None else None
+    return p
+
+
+def _r_edge_ends(e):
+    """A line's two ends as (x, y, z), or None if it isn't a line."""
+    for a, b in (('a', 'b'), ('v0', 'v1'), ('v1', 'v2'), ('start', 'end')):
+        pa, pb = getattr(e, a, None), getattr(e, b, None)
+        if pa is None or pb is None:
+            continue
+        p, q = _r_vpos(pa), _r_vpos(pb)
+        if p is not None and q is not None:
+            return p, q
+    return None
+
+
+def _r_is_face(e):
+    if _r_is_group(e):
+        return False
+    if hasattr(e, 'loop') or 'face' in type(e).__name__.lower():
+        return True
+    return hasattr(e, 'vertices') and _r_edge_ends(e) is None
+
+
+def _r_m_from_q(q):
+    if q is None:
+        return None
+    try:
+        d = list(q.data())                     # column by column
+    except Exception:
+        return None
+    return [[float(d[c * 4 + r]) for c in range(4)] for r in range(4)]
+
+
+def _r_m_mul(a, b):
+    return [[sum(a[r][k] * b[k][c] for k in range(4)) for c in range(4)] for r in range(4)]
+
+
+def _r_m_apply(m, p):
+    if m is None:
+        return p
+    return tuple(m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3] for r in range(3))
+
+
+def _r_iter_placements(group, base=None):
+    try:
+        from core.group import iter_placements
+        yield from iter_placements(group, base)
+        return
+    except ImportError:
+        pass
+    m = getattr(group, 'xform', None)
+    if base is not None:
+        m = base if m is None else base * m
+    yield group, m
+    for ch in getattr(group, 'children', None) or ():
+        yield from _r_iter_placements(ch, m)
+
+
+def _r_ctx_world(scene):
+    """Where an open group's own space sits in the model, or None at the top."""
+    ctx = getattr(scene, 'edit_group', None)
+    if ctx is None:
+        return None
+    for top in _items(getattr(scene, 'groups', None)):
+        for g, m in _r_iter_placements(top):
+            if g is ctx:
+                return _r_m_from_q(m)
+    return _r_m_from_q(getattr(ctx, 'xform', None))
+
+
+def _r_chain(segs, tol=1e-7):
+    """Joins line segments [(a, b)] end to end: [(points, closed)]. Where three or more
+    lines meet, a chain stops there."""
+    def key(p):
+        return (int(round(p[0] / tol)), int(round(p[1] / tol)), int(round(p[2] / tol)))
+    segs = [(a, b) for a, b in segs if key(a) != key(b)]
+    ends = {}
+    for k, (a, b) in enumerate(segs):
+        ends.setdefault(key(a), []).append(k)
+        ends.setdefault(key(b), []).append(k)
+    used = [False] * len(segs)
+
+    def walk(k, kp):
+        out = []
+        while True:
+            used[k] = True
+            a, b = segs[k]
+            p, kp = (b, key(b)) if key(a) == kp else (a, key(a))
+            out.append(p)
+            cand = [j for j in ends.get(kp, []) if not used[j]]
+            if len(ends.get(kp, [])) != 2 or not cand:
+                return out, kp
+            k = cand[0]
+    chains = []
+    order = sorted(range(len(segs)), key=lambda k: -max(len(ends[key(segs[k][0])]) != 2,
+                                                          len(ends[key(segs[k][1])]) != 2))
+    for k0 in order:
+        if used[k0]:
+            continue
+        a, b = segs[k0]
+        if len(ends[key(a)]) == 2 and len(ends[key(b)]) != 2:
+            a, b = b, a
+        used[k0] = True
+        fwd, kend = [], key(b)
+        cand = [j for j in ends.get(key(b), []) if not used[j]]
+        if len(ends.get(key(b), [])) == 2 and cand:
+            fwd, kend = walk(cand[0], key(b))
+        if kend == key(a) and len(fwd) >= 2:
+            chains.append(([a, b] + fwd[:-1], True))
+            continue
+        back = []
+        cand = [j for j in ends.get(key(a), []) if not used[j]]
+        if len(ends.get(key(a), [])) == 2 and cand:
+            back, _k = walk(cand[0], key(a))
+        chains.append((list(reversed(back)) + [a, b] + fwd, False))
+    return chains
+
+
+def route_lines(scene, selection):
+    """The lines you've selected, joined end to end: [(points, closed)] in the model. With a
+    group selected instead, the loose lines in it (lines not round any face)."""
+    sel = list(selection or [])
+    m0 = _r_ctx_world(scene)
+    segs = []
+    for e in sel:
+        if _r_is_group(e) or _r_is_face(e):
+            continue
+        ends = _r_edge_ends(e)
+        if ends:
+            segs.append((_r_m_apply(m0, ends[0]), _r_m_apply(m0, ends[1])))
+    if not segs:
+        for g in sel:
+            if not _r_is_group(g):
+                continue
+            for pg, q in _r_iter_placements(g):
+                m = _r_m_from_q(q)
+                if m0 is not None:
+                    m = m0 if m is None else _r_m_mul(m0, m)
+                for e in _items(getattr(getattr(pg, 'mesh', None), 'edges', None)):
+                    if _items(getattr(e, 'faces', None)):
+                        continue
+                    ends = _r_edge_ends(e)
+                    if ends:
+                        segs.append((_r_m_apply(m, ends[0]), _r_m_apply(m, ends[1])))
+    if not segs:
+        return []
+    span = max(v_len(v_sub(b, a)) for a, b in segs)
+    return _r_chain(segs, tol=max(1e-9, span * 1e-7))
+
+
+ROUTE_STATS = {'limit': False}
+
+
+def route_faces(scene, selection, near=None, limit=3000000, upright_only=True):
+    """Upright faces [(normal, d, points, (lo, hi))] in the model: the faces selected with the
+    lines if there are any, otherwise every face near the lines (near = (lo, hi) box)."""
+    out = []
+
+    def take(f, m):
+        pts = [p for p in (_r_vpos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+        if len(pts) < 3:
+            return
+        if m is not None:
+            pts = [_r_m_apply(m, p) for p in pts]
+        lo = tuple(min(p[k] for p in pts) for k in range(3))
+        hi = tuple(max(p[k] for p in pts) for k in range(3))
+        if near is not None and any(lo[k] > near[1][k] or hi[k] < near[0][k] for k in range(3)):
+            return
+        n = _newell(pts)
+        if v_len(n) < 0.5 or (upright_only and abs(n[2]) > 0.35):
+            return                                  # floors, roofs and ceilings
+        out.append((n, v_dot(n, pts[0]), pts, (lo, hi)))
+
+    sel = list(selection or [])
+    m0 = _r_ctx_world(scene)
+    faces = [e for e in sel if _r_is_face(e)]
+    if faces:
+        for f in faces:
+            take(f, m0)
+        return out
+    count = [0]
+
+    def scan(mesh, m):
+        for f in _items(getattr(mesh, 'faces', None)):
+            count[0] += 1
+            if count[0] > limit:
+                ROUTE_STATS['limit'] = True
+                return
+            a = getattr(f, 'attrs', None)
+            if isinstance(a, dict) and PORT_KEY in a:
+                continue
+            take(f, m)
+    for top in _items(getattr(scene, 'groups', None)):
+        for g, q in _r_iter_placements(top):
+            scan(getattr(g, 'mesh', None), _r_m_from_q(q))
+    if getattr(scene, 'mesh', None) is not None:
+        scan(scene.mesh, None)
+    return out
+
+
+def _r_box(chains, pad=0.5):
+    pts = [p for c, _ in chains for p in c]
+    lo = tuple(min(p[k] for p in pts) - pad for k in range(3))
+    hi = tuple(max(p[k] for p in pts) + pad for k in range(3))
+    return lo, hi
+
+
+def _r_on_face(p, face, tol):
+    n, d, pts, (lo, hi) = face
+    if abs(v_dot(n, p) - d) > tol:
+        return False
+    if any(p[k] < lo[k] - tol or p[k] > hi[k] + tol for k in range(3)):
+        return False
+    u = v_norm(v_cross(n, Z))
+    if v_len(u) < 0.5:
+        u = v_norm(v_cross(n, X))
+    w = v_cross(n, u)
+    q = (v_dot(p, u), v_dot(p, w))
+    poly = [(v_dot(a, u), v_dot(a, w)) for a in pts]
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        (xi, yi), (xj, yj) = poly[i], poly[j]
+        if (yi > q[1]) != (yj > q[1]) and q[0] < (xj - xi) * (q[1] - yi) / ((yj - yi) or 1e-30) + xi:
+            inside = not inside
+        # on the edge itself counts
+        ex, ey = xj - xi, yj - yi
+        L2 = ex * ex + ey * ey
+        f = max(0.0, min(1.0, ((q[0] - xi) * ex + (q[1] - yi) * ey) / L2)) if L2 > 0 else 0.0
+        if math.hypot(xi + ex * f - q[0], yi + ey * f - q[1]) <= tol:
+            return True
+        j = i
+    return inside
+
+
+def segment_wall(a, b, faces, tol=0.002, flip=False):
+    """(outward normal, plane d) of the upright face a line a-b is drawn on, or None. The line
+    can run on past the face (a stack going up above the eaves, or down into the ground)."""
+    samples = [v_add(a, v_mul(v_sub(b, a), f_)) for f_ in (0.5, 0.25, 0.75, 0.1, 0.9, 0.0, 1.0)]
+    for f in faces:
+        n, d = f[0], f[1]
+        if abs(v_dot(n, a) - d) > tol or abs(v_dot(n, b) - d) > tol:
+            continue
+        if any(_r_on_face(q, f, tol) for q in samples):
+            n = f[0]
+            n = v_norm((n[0], n[1], 0.0))
+            d = v_dot(n, a)
+            if flip:
+                n, d = v_mul(n, -1.0), -d
+            return n, d
+    return None
+
+
+def _r_offset(cons):
+    """The smallest move o with o . n = s for each (n, s) given: where two stand-offs from
+    two walls meet (an outside or inside corner), or one stand-off from one wall."""
+    keep = []
+    for n, s in cons:
+        if all(abs(v_dot(n, k[0])) < 0.985 for k in keep):
+            keep.append((n, s))
+    if not keep:
+        return (0.0, 0.0, 0.0)
+    if len(keep) == 1:
+        return v_mul(keep[0][0], keep[0][1])
+    (n1, s1), (n2, s2) = keep[0], keep[1]
+    c = v_dot(n1, n2)
+    det = 1.0 - c * c
+    return v_add(v_mul(n1, (s1 - c * s2) / det), v_mul(n2, (s2 - c * s1) / det))
+
+
+def _r_clean(pts, min_turn=1.5):
+    """Drops repeated points and points where the line hardly turns."""
+    P = []
+    for p in pts:
+        if not P or v_len(v_sub(p, P[-1])) > 1e-5:
+            P.append(tuple(p))
+    changed = True
+    while changed and len(P) > 2:
+        changed = False
+        for i in range(1, len(P) - 1):
+            a, b = v_norm(v_sub(P[i], P[i - 1])), v_norm(v_sub(P[i + 1], P[i]))
+            if v_dot(a, b) > math.cos(math.radians(min_turn)):
+                del P[i]
+                changed = True
+                break
+    return P
+
+
+def route_pieces(pts, R, lead):
+    """Straights and bends along a centre line (model metres):
+    [('pipe', [a, b], seg)] and [('bend', path, turn in deg, seg)]. seg = which stretch of the
+    line it's on. Each corner gets a bend of radius R with a straight of `lead` at each end,
+    made smaller where the stretches are too short for it."""
+    P = _r_clean(pts)
+    n = len(P)
+    if n < 2:
+        return []
+    corner = {}
+    for i in range(1, n - 1):
+        a, b = v_norm(v_sub(P[i], P[i - 1])), v_norm(v_sub(P[i + 1], P[i]))
+        th = math.acos(max(-1.0, min(1.0, v_dot(a, b))))
+        lin, lout = v_len(v_sub(P[i], P[i - 1])), v_len(v_sub(P[i + 1], P[i]))
+        avail = min(lin * (0.5 if i > 1 else 0.9), lout * (0.5 if i < n - 2 else 0.9))
+        tn = math.tan(min(th, math.radians(170.0)) / 2.0)
+        r, ld = R, lead
+        t = r * tn
+        if t + ld > avail:
+            ld = max(0.0, avail - t)
+            if t > avail:
+                t, ld = avail, 0.0
+                r = t / tn if tn > 1e-9 else R
+        corner[i] = (a, b, th, r, t, ld)
+    pieces, cur = [], P[0]
+    for i in range(1, n):
+        if i in corner:
+            a, b, th, r, t, ld = corner[i]
+            t1 = v_sub(P[i], v_mul(a, t))
+            s0 = v_sub(t1, v_mul(a, ld))
+            if v_len(v_sub(s0, cur)) > 1e-5:
+                pieces.append(('pipe', [cur, s0], i - 1))
+            d = v_norm(v_sub(b, v_mul(a, v_dot(a, b))))
+            arc = arc_path(t1, a, d, r, th, max(4, int(math.degrees(th) / 7.5)))
+            path = ([s0] if ld > 1e-6 else []) + arc
+            if ld > 1e-6:
+                path.append(v_add(arc[-1], v_mul(b, ld)))
+            pieces.append(('bend', path, math.degrees(th), i - 1))
+            cur = path[-1]
+        elif v_len(v_sub(P[i], cur)) > 1e-5:
+            pieces.append(('pipe', [cur, P[i]], i - 1))
+            cur = P[i]
+    return pieces
+
+
+def split_lengths(pieces, maxlen):
+    """Straights longer than maxlen (metres, 0 = no limit) cut into equal lengths."""
+    if maxlen <= 0:
+        return pieces
+    out = []
+    for pc in pieces:
+        if pc[0] != 'pipe':
+            out.append(pc)
+            continue
+        a, b = pc[1]
+        L = v_len(v_sub(b, a))
+        k = max(1, int(math.ceil(L / maxlen - 1e-9)))
+        for j in range(k):
+            out.append(('pipe', [v_add(a, v_mul(v_sub(b, a), j / float(k))),
+                                 v_add(a, v_mul(v_sub(b, a), (j + 1) / float(k)))], pc[2]))
+    return out
+
+
+def piece_dirs(pc):
+    """(direction at the start, direction at the end) of a piece."""
+    p = pc[1]
+    return v_norm(v_sub(p[1], p[0])), v_norm(v_sub(p[-1], p[-2]))
+
+
+def route_up(T, want=None):
+    """A direction square to T, as near to `want` as it can be."""
+    for w in (want, Z, X, Y):
+        if w is None:
+            continue
+        u = v_sub(w, v_mul(T, v_dot(w, T)))
+        if v_len(u) > 1e-3:
+            return v_norm(u)
+    return Z
+
+
+def _mm_loop(loop):
+    return [(a * MM, b * MM) for a, b in loop] if loop else None
+
+
+def end_port(c, n, u, role, system):
+    return {'c': list(c), 'n': list(v_norm(n)), 'u': list(v_norm(u)), 'role': role, 'sys': system}
+
+
+def end_target(c, n, u, role, system, **extra):
+    t = {'c': tuple(c), 'n': tuple(v_norm(n)), 'u': tuple(v_norm(u)), 'role': role, 'sys': system}
+    t.update(extra)
+    return t
+
+# ---------------------------------------------------------------------------
+# Soil and waste pipes along drawn lines
+# ---------------------------------------------------------------------------
+ROUTE_SYSTEMS = [("Soil pipe", 'soil'), ("Waste pipe", 'waste')]
+ROUTE_TOPS = {'soil': [("Left open", 'none'), ("Vent cowl", 'vent')],
+              'waste': [("Left open", 'none'), ("Hopper head", 'hopper')]}
+ROUTE_BOTS = {'soil': [("Left open", 'none'), ("Drain adaptor (into the ground)", 'drain')],
+              'waste': [("Left open", 'none'), ("Gully with grid", 'gully'),
+                        ("Back-inlet gully", 'bigully'), ("Shoe", 'shoe')]}
+
+
+def collar_world(c, into, D):
+    """A socket collar (model metres) whose mouth is at c, running into the fitting along `into`."""
+    ts, Ls, _ = socket_dims(D)
+    R0 = D / 2.0
+    return revolve_profile(c, into, [(0.0, R0 * MM), (0.0, (R0 + ts) * MM), (Ls * MM, (R0 + ts) * MM),
+                                     (Ls * MM, R0 * MM)])
+
+
+def wall_behind(top, bottom, n, faces, reach=2.5):
+    """(n, d) of the wall face behind a pipe line going down, facing the same way as the
+    wall n, or None. Brickwork from Brick & Block Studio stands proud of the
+    wall, so the front of the bricks counts (the outermost face found), not the wall behind
+    or the mortar joints. Only looks part way down, so a plinth at the bottom or the fascia
+    at the top doesn't push the pipe out. Faces count whichever way round they were made."""
+    hits = []
+    for f_ in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8):
+        q = v_add(top, v_mul(v_sub(bottom, top), f_))
+        near = None
+        for face in faces:
+            lo, hi = face[3]
+            if q[2] < lo[2] - 0.003 or q[2] > hi[2] + 0.003:
+                continue
+            if any(q[k] < lo[k] - reach or q[k] > hi[k] + reach for k in (0, 1)):
+                continue
+            fn, fd = face[0], face[1]
+            c = v_dot(fn, n)
+            if c < -0.94:                       # made the other way round: turn it
+                fn, fd = v_mul(fn, -1.0), -fd
+            elif c < 0.94:
+                continue
+            t = v_dot(fn, q) - fd
+            if t < 0.005 or t > reach:
+                continue
+            if (near is None or t < near[0]) and _r_on_face(v_sub(q, v_mul(fn, t)), face, 0.003):
+                fp = v_norm((fn[0], fn[1], 0.0))
+                near = (t, (fp, v_dot(fp, v_sub(q, v_mul(fn, t)))))
+        if near is not None:
+            hits.append(near)
+    if not hits:
+        return None
+    # the face nearest the pipe at most heights: the front of the bricks, not the odd joint
+    hits.sort(key=lambda h: h[0])
+    return hits[min(len(hits) - 1, len(hits) // 3)][1]
+
+
+def _clip_slab(poly, lo, hi):
+    """Cuts a polygon [(s, u, z)] down to lo <= s <= hi."""
+    def cut(P, keep, edge):
+        out = []
+        for i in range(len(P)):
+            a, b = P[i - 1], P[i]
+            ia, ib = keep(a), keep(b)
+            if ib:
+                if not ia:
+                    f = (edge - a[0]) / ((b[0] - a[0]) or 1e-30)
+                    out.append(tuple(a[k] + (b[k] - a[k]) * f for k in range(3)))
+                out.append(b)
+            elif ia:
+                f = (edge - a[0]) / ((b[0] - a[0]) or 1e-30)
+                out.append(tuple(a[k] + (b[k] - a[k]) * f for k in range(3)))
+        return out
+    P = cut(list(poly), lambda p: p[0] >= lo, lo)
+    if len(P) < 2:
+        return []
+    return cut(P, lambda p: p[0] <= hi, hi)
+
+
+def avoid_obstacles(path, n, dw, all_faces, s, reach=4.0, step=0.01):
+    """The bottom straight of a pipe (path[-2] down to path[-1] on the ground) stepped out
+    round anything in its way: a plinth, a sill, a lean-to roof and wall. Out at 45 degrees
+    above the thing (or following a roof slope if there isn't the drop for 45), and back in
+    below it where there's wall. Returns (new path, what) or (None, why or None)."""
+    if len(path) < 2:
+        return None, None
+    top, bot = path[-2], path[-1]
+    if math.hypot(top[0] - bot[0], top[1] - bot[1]) > 0.003 or top[2] - bot[2] < 0.2:
+        return None, None                   # only a straight drop to the ground is looked at
+    n = v_norm((n[0], n[1], 0.0))
+    a_ = (-n[1], n[0], 0.0)                 # along the wall
+    x0 = v_dot(a_, bot)
+    u0 = v_dot(n, top) - dw                 # how far out the pipe runs now
+    ps = s['_ps_mm'] * MM                   # pipe middle to whatever it's clipped on
+    hw = s['_size_mm'] * 0.5 * MM + 0.012   # the pipe's half width, and a little more
+    z0, zb = top[2], bot[2]
+    R = s['_size_mm'] * 0.8 * MM
+    zst = z0 - (s.get('_top_straight', 0.0) + 0.5 * R)   # room for the bend at the top
+    if s.get('_zcap') is not None:
+        zst = min(zst, s['_zcap'])          # only below the top of the wall: not the eaves
+    # what's in the way (not the fascia or soffit the outlet sits against, at the very top): every face cut down to the pipe's width, seen from the side (u, z)
+    pts = []
+    for f in all_faces:
+        lo, hi = f[3]
+        if hi[2] < zb + 0.004 or lo[2] > z0:
+            continue
+        P = [(v_dot(a_, p) - x0, v_dot(n, p) - dw, p[2]) for p in f[2]]
+        if max(p[0] for p in P) < -hw or min(p[0] for p in P) > hw:
+            continue
+        if max(p[1] for p in P) < 0.004 or min(p[1] for p in P) > reach:
+            continue
+        C = _clip_slab(P, -hw, hw)
+        for i in range(len(C)):
+            p, q = C[i - 1], C[i]
+            L = math.hypot(q[1] - p[1], q[2] - p[2])
+            k = max(1, int(L / 0.005))
+            for j in range(k + 1):
+                u = p[1] + (q[1] - p[1]) * j / k
+                z = p[2] + (q[2] - p[2]) * j / k
+                if 0.004 < u < reach and zb + 0.004 < z < zst:
+                    pts.append((u, z))
+    if not pts:
+        return None, None
+    nz = int((z0 - zb) / step) + 1
+    zs = [zb + i * (z0 - zb) / (nz - 1) for i in range(nz)]
+    # how far out the pipe's middle must be at each height to clear it all by the stand-off
+    req = [0.0] * nz
+    span = int(ps / ((z0 - zb) / (nz - 1))) + 1
+    for u, z in pts:
+        c = int(round((z - zb) / (z0 - zb) * (nz - 1)))
+        for i in range(max(0, c - span), min(nz, c + span + 1)):
+            dz = zs[i] - z
+            if abs(dz) <= ps:
+                r = u + math.sqrt(ps * ps - dz * dz)
+                if r > req[i]:
+                    req[i] = r
+    if max(req) <= u0 + 0.004:
+        return None, None                   # nothing in the way
+    # the pipe line: out at 45 degrees above each thing, in at 45 below it; shallower
+    # (down to 10 degrees, following a roof) where there isn't the drop above it for 45
+    kmax = 1.0 / math.tan(math.radians(10.0))
+    U = []
+    for i in range(nz):
+        best = u0
+        for j in range(nz):
+            r = req[j]
+            if r <= u0:
+                continue
+            d = zs[i] - zs[j]
+            if d >= 0:                      # it's below: step out above it
+                k = min(kmax, max(1.0, (r - u0) / max(1e-6, zst - zs[j])))
+                v = r - k * d
+            else:                           # it's above: back in below it
+                v = r + d
+            if v > best:
+                best = v
+        U.append(best)
+    if U[-1] > u0 + 0.005:
+        return None, "something sticks out too far just below where the pipe turns down for it to get round"
+    # to a few points: corners only
+    line = [(U[i], zs[i]) for i in range(nz - 1, -1, -1)]          # top first
+
+    def simplify(P, tol):
+        if len(P) < 3:
+            return P
+        a, b = P[0], P[-1]
+        dx, dz = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dz) or 1e-12
+        far, k = -1.0, 0
+        for i in range(1, len(P) - 1):
+            d = abs((P[i][0] - a[0]) * dz - (P[i][1] - a[1]) * dx) / L
+            if d > far:
+                far, k = d, i
+        if far <= tol:
+            return [a, b]
+        return simplify(P[:k + 1], tol)[:-1] + simplify(P[k:], tol)
+    need = 2.0 * (R * 0.45 + SOCKET_LEN * MM)   # room for the bends at both ends of a piece
+    tol = 0.004
+    S = simplify(line, tol)
+    while len(S) > 2 and tol < 0.1 and min(math.hypot(S[i + 1][0] - S[i][0], S[i + 1][1] - S[i][1])
+                                         for i in range(len(S) - 1)) < need:
+        tol *= 1.6
+        S = simplify(line, tol)
+    # never inside: push each corner out to clear whatever was found at its height
+    def req_at(z):
+        i = int(round((z - zb) / (z0 - zb) * (nz - 1)))
+        return req[max(0, min(nz - 1, i))]
+    S = [(max(u, req_at(z)) if 0 < k < len(S) - 1 else u, z) for k, (u, z) in enumerate(S)]
+    # nearly upright pieces made upright (out at the further of their two ends), so the pipe
+    # runs straight down past things rather than at a slight lean
+    for k in range(len(S) - 1):
+        (ua, za), (ub, zb_) = S[k], S[k + 1]
+        if abs(ua - ub) < 0.25 * abs(za - zb_) and abs(ua - ub) > 1e-6:
+            um = max(ua, ub)
+            if k > 0:
+                S[k] = (um, za)
+            if k + 1 < len(S) - 1:
+                S[k + 1] = (um, zb_)
+    S2 = [S[0]]
+    for q in S[1:]:
+        if math.hypot(q[0] - S2[-1][0], q[1] - S2[-1][1]) > 1e-4:
+            S2.append(q)
+    S = S2
+    # always a short straight down out of the top (an outlet's spigot) before the first bend
+    if len(S) >= 2 and abs(S[1][0] - S[0][0]) > 1e-4 and S[1][1] < zst - 1e-4:
+        S.insert(1, (S[0][0], zst))
+    base = v_add(v_mul(a_, x0), v_mul(n, dw))
+    new = [(base[0] + n[0] * u, base[1] + n[1] * u, z) for u, z in S]
+    new[0], new[-1] = top, (new[-1][0], new[-1][1], bot[2])
+    out = list(path[:-2]) + new
+    far = max(u for u, _z in S) - u0
+    return out, "stepped out %d mm round something in the way" % int(round(far / MM))
+
+
+def wall_top_at(p, w, faces, near=0.15):
+    """The top of the wall behind point p (the highest upright face in the wall's plane, give
+    or take the brickwork, at p along the wall), or None. A stack going up past the eaves
+    mustn't step out round the fascia, soffit or roof."""
+    n, d = w
+    a_ = (-n[1], n[0], 0.0)
+    x = v_dot(a_, p)
+    top = None
+    for f in faces:
+        fn = v_norm((f[0][0], f[0][1], 0.0))
+        if abs(v_dot(fn, n)) < 0.94:
+            continue
+        P = f[2]
+        if min(abs(v_dot(n, q) - d) for q in P) > near:
+            continue
+        xs = [v_dot(a_, q) for q in P]
+        if min(xs) - 0.01 > x or max(xs) + 0.01 < x:
+            continue
+        hz = f[3][1][2]
+        if top is None or hz > top:
+            top = hz
+    return top
+
+
+def build_soil_route(chains, faces, s, all_faces=None):
+    """Soil or waste pipe runs along the lines (each line a run, top first), with bends where
+    the line turns, socket collars, clips to the wall and the ends finished off.
+    Returns (parts, report, notes)."""
+    system = s.get('r_system', 'soil')
+    pre = 's_' if system == 'soil' else 'w_'
+    v = view(s, system)
+    size = v['p_size']
+    det = detailed(s)
+    sname = size_text(pre + 'pipe', s)
+    flip = s.get('r_flip', False)
+    sp = clip_standoff(s, system) + s['wall_gap']
+    R = size * 0.8 * MM
+    lead = (max(SOCKET_LEN, socket_dims(size)[2] + 5.0) if det else SOCKET_LEN) * MM
+    maxlen = s.get(pre + 'maxlen', 0.0) * MM
+    o, i = pipe_rings(v)
+    o, i = _mm_loop(o), _mm_loop(i)
+    top_k = s.get('r_top', 'none')
+    bot_k = s.get('r_bot', 'none')
+    if top_k not in [k for _l, k in ROUTE_TOPS[system]]:
+        top_k = 'none'
+    if bot_k not in [k for _l, k in ROUTE_BOTS[system]]:
+        bot_k = 'none'
+    parts, notes, nruns, nowall = [], [], 0, 0
+    navoid = 0
+    for pts, closed in chains:
+        P = [tuple(p) for p in pts] + ([tuple(pts[0])] if closed else [])
+        if len(P) < 2:
+            continue
+        if P[-1][2] > P[0][2] + 1e-6:
+            P = list(reversed(P))                         # top first
+        walls = [segment_wall(a, b, faces, flip=flip) for a, b in zip(P[:-1], P[1:])]
+        if not any(walls):
+            nowall += 1
+        Q = []
+        for j in range(len(P)):
+            cons = [(walls[k][0], sp * MM) for k in (j - 1, j) if 0 <= k < len(walls) and walls[k]]
+            Q.append(v_add(P[j], _r_offset(cons)))
+        # going down to the ground: step out round anything in the way (plinth, sill, lean-to)
+        if s.get('r_avoid', True) and all_faces and len(Q) >= 2:
+            try:
+                wn = walls[-1] or next((w for w in reversed(walls) if w), None)
+                if wn:
+                    nn = v_norm((wn[0][0], wn[0][1], 0.0))
+                    wb_ = wall_behind(Q[-2], Q[-1], nn, faces) or (nn, wn[1])
+                    sa = dict(s, _ps_mm=sp, _size_mm=size, _top_straight=lead if len(Q) > 2 else 0.0,
+                              _zcap=wall_top_at(Q[-1], wb_, faces))
+                    newq, why = avoid_obstacles(Q, wb_[0], wb_[1], all_faces, sa)
+                    if newq:
+                        extra = len(newq) - len(Q)
+                        Q = newq
+                        # each new stretch is clipped to whatever it runs past, at the usual distance
+                        nb = len(walls) - 1
+                        walls = walls[:nb]
+                        for a_, b_ in zip(Q[nb:-1], Q[nb + 1:]):
+                            u_ = v_dot(wb_[0], a_) - wb_[1]
+                            walls.append((wb_[0], wb_[1] + u_ - sp * MM))
+                        navoid += 1
+                    elif why:
+                        notes.append(why)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print("%s: stepping round things: %s" % (PLUGIN_NAME, e))
+        pieces = split_lengths(route_pieces(Q, R, lead), maxlen)
+        if not pieces:
+            notes.append("a line was too short for a pipe")
+            continue
+        nruns += 1
+
+        def wall_of(seg):
+            if 0 <= seg < len(walls) and walls[seg]:
+                return walls[seg]
+            for w in walls:
+                if w:
+                    return w
+            return None
+
+        def up_of(seg, T):
+            w = wall_of(seg)
+            return route_up(T, v_mul(w[0], -1.0) if w else (NZ if system == 'waste' else None))
+        clips, nclip = [], 0
+        for idx, pc in enumerate(pieces):
+            T0, T1 = piece_dirs(pc)
+            up = up_of(pc[-1], T0)
+            first, last = idx == 0, idx == len(pieces) - 1
+            prev = pieces[idx - 1][0] if idx else None
+            sock0 = det and ((pc[0] == 'bend') or (s.get('pipe_socket', True) and prev != 'bend'))
+            if first and top_k == 'vent':
+                sock0 = False                             # the cowl's sleeve goes over the plain end
+            tags = {}
+            st = 'in' if first and top_k == 'none' else None
+            et = 'out' if last and bot_k == 'none' else None
+            if st:
+                tags['in'] = dict(end_port(pc[1][0], v_mul(T0, -1.0), up, 'in', system), sock=bool(sock0))
+            if et:
+                tags['out'] = dict(end_port(pc[1][-1], T1, up_of(pc[-1], T1), 'out', system),
+                                   sock=bool(det and pc[0] == 'bend'))
+            sol, _f = sweep_solid(pc[1], up, o, i, st, et)
+            sols = [sol]
+            if sock0:
+                sols.append(collar_world(pc[1][0], T0, size))
+            if det and pc[0] == 'bend':
+                sols.append(collar_world(pc[1][-1], v_mul(T1, -1.0), size))
+            if pc[0] == 'pipe':
+                L = v_len(v_sub(pc[1][1], pc[1][0])) / MM
+                parts.append(("%s length - %s x %g mm" % ("Soil pipe" if system == 'soil' else "Waste pipe",
+                                                          sname, round(L)), sols, tags))
+                w = wall_of(pc[2])
+                if s.get('auto_fix', True) and w and abs(v_dot(T0, w[0])) < 0.5:
+                    reach = (v_dot(w[0], pc[1][0]) - w[1]) / MM
+                    if reach > size / 2:
+                        tgt = end_target(pc[1][-1], T0, route_up(T0, v_mul(w[0], -1.0)), 'out', system)
+                        spacing = s['s_spacing'] if system == 'soil' else s['w_spacing']
+                        for x in fixing_positions(L, spacing):
+                            cw, _ = plan_part(pre + 'clip', dict(s, offset=L - x, bend_dir=0.0, reach=reach), tgt)
+                            clips += cw
+                            nclip += 1
+            else:
+                parts.append(("Bend %g deg - %s" % (round(pc[2], 1), sname), sols, tags))
+        a0, T0 = pieces[0][1][0], piece_dirs(pieces[0])[0]
+        b1, T1 = pieces[-1][1][-1], piece_dirs(pieces[-1])[1]
+        if top_k != 'none':
+            w, _ = plan_part(pre + top_k, s, end_target(a0, v_mul(T0, -1.0), up_of(pieces[0][-1], T0), 'in',
+                                                        system, sock=False))
+            parts.append(("%s - %s" % (PART_INFO[pre + top_k][0], sname), w, {}))
+        if bot_k != 'none':
+            w, _ = plan_part(pre + bot_k, s, end_target(b1, T1, up_of(pieces[-1][-1], T1), 'out', system))
+            parts.append(("%s - %s" % (PART_INFO[pre + bot_k][0], sname), w, {}))
+        if clips:
+            parts.append(("Pipe clips x%d - %s" % (nclip, sname), clips, {}))
+    if nowall:
+        notes.append("%d line%s had no wall face under it, so the pipe runs right on the line, "
+                     "with no clips" % (nowall, "" if nowall == 1 else "s"))
+    what = "%d %s run%s" % (nruns, SYSTEM_NAMES[system], "" if nruns == 1 else "s")
+    if navoid:
+        what += ", %d stepped round something in the way" % navoid
+    return parts, what, notes
+
+
+# ---------------------------------------------------------------------------
 # Live preview of the chosen part
 # ---------------------------------------------------------------------------
 VIEW_DIR = v_norm((-0.55, 0.8, -0.5))          # looking from the front right, above
@@ -1407,14 +2197,18 @@ def eddy_window(dlg, key, tips=None, place=True):
 # --- Eddy's 3D plugins: hover help and remembered window places (end) ---
 
 EDDY_TIPS = {'@lst': 'The parts to choose from. Pick one to set it up.',
- '@cb_preset': 'Ready-made settings. Pick one and the whole window is filled in.'}
+ '@cb_preset': 'Ready-made settings. Pick one and the whole window is filled in.',
+ 'Add part': 'Builds the part picked on the Part page, joined onto the open end (or at the origin, or on '
+             'the wall you picked).',
+ 'Direction': 'Which way the bend, branch, boss, access door or clip faces.',
+ 'The lines are': 'Whether the lines you selected are soil pipe or waste pipe runs.'}
 EDDY_TIPS_END = None
 
 
 class PartPreview(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(260, 190)
+        self.setMinimumSize(180, 140)
         self.items = []
 
     def show_part(self, key, vals):
@@ -1447,15 +2241,290 @@ class PartPreview(QWidget):
 
 
 
+class SoilKey(QWidget):
+    """What each lettered size is: the pipes end on, and a stack and a waste on a wall."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(220, 415)       # drawn to scale, so it fits whatever size
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        import math as _m
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / 680.0)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        soil, waste = QColor(70, 74, 80), QColor(200, 204, 210)
+        wallc, brick = QColor(200, 196, 188), QColor(178, 90, 60)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+
+        def box(x, y, w, h, col):
+            p.setPen(QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawRect(QRectF(x, y, w, h))
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = _m.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + _m.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * _m.cos(a + s_), y + 6 * _m.sin(a + s_)))
+            p.setPen(red)
+            p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+        def title(x, y, t):
+            p.setPen(QColor(60, 60, 60))
+            p.setFont(f)
+            p.drawText(QRectF(x, y, 340, 18), Qt.AlignLeft, t)
+
+        def ring(cx, cy, r, t, col):
+            p.setPen(QPen(col.darker(150), 0.8))
+            p.setBrush(col)
+            p.drawEllipse(QPointF(cx, cy), r, r)
+            p.setBrush(QColor(250, 250, 246))
+            p.drawEllipse(QPointF(cx, cy), r - t, r - t)
+
+        # ---- the pipes end on
+        title(10, 4, "Soil pipe end on")
+        ring(80, 70, 40, 6, soil)
+        dim(40, 122, 120, 122, "A", 80, 134)
+        dim(114, 70, 120, 70, "B", 132, 62)
+        title(200, 4, "Waste pipe end on")
+        ring(270, 70, 18, 4, waste)
+        dim(252, 100, 288, 100, "C", 270, 112)
+        dim(284, 70, 288, 70, "D", 300, 62)
+
+        # ---- a wall from the front: a soil stack and a waste coming out into a gully
+        title(10, 150, "On a wall, from the front")
+        WX0, WX1, WY0, WY1 = 40.0, 320.0, 200.0, 400.0
+        box(WX0, WY0, WX1 - WX0, WY1 - WY0, wallc)
+        for i in range(10):
+            p.setPen(QPen(brick, 0.5))
+            p.drawLine(QPointF(WX0, WY0 + 18 + i * 19), QPointF(WX1, WY0 + 18 + i * 19))
+        p.setPen(QPen(QColor(90, 70, 50), 1.2))
+        p.drawLine(QPointF(10, WY1), QPointF(350, WY1))                 # ground
+        sx = 130.0
+        box(sx - 9, WY0 + 18, 18, WY1 - WY0 + 12, soil)                   # the stack
+        box(sx - 12, WY0 + 6, 24, 12, QColor(110, 115, 122))              # vent cowl
+        for cy_ in (WY0 + 60, WY0 + 140):
+            box(sx - 13, cy_, 26, 5, QColor(30, 30, 30))                  # clips
+        dim(WX0, WY0 - 12, sx, WY0 - 12, "G", (WX0 + sx) / 2, WY0 - 24)
+        dim(sx + 22, WY0, sx + 22, WY0 + 18, "H", sx + 34, WY0 + 9)
+        dim(sx + 22, WY1, sx + 22, WY1 + 30, "L", sx + 34, WY1 + 15)
+        dim(sx - 26, WY0 + 62, sx - 26, WY0 + 142, "Q", sx - 38, WY0 + 102)
+        wy = WY1 - 90.0
+        box(230, wy - 4, 60, 8, waste)                                    # waste out of the wall
+        box(286, wy - 4, 8, 78, waste)                                    # down to the gully
+        box(276, WY1 - 10, 28, 10, QColor(90, 90, 90))                    # gully
+        for cy_ in (wy + 20, wy + 50):
+            box(283, cy_, 14, 3, QColor(30, 30, 30))
+        dim(220, wy, 220, WY1, "M", 208, (wy + WY1) / 2)
+        dim(306, wy + 21, 306, wy + 51, "R", 318, wy + 36)
+
+        # ---- from above: how far out from the wall
+        title(10, 440, "From above")
+        box(40, 462, 120, 14, wallc)
+        ring(100, 476 + 20 + 12, 12, 3, soil)
+        box(97, 476, 6, 20, QColor(30, 30, 30))
+        dim(70, 476, 70, 496, "N", 58, 486)
+
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        notes = ["A  soil pipe diameter", "B  soil pipe wall", "C  waste pipe diameter", "D  waste pipe wall",
+                 "F  length of a pipe", "G  along the wall", "H  stack top below wall top",
+                 "J  branch length", "K  distance back from the end", "L  stack below the wall",
+                 "M  waste height on the wall", "N  extra gap from the wall", "Q  soil clips at most",
+                 "R  waste clips at most", "S  swan neck offset", "T  bend turn angle",
+                 "U  longest soil length", "V  longest waste length"]
+        for i, t_ in enumerate(notes):
+            p.drawText(QRectF(185 if i >= 9 else 10, 520 + (i % 9) * 15.5, 175, 14),
+                       Qt.AlignLeft | Qt.AlignVCenter, t_)
+        p.end()
+
+
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_soil_waste.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>Mark the run (easy to see)</b><br>"
+             "On the Follow lines page click 'Mark the run' and click the corners of each run: a thick, "
+             "bright line you can see on a detailed building (set its thickness and colour there). Arrow keys "
+             "lock it to an axis (Right = red, Left = green, Up = blue, Down = free). Esc or right-click ends a "
+             "line; again when you've finished marking. It snaps to the ends of your marked lines and onto "
+             "them. Then 'Build along lines' - everything goes into one group, and pipes going down to the "
+             "ground step out round a plinth, a sill or a lean-to.<br><br>"
+             "<b>Follow lines (the quick way)</b><br>"
+             "Draw a line where each pipe run goes, corner to corner - down the wall for a soil stack, or out "
+             "of the wall and down for a waste. Select the lines, go to the Follow lines page, pick soil or "
+             "waste and what goes on each end, and click 'Build along selected lines'. You get bends wherever "
+             "the line turns, socket collars, clips to the wall, and the vent, gully or drain on the ends. "
+             "Lines drawn on a wall stand the pipe off it on its clips; lines in mid-air are the middle of "
+             "the pipe.<br><br>"
+             "<b>One part at a time</b><br>"
+             "Pick a part on the Part page and click 'Add part'. The first one goes at the origin - or select "
+             "a wall face, click 'Use selected wall' (On a wall page): a soil part starts a stack down the wall "
+             "and a waste part comes out of it. Each part joins onto the open end of the last one; select the "
+             "open end of any part you placed and click 'Use selected end' to carry on from there.<br><br>"
+             "<b>Sizes</b><br>The pipe sizes are on the Pipes page; the letters are on the Key page. Click a "
+             "part in the model and the settings that made it light up.<br><br>"
+             "<b>Printing</b><br>Tick 'Solid' and 'Chunky fittings' for small scales. Sizes are real-world mm "
+             "- Scale Studio takes it down to your model scale.")
+
+# which settings make each part, found from its group name when you click it in the model
+PIECE_KEYS = [("Pipe clips", ('s_spacing', 'w_spacing')), ("Soil pipe length", ('length', 's_size', 's_wall')),
+              ("Waste pipe length", ('length', 'w_size', 'w_wall')), ("Swan neck", ('bend_turn', 'swan_len')),
+              ("Double branch", ('bend_turn', 'branch_len')), ("Branch", ('bend_turn', 'branch_len')),
+              ("Tee", ('branch_len',)), ("Bend", ('bend_turn',)), ("Rest bend", ('s_size',)),
+              ("Socket", ('offset',)), ("Pipe clip", ('offset',)), ("Boss connector", ('offset',)),
+              ("Boss adaptor", ('offset',)), ("Boss pipe", ('s_size', 'w_size')),
+              ("Access pipe", ('s_size',)), ("Vent cowl", ('s_size',)), ("Drain adaptor", ('s_size',)),
+              ("Hopper head", ('w_size',)), ("Shoe", ('w_size',)), ("Gully", ('w_size',)),
+              ("Back-inlet gully", ('w_size',))]
+
+
 # ---------------------------------------------------------------------------
-# Dialog
+# Mark the run - the plugin's own thick line, drawn over the model so it shows up
+# against bricks and tiles. Click the points (IngeTrazo's snapping works as usual),
+# Enter or double-click finishes a run, Backspace takes the last point off, Esc stops.
+# ---------------------------------------------------------------------------
+MARK_DEFAULT_PX = 5
+MARK_DEFAULT_RGB = (255, 214, 0)          # bright yellow, with a dark edge round it
+AXIS_NAMES = ("red (X)", "green (Y)", "blue (Z, up and down)")
+AXIS_RGB = ((230, 40, 40), (40, 170, 60), (40, 90, 235))
+
+
+def _px(vp, q):
+    """Screen position of a world point, or None (behind the camera)."""
+    f = getattr(vp, 'world_to_pixel', None) or getattr(vp, '_world_to_pixel', None)
+    if f is None:
+        return None
+    try:
+        r = f(q)
+    except Exception:
+        return None
+    if r is None:
+        return None
+    try:
+        return float(r[0]), float(r[1])
+    except Exception:
+        try:
+            return float(r.x()), float(r.y())
+        except Exception:
+            return None
+
+
+def _mark_segments_px(vp, segs):
+    """World segments [(a, b)] as screen segments, cut to the view."""
+    out = []
+    clip = getattr(vp, '_clip_pixel_line', None)
+    for a, b in segs:
+        pa, pb = _px(vp, QVector3D(*a)), _px(vp, QVector3D(*b))
+        if pa is None or pb is None:
+            continue
+        if clip is not None:
+            try:
+                seg = clip(pa, pb, margin=0.0)
+            except Exception:
+                seg = (pa, pb)
+            if seg is None:
+                continue
+            pa, pb = seg
+        out.append((pa, pb))
+    return out
+
+
+def make_mark_tool(dlg):
+    """The clicking tool, made here (not at module level, so it gets no menu entry of its own)."""
+    from PySide6.QtCore import Qt
+
+    class _MarkTool(Tool):
+        name = "Soil & Waste Pipes - mark the run"
+        shortcut = None
+        uses_snap = True
+        wireframe_color = (1.0, 0.84, 0.0, 1.0)
+
+        def on_activate(self, viewport):
+            dlg.mark_hover = None
+
+        def on_deactivate(self, viewport):
+            dlg.mark_hover = None
+            dlg.mark_tool_gone(self)
+
+        def on_hover(self, ctx):
+            try:
+                q = ctx.world
+                dlg.mark_hover = dlg.mark_snap(dlg.mark_constrain((float(q.x()), float(q.y()), float(q.z()))))
+                ctx.viewport.update()
+            except Exception:
+                pass
+
+        def on_click(self, ctx):
+            try:
+                q = ctx.world
+                dlg.mark_clicked(dlg.mark_snap(dlg.mark_constrain((float(q.x()), float(q.y()), float(q.z())))))
+            except Exception as e:
+                print("%s: marking: %s" % (PLUGIN_NAME, e))
+
+        def on_double_click(self, ctx):
+            dlg.mark_finish_run()
+
+        def on_key(self, viewport, key, modifiers):
+            return dlg.mark_key(key)
+
+        def on_cancel(self, viewport):
+            # IngeTrazo sends Esc to the tool here: end this line, or (again) finished marking
+            dlg.mark_key(Qt.Key_Escape)
+
+        def status_clause(self):
+            lk = dlg.mark_lock
+            t = ("Locked to %s. " % AXIS_NAMES[lk]) if lk is not None else ""
+            return (t + "Mark the run: click the points. Arrows lock to an axis (Right = red, Left = green, "
+                    "Up = blue, Down = free). Esc, right-click, Enter or double-click = end this line, "
+                    "Esc or right-click again = finished marking, Backspace = take the last point off")
+
+        def rubber_band_lines(self):
+            return []                 # the plugin draws its own thick line instead
+    return _MarkTool()
+
+
+
+# ---------------------------------------------------------------------------
+# Dialog - laid out like the other plugins: pictures on the left, pages on the right
 # ---------------------------------------------------------------------------
 class SoilWasteDialog(QDialog):
     CUSTOM = "-- Custom --"
 
     def __init__(self, cur, target, viewport, tool):
         super().__init__(viewport)
-        self.setWindowTitle(PLUGIN_NAME)
+        from PySide6.QtWidgets import QTabWidget, QScrollArea
+        self.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
         self.setModal(False)
         self.viewport = viewport
         self.tool = tool
@@ -1465,61 +2534,83 @@ class SoilWasteDialog(QDialog):
         self.wall = None           # a picked wall the next run starts on
         self.wall_face = None
         self.wall_dir = None       # which way the wall is, for pointing clips at it
+        self.marks = []            # runs marked with the thick line: lists of world points
+        self.mark_run = []         # the run being marked now
+        self.mark_hover = None
+        self.marking = False
+        self.mark_tool = None
+        self.mark_lock = None      # 0, 1, 2 = locked to X, Y, Z (arrow keys); None = free
+        self._hid_for_marking = False
+        self.mark_snapped = None   # (point, 'end' or 'on') when the mouse is on a marked line
         self.user_presets = load_presets()
         lay = QVBoxLayout(self)
+
+        # how to use it - only shows when Info is pressed
+        self.info_box = QWidget()
+        ib = QVBoxLayout(self.info_box)
+        ib.setContentsMargins(0, 0, 0, 0)
+        lbl_info = QLabel(INFO_TEXT)
+        lbl_info.setWordWrap(True)
+        ib.addWidget(lbl_info)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
 
         self.lbl_target = QLabel()
         self.lbl_target.setWordWrap(True)
         self.lbl_target.setStyleSheet("font-weight: bold;")
         lay.addWidget(self.lbl_target)
 
-        self.cb_solid = QCheckBox("Solid (for 3D printing) - no hollow inside")
-        self.cb_solid.setChecked(bool(cur.get('solid')))
-        self.cb_solid.setToolTip("Fills the pipes in, so small-scale prints come out strong. "
-                                 "Fit-over parts (sockets, clips, bosses) stay as sleeves.")
-        lay.addWidget(self.cb_solid)
-        self.cb_detail = QCheckBox("Detailed fittings (socket collars, rodding eye, bosses)")
-        self.cb_detail.setChecked(bool(cur.get('detail', True)))
-        self.cb_detail.setToolTip("Gives fittings thick socket collars at their ends, a round rodding "
-                                  "eye with cap and bolts on access pipes, and collars on boss outlets.")
-        lay.addWidget(self.cb_detail)
-        self.cb_psock = QCheckBox("Pipe lengths have a socket on the start (top) end")
-        self.cb_psock.setChecked(bool(cur.get('pipe_socket', True)))
-        self.cb_psock.setToolTip("Like real soil and waste pipe: one plain end and one socket end. "
-                                 "A pipe that joins onto a bend, branch, boss or coupler goes in "
-                                 "plain-ended, as that fitting has the socket. "
-                                 "Only used with Detailed fittings.")
-        self.cb_detail.toggled.connect(self.cb_psock.setEnabled)
-        self.cb_psock.setEnabled(self.cb_detail.isChecked())
-        lay.addWidget(self.cb_psock)
-        self.cb_ears = QCheckBox("Cast-iron style ears on pipe sockets (instead of clips)")
-        self.cb_ears.setChecked(bool(cur.get('ears', False)))
-        self.cb_ears.setToolTip("Puts two fixing lugs on each pipe length's socket, facing the wall, "
-                                "like Victorian cast-iron pipe. Pipe clips are then left off.")
-        self.cb_psock.toggled.connect(self.cb_ears.setEnabled)
-        self.cb_ears.setEnabled(self.cb_psock.isChecked() and self.cb_detail.isChecked())
-        lay.addWidget(self.cb_ears)
+        def mm_spin(val, lo=0.1, hi=100000.0, suffix=" mm", dec=1):
+            sp = QDoubleSpinBox()
+            sp.setDecimals(dec)
+            sp.setRange(lo, hi)
+            sp.setSuffix(suffix)
+            sp.setValue(val)
+            return sp
 
-        # ---- presets ----
         row = QHBoxLayout()
-        self.cb_preset = QComboBox()
-        b_save, b_del, b_open = QPushButton("Save"), QPushButton("Delete"), QPushButton("Open folder")
-        b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
-        b_saveas = QPushButton("Save as...")
-        self.btn_preset_save = b_save
-        row.addWidget(QLabel("Preset:"))
-        row.addWidget(self.cb_preset, 1)
-        for b in (b_save, b_saveas, b_del, b_open):
-            row.addWidget(b)
         lay.addLayout(row)
-        b_save.clicked.connect(self.save_preset)
-        b_saveas.clicked.connect(lambda: self.save_preset_as())
-        b_del.clicked.connect(self.delete_preset)
-        b_open.clicked.connect(self.open_folder)
+        # ---- left: the preview and the key
+        self.left = QTabWidget()
+        pv = QWidget()
+        pvl = QVBoxLayout(pv)
+        pvl.setContentsMargins(4, 4, 4, 4)
+        self.preview = PartPreview()
+        self.preview.setMinimumSize(190, 160)
+        pvl.addWidget(self.preview, 1)
+        cap = QLabel("Brown panel = the wall. Pale grey = the pipe it fits over.")
+        cap.setStyleSheet("color: gray; font-size: 9pt;")
+        pvl.addWidget(cap)
+        self.left.addTab(pv, "Preview")
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(SoilKey())
+        self.left.addTab(ks, "Key (A, B, C...)")
+        self.left.setTabToolTip(1, "What each lettered size is.")
+        self.left.setMaximumWidth(300)    # the preview side stays small; the pages get the room
+        row.addWidget(self.left, 2)
+        # ---- right: the pages
+        self.tabs = QTabWidget()
+        row.addWidget(self.tabs, 3)
+        self.keyw = {}                    # setting -> (box, label), to light up
+        self.page_of = {}
 
-        # ---- part list ----
+        def add_row(form, key, label, w, tip=None):
+            lab = QLabel(label)
+            if tip:
+                w.setToolTip(tip)
+                lab.setToolTip(tip)
+            form.addRow(lab, w)
+            self.keyw[key] = (w, lab)
+            self.page_of[key] = self.tabs.count() - 1
+            return lab
+
+        # Part page: what to add next
+        page = QWidget()
+        sf = QFormLayout(page)
+        self.tabs.addTab(page, "Part")
         self.lst = QListWidget()
-        self.lst.setMinimumHeight(300)
+        self.lst.setMinimumHeight(250)
         for header, system in (("SOIL PIPE", 'soil'), ("WASTE PIPE", 'waste')):
             h = QListWidgetItem(header)
             h.setFlags(h.flags() & ~QtItemFlags.selectable & ~QtItemFlags.enabled)
@@ -1532,42 +2623,7 @@ class SoilWasteDialog(QDialog):
                 self.lst.addItem(it)
                 if key == cur['part']:
                     self.lst.setCurrentItem(it)
-
-        def mm_spin(val, lo=0.1, hi=100000.0, suffix=" mm", dec=1):
-            sp = QDoubleSpinBox()
-            sp.setDecimals(dec)
-            sp.setRange(lo, hi)
-            sp.setSuffix(suffix)
-            sp.setValue(val)
-            return sp
-
-        # ---- pipe sizes ----
-        pb = QGroupBox("Pipe sizes")
-        pf = QFormLayout(pb)
-        self.sp_ss = mm_spin(cur['s_size'], 20.0)
-        self.sp_st = mm_spin(cur['s_wall'], 0.5, 50.0)
-        self.sp_ws = mm_spin(cur['w_size'], 10.0)
-        self.sp_wt = mm_spin(cur['w_wall'], 0.5, 50.0)
-        self.sp_ss.setToolTip("Outside diameter of the soil pipe: 110 mm is standard, 82 mm is also used.")
-        self.sp_ws.setToolTip("Outside diameter of the waste pipe: 32 mm for basins, 40 mm for sinks "
-                              "and baths, 50 mm for longer runs.")
-        pf.addRow("Soil pipe diameter:", self.sp_ss)
-        pf.addRow("Soil pipe wall:", self.sp_st)
-        pf.addRow("Waste pipe diameter:", self.sp_ws)
-        pf.addRow("Waste pipe wall:", self.sp_wt)
-
-        left = QVBoxLayout()
-        left.addWidget(self.lst)
-        left.addWidget(pb)
-
-        # ---- this part ----
-        sb = QGroupBox("This part")
-        sf = QFormLayout(sb)
-        self.preview = PartPreview()
-        sf.addRow(self.preview)
-        cap = QLabel("Brown panel = the wall. Pale grey = the pipe it fits over.")
-        cap.setStyleSheet("color: gray; font-size: 9pt;")
-        sf.addRow(cap)
+        sf.addRow(self.lst)
         self.sp = {
             'length': mm_spin(cur['length'], 1.0),
             'bend_turn': mm_spin(cur['bend_turn'], 1.0, 135.0, " deg"),
@@ -1575,11 +2631,18 @@ class SoilWasteDialog(QDialog):
             'offset': mm_spin(cur['offset'], 0.0),
             'swan_len': mm_spin(cur['swan_len'], 0.0),
         }
-        self.sp['swan_len'].setToolTip("Length of the straight between the two bends of a swan neck.")
-        self.sp['bend_turn'].setToolTip("How far the pipe turns. A 92.5 deg bend or branch turns 87.5; "
-                                        "a 112.5 deg turns 67.5; a 135 deg turns 45; a 90 deg turns 90.")
-        self.sp['offset'].setToolTip("0 = centred on the end you selected. Larger values slide it "
-                                     "back along the pipe.")
+        tips = {'length': "How long the pipe length is.",
+                'bend_turn': "How far the pipe turns. A 92.5 deg bend or branch turns 87.5; a 112.5 deg turns "
+                             "67.5; a 135 deg turns 45; a 90 deg turns 90.",
+                'branch_len': "How long the branch arm is.",
+                'offset': "0 = centred on the end you selected. Larger values slide it back along the pipe.",
+                'swan_len': "Length of the straight between the two bends of a swan neck."}
+        labels = {'length': "F   Length", 'bend_turn': "T   Turn angle", 'branch_len': "J   Branch length",
+                  'offset': "K   Distance back from the end", 'swan_len': "S   Swan neck offset"}
+        self.rows = {}
+        for k in ('length', 'bend_turn', 'branch_len', 'offset', 'swan_len'):
+            lab = add_row(sf, k, labels[k], self.sp[k], tips[k])
+            self.rows[k] = (lab, self.sp[k])
         self.cb_dir = QComboBox()
         for label, deg in BEND_DIRS:
             self.cb_dir.addItem(label, deg)
@@ -1588,17 +2651,9 @@ class SoilWasteDialog(QDialog):
         self.cb_dir.setToolTip("Which way the bend, branch, boss, access door or clip faces. "
                                "On a pipe coming out of a wall 'Down' bends it down; on an upright "
                                "pipe it turns towards the wall.")
-        labels = {'length': "Length:", 'bend_turn': "Turn angle:", 'branch_len': "Branch length:",
-                  'offset': "Distance back from the end:", 'swan_len': "Offset length:"}
-        self.rows = {}
-        for k in ('length', 'bend_turn', 'branch_len', 'offset', 'swan_len'):
-            lab = QLabel(labels[k])
-            sf.addRow(lab, self.sp[k])
-            self.rows[k] = (lab, self.sp[k])
-        lab = QLabel("Direction:")
+        lab = QLabel("Direction")
         sf.addRow(lab, self.cb_dir)
         self.rows['bend_dir'] = (lab, self.cb_dir)
-
         self.cb_wall = QComboBox()
         for label, deg in WALL_SIDES:
             self.cb_wall.addItem(label, deg)
@@ -1606,105 +2661,421 @@ class SoilWasteDialog(QDialog):
                 self.cb_wall.setCurrentIndex(self.cb_wall.count() - 1)
         self.cb_wall.setToolTip("Which side the wall is on when a new run starts at the origin. "
                                 "Parts joined onto an end follow that end instead.")
-        sf.addRow("New run - wall is:", self.cb_wall)
+        sf.addRow("New run - wall is", self.cb_wall)
+        self.cb_solid = QCheckBox("Solid (for 3D printing) - no hollow inside")
+        self.cb_solid.setChecked(bool(cur.get('solid')))
+        self.cb_solid.setToolTip("Fills the pipes in, so small-scale prints come out strong. "
+                                 "Fit-over parts (sockets, clips, bosses) stay as sleeves.")
+        sf.addRow(self.cb_solid)
 
-        # ---- start on a wall ----
-        wb = QGroupBox("Start on a wall")
-        wf = QFormLayout(wb)
+        # Pipes page: the sizes
+        page = QWidget()
+        pf = QFormLayout(page)
+        self.tabs.addTab(page, "Pipes")
+        self.sp_ss = mm_spin(cur['s_size'], 20.0)
+        self.sp_st = mm_spin(cur['s_wall'], 0.5, 50.0)
+        self.sp_ws = mm_spin(cur['w_size'], 10.0)
+        self.sp_wt = mm_spin(cur['w_wall'], 0.5, 50.0)
+        add_row(pf, 's_size', "A   Soil pipe diameter", self.sp_ss,
+                "Outside diameter of the soil pipe: 110 mm is standard, 82 mm is also used.")
+        add_row(pf, 's_wall', "B   Soil pipe wall", self.sp_st, "How thick the soil pipe's wall is.")
+        add_row(pf, 'w_size', "C   Waste pipe diameter", self.sp_ws,
+                "Outside diameter of the waste pipe: 32 mm for basins, 40 mm for sinks and baths, "
+                "50 mm for longer runs.")
+        add_row(pf, 'w_wall', "D   Waste pipe wall", self.sp_wt, "How thick the waste pipe's wall is.")
+
+        # Fittings page: how much detail
+        page = QWidget()
+        df = QFormLayout(page)
+        self.tabs.addTab(page, "Fittings")
+        self.cb_detail = QCheckBox("Detailed fittings (socket collars, rodding eye, bosses)")
+        self.cb_detail.setChecked(bool(cur.get('detail', True)))
+        self.cb_detail.setToolTip("Gives fittings thick socket collars at their ends, a round rodding "
+                                  "eye with cap and bolts on access pipes, collars on boss outlets, "
+                                  "hinged clips with bolt lugs and a cage vent cowl.")
+        df.addRow(self.cb_detail)
+        self.cb_psock = QCheckBox("Pipe lengths have a socket on the start (top) end")
+        self.cb_psock.setChecked(bool(cur.get('pipe_socket', True)))
+        self.cb_psock.setToolTip("Like real soil and waste pipe: one plain end and one socket end. "
+                                 "A pipe that joins onto a bend, branch, boss or coupler goes in "
+                                 "plain-ended, as that fitting has the socket. "
+                                 "Only used with Detailed fittings.")
+        self.cb_detail.toggled.connect(self.cb_psock.setEnabled)
+        self.cb_psock.setEnabled(self.cb_detail.isChecked())
+        df.addRow(self.cb_psock)
+        self.cb_ears = QCheckBox("Cast-iron style ears on pipe sockets (instead of clips)")
+        self.cb_ears.setChecked(bool(cur.get('ears', False)))
+        self.cb_ears.setToolTip("Puts two fixing lugs on each pipe length's socket, facing the wall, "
+                                "like Victorian cast-iron pipe. Pipe clips are then left off. "
+                                "(Not used by Follow lines, which always uses clips.)")
+        self.cb_psock.toggled.connect(self.cb_ears.setEnabled)
+        self.cb_ears.setEnabled(self.cb_psock.isChecked() and self.cb_detail.isChecked())
+        df.addRow(self.cb_ears)
+
+        # On a wall page
+        page = QWidget()
+        wf = QFormLayout(page)
+        self.tabs.addTab(page, "On a wall")
+        wi = QLabel("Start a run on a wall: select a wall face, then click 'Use selected wall'. A soil part "
+                    "starts a stack down the wall; a waste part comes straight out of it.")
+        wi.setWordWrap(True)
+        wf.addRow(wi)
         b_wall = QPushButton("Use selected wall")
         b_wall.setToolTip("Select a wall face, then click this. A soil part starts a stack down the "
                           "wall; a waste part comes straight out of the wall.")
         b_wall.clicked.connect(self.use_selected_wall)
         wf.addRow(b_wall)
         self.sp_along = mm_spin(cur['along'], 0.0)
-        self.sp_along.setToolTip("Distance from the left end of the wall, as you look at it from outside.")
         self.sp_drop = mm_spin(cur['drop'], -100000.0)
-        self.sp_drop.setToolTip("Soil stack: how far its top sits below the top of the wall. "
-                                "Negative takes it above the wall, e.g. to vent above the eaves.")
         self.sp_below = mm_spin(cur['below'], -100000.0)
-        self.sp_below.setToolTip("Soil stack: how far it carries on below the bottom of the wall "
-                                 "(into the ground). Negative stops short.")
         self.sp_wh = mm_spin(cur['w_height'], 0.0)
-        self.sp_wh.setToolTip("Waste pipe: height above the bottom of the wall where it comes out.")
         self.sp_wgap = mm_spin(cur['wall_gap'], 0.0)
-        self.sp_wgap.setToolTip("Soil stack: 0 = clips sit flat on the wall. More moves the stack out.")
+        add_row(wf, 'along', "G   Along the wall", self.sp_along,
+                "Distance from the left end of the wall, as you look at it from outside.")
+        add_row(wf, 'drop', "H   Stack top below wall top", self.sp_drop,
+                "Soil stack: how far its top sits below the top of the wall. "
+                "Negative takes it above the wall, e.g. to vent above the eaves.")
+        add_row(wf, 'below', "L   Stack below the wall", self.sp_below,
+                "Soil stack: how far it carries on below the bottom of the wall "
+                "(into the ground). Negative stops short.")
+        add_row(wf, 'w_height', "M   Waste height on the wall", self.sp_wh,
+                "Waste pipe: height above the bottom of the wall where it comes out.")
+        add_row(wf, 'wall_gap', "N   Extra gap from the wall", self.sp_wgap,
+                "0 = clips sit flat on the wall. More moves the pipe out. Follow lines uses it too.")
         self.cb_fit = QCheckBox("Soil pipe length = wall height")
         self.cb_fit.setChecked(cur['fit_wall'])
         self.cb_flip = QCheckBox("Wrong side? Put it on the other side of the wall")
         self.cb_flip.setChecked(cur['wall_flip'])
         self.cb_flip.toggled.connect(self.reread_wall)
-        wf.addRow("Along the wall:", self.sp_along)
-        wf.addRow("Soil - below top of wall:", self.sp_drop)
-        wf.addRow("Soil - below bottom of wall:", self.sp_below)
-        wf.addRow("Waste - height on the wall:", self.sp_wh)
-        wf.addRow("Extra gap from wall:", self.sp_wgap)
         wf.addRow(self.cb_fit)
         wf.addRow(self.cb_flip)
 
-        # ---- clips ----
-        fb = QGroupBox("Pipe clips")
-        ff = QFormLayout(fb)
+        # Clips page
+        page = QWidget()
+        ff = QFormLayout(page)
+        self.tabs.addTab(page, "Clips")
         self.cb_fix = QCheckBox("Add them evenly with every pipe length")
         self.cb_fix.setChecked(cur['auto_fix'])
+        ff.addRow(self.cb_fix)
         self.sp_ssp = mm_spin(cur['s_spacing'], 100.0)
         self.sp_wsp = mm_spin(cur['w_spacing'], 100.0)
-        self.sp_ssp.setToolTip("Most a soil pipe clip can be from the next one. One also goes near each end.")
-        self.sp_wsp.setToolTip("Most a waste pipe clip can be from the next one. One also goes near each end.")
-        ff.addRow(self.cb_fix)
-        ff.addRow("Soil clips at most:", self.sp_ssp)
-        ff.addRow("Waste clips at most:", self.sp_wsp)
+        add_row(ff, 's_spacing', "Q   Soil clips at most", self.sp_ssp,
+                "Most a soil pipe clip can be from the next one. One also goes near each end.")
+        add_row(ff, 'w_spacing', "R   Waste clips at most", self.sp_wsp,
+                "Most a waste pipe clip can be from the next one. One also goes near each end.")
         self.cb_chunky = QCheckBox("Chunky fittings (for 3D printing)")
         self.cb_chunky.setChecked(cur['chunky'])
         self.cb_chunky.setToolTip("Makes every clip, socket, boss and vent thicker with no gap to the "
                                   "pipe, so they survive printing at small scales.")
-        self.sp_chunk = mm_spin(cur['chunk_mult'], 1.0, 10.0, " x", 1)
-        self.sp_chunk.setToolTip("How many times thicker than real fittings.")
         ff.addRow(self.cb_chunky)
-        ff.addRow("   Thicker by:", self.sp_chunk)
+        self.sp_chunk = mm_spin(cur['chunk_mult'], 1.0, 10.0, " x", 1)
+        add_row(ff, 'chunk_mult', "Thicker by", self.sp_chunk, "How many times thicker than real fittings.")
         self.cb_chunky.toggled.connect(self.sp_chunk.setEnabled)
         self.sp_chunk.setEnabled(self.cb_chunky.isChecked())
         self.cb_fix.toggled.connect(lambda on: (self.sp_ssp.setEnabled(on), self.sp_wsp.setEnabled(on)))
         self.sp_ssp.setEnabled(self.cb_fix.isChecked())
         self.sp_wsp.setEnabled(self.cb_fix.isChecked())
 
-        cols = QHBoxLayout()
-        cols.addLayout(left)
-        cols.addWidget(sb)
-        right = QVBoxLayout()
-        right.addWidget(wb)
-        right.addWidget(fb)
-        right.addStretch(1)
-        cols.addLayout(right)
-        lay.addLayout(cols)
+        # Follow lines page: build a run along lines you've drawn
+        page = QWidget()
+        rf = QFormLayout(page)
+        self.tabs.addTab(page, "Follow lines")
+        ri = QLabel("Draw a line where each run goes, corner to corner (down the wall for a stack; out of "
+                    "the wall and down for a waste). Select the lines (you can select the wall faces too), "
+                    "set what's on the ends and click the button.")
+        ri.setWordWrap(True)
+        rf.addRow(ri)
+        b_route = QPushButton("Build along lines")
+        b_route.setToolTip("Builds a pipe run along each marked run (or each selected line if nothing is "
+                           "marked), with bends where it turns, socket collars, clips and the end fittings. "
+                           "One undo takes it all away again.")
+        b_route.clicked.connect(lambda: self.tool.build_route(self))
+        rf.addRow(b_route)
+        self.cb_rsys = QComboBox()
+        for label, key in ROUTE_SYSTEMS:
+            self.cb_rsys.addItem(label, key)
+            if key == cur.get('r_system', 'soil'):
+                self.cb_rsys.setCurrentIndex(self.cb_rsys.count() - 1)
+        rf.addRow("The lines are", self.cb_rsys)
+        self.cb_rtop = QComboBox()
+        self.cb_rbot = QComboBox()
+        self.cb_rtop.setToolTip("What goes on the top end of each run.")
+        self.cb_rbot.setToolTip("What goes on the bottom end of each run.")
+        rf.addRow("Top end", self.cb_rtop)
+        rf.addRow("Bottom end", self.cb_rbot)
+        self._route_ends(cur.get('r_top', 'vent'), cur.get('r_bot', 'drain'))
+        self.cb_rsys.currentIndexChanged.connect(lambda *_: self._route_ends())
+        self.sp_smax = mm_spin(cur['s_maxlen'], 0.0)
+        self.sp_wmax = mm_spin(cur['w_maxlen'], 0.0)
+        add_row(rf, 's_maxlen', "U   Longest soil length", self.sp_smax,
+                "Longer stretches of soil pipe are cut into lengths no longer than this, each with its "
+                "socket. 0 = one length per stretch.")
+        add_row(rf, 'w_maxlen', "V   Longest waste length", self.sp_wmax,
+                "The same for waste pipe.")
+        self.cb_rflip = QCheckBox("Wrong side? Put it on the other side of the wall")
+        self.cb_rflip.setChecked(bool(cur.get('r_flip', False)))
+        self.cb_rflip.setToolTip("The wall a line is drawn on is found from the model. If the pipes come "
+                                 "out inside the wall, tick this.")
+        rf.addRow(self.cb_rflip)
+        self.cb_ravoid = QCheckBox("Step out round anything in the way (plinth, sill, lean-to...)")
+        self.cb_ravoid.setChecked(bool(cur.get('r_avoid', True)))
+        self.cb_ravoid.setToolTip("On the way down to the ground, the pipe steps out (bends) over anything "
+                                  "that sticks out in its way, and back in below it where there's wall.")
+        rf.addRow(self.cb_ravoid)
+        rn = QLabel("Lines drawn on a wall stand the pipe off it on its clips (plus N). Lines in mid-air "
+                    "are the middle of the pipe. Uses the sizes, Fittings and Clips pages too.")
+        rn.setWordWrap(True)
+        rn.setStyleSheet("color: gray;")
+        rf.addRow(rn)
 
+        # Mark the run: the plugin's own thick line, easy to see on a detailed building
+        gm = QGroupBox("Mark the run (thick line, easy to see)")
+        gml = QFormLayout(gm)
+        mi = QLabel("Instead of drawing thin lines: click 'Mark the run', then click where each run goes, "
+                    "corner to corner - down the wall for a soil stack, out of the wall and down for a "
+                    "waste (snapping works as usual). The window hides while you mark and comes back when you've finished. Arrow keys lock the line to an axis: Right = red, Left = green, Up = blue (up and "
+                    "down the wall), Down = free again. Esc or right-click (or Enter / double-click) ends the line you're "
+                    "on - then click to start the next one; it snaps to the ends of your marked lines and "
+                    "onto them, so a waste can start right on a stack. Backspace takes the last point "
+                    "off. Esc or right-click again when you've finished marking. Then click "
+                    "'Build along lines'.")
+        mi.setWordWrap(True)
+        gml.addRow(mi)
+        mrow = QHBoxLayout()
+        self.b_mark = QPushButton("Mark the run")
+        self.b_mark.setCheckable(True)
+        self.b_mark.setToolTip("Starts clicking points. IngeTrazo's snapping works as normal, but the line "
+                               "is drawn thick and bright by this plugin.")
+        self.b_mark.toggled.connect(lambda on: self.start_marking() if on else self.stop_marking())
+        b_mclear = QPushButton("Clear marks")
+        b_mclear.setToolTip("Takes all the marked runs away (nothing in the model is changed).")
+        b_mclear.clicked.connect(self.clear_marks)
+        mrow.addWidget(self.b_mark)
+        mrow.addWidget(b_mclear)
+        mrow.addStretch(1)
+        gml.addRow(mrow)
+        mst = _ui_settings()
+        from PySide6.QtWidgets import QSpinBox
+        self.sp_mark_px = QSpinBox()
+        self.sp_mark_px.setRange(1, 20)
+        self.sp_mark_px.setSuffix(" px")
+        try:
+            self.sp_mark_px.setValue(int(mst.get('mark_px', MARK_DEFAULT_PX)))
+        except Exception:
+            self.sp_mark_px.setValue(MARK_DEFAULT_PX)
+        self.sp_mark_px.setToolTip("How thick the marker line is on screen.")
+        self.sp_mark_px.valueChanged.connect(lambda v: (_ui_settings_save(mark_px=int(v)),
+                                                        self.viewport.update()))
+        gml.addRow("Line thickness", self.sp_mark_px)
+        try:
+            rgb = tuple(int(c) for c in mst.get('mark_rgb', MARK_DEFAULT_RGB))[:3]
+            assert len(rgb) == 3
+        except Exception:
+            rgb = MARK_DEFAULT_RGB
+        self.mark_rgb = rgb
+        self.b_mark_col = QPushButton()
+        self.b_mark_col.setFixedWidth(60)
+        self.b_mark_col.setToolTip("Click to pick the marker line's colour.")
+        self.b_mark_col.clicked.connect(self.pick_mark_colour)
+        self._show_mark_colour()
+        gml.addRow("Line colour", self.b_mark_col)
+        self.cb_selthick = QCheckBox("Show my selected lines thick too")
+        self.cb_selthick.setChecked(bool(mst.get('sel_thick', True)))
+        self.cb_selthick.setToolTip("Lines you've drawn and selected are drawn thick in the marker colour "
+                                    "(dashed), so you can see what you've picked.")
+        self.cb_selthick.toggled.connect(lambda on: (_ui_settings_save(sel_thick=bool(on)),
+                                                     self.viewport.update()))
+        gml.addRow(self.cb_selthick)
+        self.cb_markhide = QCheckBox("Hide this window while marking (it comes back when you've finished)")
+        self.cb_markhide.setChecked(bool(mst.get('mark_hide', True)))
+        self.cb_markhide.setToolTip("So the window isn't in the way of the building while you click "
+                                    "the runs. Press Esc twice when you've finished marking and it comes back.")
+        self.cb_markhide.toggled.connect(lambda on: _ui_settings_save(mark_hide=bool(on)))
+        gml.addRow(self.cb_markhide)
+        self.cb_rgroup = QCheckBox("Put everything built along lines into one group")
+        self.cb_rgroup.setChecked(bool(mst.get('route_group', True)))
+        self.cb_rgroup.setToolTip("Ticked, the pipes and all their fittings from one build go "
+                                  "into a single group (each part stays its own group inside it). The group's name has "
+                                  "'(one piece)' in it, so Scale Studio prints it as one piece.")
+        self.cb_rgroup.toggled.connect(lambda on: _ui_settings_save(route_group=bool(on)))
+        rf.addRow(self.cb_rgroup)
+        self.lbl_marks = QLabel()
+        self.lbl_marks.setStyleSheet("color: gray;")
+        gml.addRow(self.lbl_marks)
+        rf.addRow(gm)
+        self._mark_label()
+        self._hook_overlay()
+        self.finished.connect(lambda *_: self._unhook_overlay())
+
+        # ---- presets
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Preset:"))
+        self.cb_preset = QComboBox()
+        prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("▲")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("▼")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
+        b_save, b_saveas = QPushButton("Save"), QPushButton("Save as...")
+        b_del, b_open = QPushButton("Delete"), QPushButton("Folder")
+        self.btn_preset_save = b_save
+        for b in (b_save, b_saveas, b_del, b_open):
+            prow.addWidget(b)
+        lay.addLayout(prow)
+        b_save.clicked.connect(self.save_preset)
+        b_saveas.clicked.connect(lambda: self.save_preset_as())
+        b_del.clicked.connect(self.delete_preset)
+        b_open.clicked.connect(self.open_folder)
+
+        # ---- buttons
         brow = QHBoxLayout()
         self.b_add = QPushButton("Add part")
         self.b_add.setDefault(True)
         b_sel = QPushButton("Use selected end")
         b_new = QPushButton("Start at the origin")
+        b_lines = QPushButton("Build along lines")
         b_close = QPushButton("Close")
         b_sel.setToolTip("Select the open end face of any placed part, then click this to join onto it.")
-        for b in (self.b_add, b_sel, b_new):
+        b_new.setToolTip("The next part starts a new run at the origin.")
+        b_lines.setToolTip("Builds pipe runs along your marked runs, or along lines you've drawn and "
+                           "selected (settings on the Follow lines page).")
+        for b in (self.b_add, b_sel, b_new, b_lines):
             brow.addWidget(b)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(st.get('tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         self.b_add.clicked.connect(lambda: self.tool.add_from_dialog(self))
         b_sel.clicked.connect(self.use_selected_end)
         b_new.clicked.connect(self.start_at_origin)
+        b_lines.clicked.connect(lambda: self.tool.build_route(self))
         b_close.clicked.connect(self.close)
         self.set_target(target)
 
-        self.refresh_presets()
+        self.refresh_presets(select=st.get('last_preset'))
         self.cb_preset.currentIndexChanged.connect(self.apply_preset)
         self.lst.currentItemChanged.connect(self.sync)
-        for c in (self.cb_solid, self.cb_chunky, self.cb_detail, self.cb_psock, self.cb_ears):
+        for c in (self.cb_solid, self.cb_chunky, self.cb_detail, self.cb_psock, self.cb_ears, self.cb_fit,
+                  self.cb_flip, self.cb_fix, self.cb_rflip):
             c.toggled.connect(self.sync)
-        for c in (self.cb_wall, self.cb_dir):
+        for c in (self.cb_wall, self.cb_dir, self.cb_rsys, self.cb_rtop, self.cb_rbot):
             c.currentIndexChanged.connect(self.sync)
-        for w in [self.sp_ss, self.sp_st, self.sp_ws, self.sp_wt, self.sp_chunk] + list(self.sp.values()):
+        for w in [self.sp_ss, self.sp_st, self.sp_ws, self.sp_wt, self.sp_chunk, self.sp_along, self.sp_drop,
+                  self.sp_below, self.sp_wh, self.sp_wgap, self.sp_ssp, self.sp_wsp, self.sp_smax,
+                  self.sp_wmax] + list(self.sp.values()):
             w.valueChanged.connect(self.sync)
+        # click a part in the model and the settings that made it light up
+        self._sel_names = None
+        self._lit = []
+        try:
+            from PySide6.QtCore import QTimer
+            self._sel_timer = QTimer(self)
+            self._sel_timer.timeout.connect(self.watch_selection)
+            self._sel_timer.start(400)
+        except Exception:
+            pass
         self.sync()
+
+    def _route_ends(self, top=None, bot=None):
+        """Fills the end choices for soil or waste, keeping what was picked where it can."""
+        system = self.cb_rsys.currentData() or 'soil'
+        for combo, opts, want in ((self.cb_rtop, ROUTE_TOPS[system], top), (self.cb_rbot, ROUTE_BOTS[system], bot)):
+            keep = want if want is not None else combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            for label, key in opts:
+                combo.addItem(label, key)
+            idx = 0
+            for i in range(combo.count()):
+                if combo.itemData(i) == keep:
+                    idx = i
+            if keep not in [k for _l, k in opts] and len(opts) > 1:
+                idx = 1                                # a new system: its usual end fitting
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def watch_selection(self):
+        try:
+            if not self.isVisible():
+                return
+            scene = getattr(self.viewport, 'scene', None)
+            sel = _items(getattr(scene, 'selection', None)) if scene is not None else []
+            names = tuple(str(getattr(e, 'name', '') or '') for e in sel)
+        except Exception:
+            return
+        if names == self._sel_names:
+            return
+        self._sel_names = names
+        keys = []
+        for nm in names:
+            for word, ks in PIECE_KEYS:
+                if nm.startswith(word):
+                    keys += [k for k in ks if k not in keys]
+                    break
+        for w, lab in self._lit:
+            try:
+                w.setStyleSheet("")
+                lab.setStyleSheet("")
+            except Exception:
+                pass
+        self._lit = []
+        for k in keys:
+            if k in self.keyw:
+                w, lab = self.keyw[k]
+                w.setStyleSheet("background-color: #fff3a0;")
+                lab.setStyleSheet("background-color: #fff3a0; font-weight: bold;")
+                self._lit.append((w, lab))
+        if keys and keys[0] in self.page_of:
+            try:
+                self.tabs.setCurrentIndex(self.page_of[keys[0]])
+            except Exception:
+                pass
+
+    # ---- preset order ----
+    def preset_order(self):
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.refresh_presets(select=name)
 
     # ---- helpers ----
     def part(self):
@@ -1719,6 +3090,10 @@ class SoilWasteDialog(QDialog):
             on = k in uses
             lab.setVisible(on)
             w.setVisible(on)
+        try:
+            _ui_settings_save(last_values=self.values())       # opens like this next time
+        except Exception:
+            pass
         if hasattr(self, 'preview'):
             self.preview.show_part(part, self.values())
 
@@ -1812,6 +3187,485 @@ class SoilWasteDialog(QDialog):
             self.set_target(self.target)
         return changed
 
+    # -------------------------------------------------------------- mark the run
+    def _hook_overlay(self):
+        ov = getattr(self.viewport, '_ext_overlays', None)
+        if ov is None:
+            print("%s: this IngeTrazo can't draw the thick marker line (no overlays)." % PLUGIN_NAME)
+            return
+        if self.paint_marks not in ov:
+            ov.append(self.paint_marks)
+
+    def _unhook_overlay(self):
+        try:
+            self.stop_marking()
+        except Exception:
+            pass
+        ov = getattr(self.viewport, '_ext_overlays', None)
+        try:
+            while ov is not None and self.paint_marks in ov:
+                ov.remove(self.paint_marks)
+            self.viewport.update()
+        except Exception:
+            pass
+
+    def _show_mark_colour(self):
+        r, g, b = self.mark_rgb
+        self.b_mark_col.setStyleSheet("background-color: rgb(%d, %d, %d); border: 1px solid #444;"
+                                      % (r, g, b))
+
+    def pick_mark_colour(self):
+        from PySide6.QtWidgets import QColorDialog
+        from PySide6.QtGui import QColor
+        c = QColorDialog.getColor(QColor(*self.mark_rgb), self, "Marker line colour")
+        if c.isValid():
+            self.mark_rgb = (c.red(), c.green(), c.blue())
+            _ui_settings_save(mark_rgb=list(self.mark_rgb))
+            self._show_mark_colour()
+            self.viewport.update()
+
+    def _mark_label(self):
+        n = len(self.marks) + (1 if len(self.mark_run) >= 2 else 0)
+        if self.marking:
+            t = "Marking: %d point(s) in this run. " % len(self.mark_run)
+            if self.mark_lock is not None:
+                t += "Locked to %s. " % AXIS_NAMES[self.mark_lock]
+        else:
+            t = ""
+        t += "%d run(s) marked." % n if n else "No runs marked yet."
+        try:
+            self.lbl_marks.setText(t)
+        except Exception:
+            pass
+
+    def start_marking(self):
+        vp = self.viewport
+        try:
+            if self.mark_tool is None:
+                self.mark_tool = make_mark_tool(self)
+            self.marking = True
+            vp.set_active_tool(self.mark_tool)
+            self._grab_keys(True)
+            if self.cb_markhide.isChecked():
+                self._hid_for_marking = True
+                self.hide()
+            self._keys_to_view()
+            try:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(150, self._keys_to_view)   # again, once Windows has caught up
+            except Exception:
+                pass
+            try:
+                vp.scene.selection.clear()      # so nothing else is lit up
+            except Exception:
+                pass
+        except Exception as e:
+            self.marking = False
+            QMessageBox.warning(self, PLUGIN_NAME, "Couldn't start marking: %s" % e)
+        self._sync_mark_button()
+        self._mark_label()
+        vp.update()
+
+    def stop_marking(self):
+        """Esc: stop clicking. A run with two or more points is kept."""
+        was = self.marking
+        self.marking = False
+        try:
+            self._grab_keys(False)
+        except Exception:
+            pass
+        if len(self.mark_run) >= 2:
+            self.marks.append(self.mark_run)
+        self.mark_run = []
+        self.mark_hover = None
+        self.mark_lock = None
+        if was:
+            try:
+                win = self.viewport.window()
+                act = getattr(win, "_activate_tool", None)
+                if callable(act):
+                    act("select")
+                else:
+                    self.viewport.set_active_tool(None)
+            except Exception:
+                pass
+        self._sync_mark_button()
+        self._mark_label()
+        self._come_back()
+        try:
+            self.viewport.update()
+        except Exception:
+            pass
+
+    def _come_back(self):
+        """Shows the window again if it was hidden for marking."""
+        if self._hid_for_marking:
+            self._hid_for_marking = False
+            try:
+                self.show()
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+
+    def _sync_mark_button(self):
+        try:
+            self.b_mark.blockSignals(True)
+            self.b_mark.setChecked(self.marking)
+        finally:
+            self.b_mark.blockSignals(False)
+
+    def mark_tool_gone(self, tool):
+        """Another tool was picked: stop marking (what's marked is kept)."""
+        if tool is self.mark_tool and self.marking:
+            self.marking = False
+            try:
+                self._grab_keys(False)
+            except Exception:
+                pass
+            if len(self.mark_run) >= 2:
+                self.marks.append(self.mark_run)
+            self.mark_run = []
+            self._sync_mark_button()
+            self._mark_label()
+            self._come_back()
+
+    def mark_key(self, key):
+        """A key while marking. True if it was one of ours."""
+        from PySide6.QtCore import Qt
+        if not self.marking:
+            return False
+        if key == Qt.Key_Escape:
+            if self.mark_run:
+                self.mark_finish_run()      # first Esc: end this line, carry on marking
+            else:
+                self.stop_marking()         # Esc again: finished marking
+            return True
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self.mark_finish_run()
+            return True
+        if key == Qt.Key_Backspace:
+            self.mark_take_last()
+            return True
+        arrows = {Qt.Key_Right: 0, Qt.Key_Left: 1, Qt.Key_Up: 2, Qt.Key_Down: None}
+        if key in arrows:
+            self.mark_set_lock(arrows[key])
+            return True
+        return False
+
+    def _grab_keys(self, on):
+        """While marking, catch our keys before IngeTrazo does (it uses Esc and the arrows itself)."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            return
+        f = getattr(self, '_key_filter', None)
+        if on:
+            if f is None:
+                from PySide6.QtCore import QObject, QEvent, Qt
+                dlg = self
+                ours = (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Backspace,
+                        Qt.Key_Right, Qt.Key_Left, Qt.Key_Up, Qt.Key_Down)
+
+                class _Keys(QObject):
+                    def eventFilter(self, obj, ev):
+                        try:
+                            t = ev.type()
+                            # a quick right-click (not a drag - IngeTrazo may pan with it) on
+                            # the view ends the line; the press and release still go through
+                            if t == QEvent.Type.MouseButtonPress and dlg.marking:
+                                if ev.button() == Qt.RightButton and dlg._on_view(obj):
+                                    import time as _t
+                                    p_ = ev.position() if hasattr(ev, 'position') else ev.pos()
+                                    dlg._rpress = (p_.x(), p_.y(), _t.time())
+                                return False
+                            if t == QEvent.Type.MouseButtonRelease and dlg.marking:
+                                rp = getattr(dlg, '_rpress', None)
+                                if ev.button() == Qt.RightButton and rp is not None:
+                                    import time as _t
+                                    dlg._rpress = None
+                                    p_ = ev.position() if hasattr(ev, 'position') else ev.pos()
+                                    if abs(p_.x() - rp[0]) + abs(p_.y() - rp[1]) < 6 and _t.time() - rp[2] < 0.6:
+                                        from PySide6.QtCore import QTimer
+                                        QTimer.singleShot(0, dlg.mark_right_click)
+                                return False
+                            if t == QEvent.Type.ContextMenu and dlg.marking and dlg._on_view(obj):
+                                return True           # no pop-up menu while marking
+                            if t not in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress):
+                                return False
+                            if not dlg.marking or ev.key() not in ours:
+                                return False
+                            from PySide6.QtWidgets import QLineEdit, QAbstractSpinBox, QTextEdit
+                            if isinstance(obj, (QLineEdit, QAbstractSpinBox, QTextEdit)):
+                                return False          # typing in a box somewhere else
+                            if t == QEvent.Type.ShortcutOverride:
+                                ev.accept()           # don't let a menu shortcut have it
+                                return True
+                            if ev.isAutoRepeat():
+                                return True
+                            dlg.mark_key(ev.key())
+                            return True
+                        except Exception:
+                            return False
+                f = self._key_filter = _Keys(self)
+            try:
+                app.removeEventFilter(f)      # never in twice
+            except Exception:
+                pass
+            app.installEventFilter(f)
+        elif f is not None:
+            app.removeEventFilter(f)
+
+    def _on_view(self, obj):
+        """Is obj the 3D view (or inside it)?"""
+        vp = self.viewport
+        w = obj
+        for _ in range(6):
+            if w is None:
+                return False
+            if w is vp:
+                return True
+            try:
+                w = w.parent()
+            except Exception:
+                return False
+        return False
+
+    def mark_right_click(self):
+        """Right-click: ends the line you're on; with no line on the go, finished marking."""
+        if self.mark_run:
+            self.mark_finish_run()
+        else:
+            self.stop_marking()
+
+    def _keys_to_view(self):
+        """Makes IngeTrazo's window the active one with the 3D view taking the keys, so Esc
+        and the arrows reach it (with this window hidden, Windows can leave none active)."""
+        vp = self.viewport
+        try:
+            win = vp.window()
+            win.raise_()
+            win.activateWindow()
+        except Exception:
+            pass
+        try:
+            vp.setFocus()
+        except Exception:
+            pass
+
+    def mark_set_lock(self, axis):
+        """Arrow keys: lock to an axis, or free again. The same arrow twice frees it."""
+        self.mark_lock = None if (axis is None or axis == self.mark_lock) else axis
+        if self.mark_hover is not None and self.mark_run:
+            self.mark_hover = self.mark_constrain(self.mark_hover)
+        self._mark_label()
+        self.viewport.update()
+
+    def mark_constrain(self, p):
+        """The point slid onto the locked axis through the last point clicked."""
+        if self.mark_lock is None or not self.mark_run:
+            return p
+        q = list(self.mark_run[-1])
+        q[self.mark_lock] = p[self.mark_lock]
+        return tuple(q)
+
+    def mark_snap(self, p, end_px=14.0, on_px=9.0):
+        """Snaps to the ends of marked lines (and the points clicked), or onto a marked line,
+        when the mouse is near one on screen. IngeTrazo can't snap to these, as they're only drawn."""
+        self.mark_snapped = None
+        vp = self.viewport
+        sp = _px(vp, QVector3D(*p))
+        if sp is None:
+            return p
+        runs = [r for r in self.marks]
+        cur = list(self.mark_run)
+        best = None
+        for pt in [q for r in runs for q in r] + cur[:-1]:
+            s_ = _px(vp, QVector3D(*pt))
+            if s_ is None:
+                continue
+            d = math.hypot(s_[0] - sp[0], s_[1] - sp[1])
+            if d <= end_px and (best is None or d < best[0]):
+                best = (d, tuple(pt))
+        if best is not None:
+            self.mark_snapped = (best[1], 'end')
+            return best[1]
+        for r in runs:
+            for a, b in zip(r[:-1], r[1:]):
+                sa, sb = _px(vp, QVector3D(*a)), _px(vp, QVector3D(*b))
+                if sa is None or sb is None:
+                    continue
+                dx, dy = sb[0] - sa[0], sb[1] - sa[1]
+                L2 = dx * dx + dy * dy
+                if L2 < 1.0:
+                    continue
+                t = max(0.0, min(1.0, ((sp[0] - sa[0]) * dx + (sp[1] - sa[1]) * dy) / L2))
+                d = math.hypot(sa[0] + dx * t - sp[0], sa[1] + dy * t - sp[1])
+                if d <= on_px and (best is None or d < best[0]):
+                    best = (d, tuple(a[k] + (b[k] - a[k]) * t for k in range(3)))
+        if best is not None:
+            self.mark_snapped = (best[1], 'on')
+            return best[1]
+        return p
+
+    def mark_clicked(self, p):
+        if self.mark_run and v_len(v_sub(p, self.mark_run[-1])) < 1e-6:
+            return                      # the same point again (a double-click)
+        self.mark_run.append(p)
+        self.mark_lock = None           # each new line starts free again
+        try:
+            if not self.viewport.hasFocus():
+                self._keys_to_view()
+        except Exception:
+            pass
+        self._mark_label()
+        self.viewport.update()
+
+    def mark_finish_run(self):
+        if len(self.mark_run) >= 2:
+            self.marks.append(self.mark_run)
+        self.mark_run = []
+        self.mark_lock = None
+        self._mark_label()
+        self.viewport.update()
+
+    def mark_take_last(self):
+        if self.mark_run:
+            self.mark_run.pop()
+        elif self.marks:
+            self.mark_run = self.marks.pop()   # back into the last run, to carry on or take more off
+            self.mark_run.pop()
+        self._mark_label()
+        self.viewport.update()
+
+    def clear_marks(self):
+        self.marks, self.mark_run = [], []
+        self._mark_label()
+        self.viewport.update()
+
+    def marked_chains(self):
+        """The marked runs, each one on its own (each is a pipe run). A run ending where it
+        started is a loop."""
+        out = []
+        for run in self.marks + ([self.mark_run] if len(self.mark_run) >= 2 else []):
+            P = [tuple(q) for q in run]
+            closed = len(P) >= 4 and v_len(v_sub(P[0], P[-1])) < 1e-6
+            if closed:
+                P = P[:-1]
+            if len(P) >= 2:
+                out.append((P, closed))
+        return out
+
+    def paint_marks(self, vp, painter):
+        """Draws the marked runs (and the selected lines) thick, over the model."""
+        if vp is not self.viewport:
+            return
+        try:
+            from PySide6.QtGui import QPen, QColor, QPainter
+            from PySide6.QtCore import QPointF, Qt
+            w = float(self.sp_mark_px.value())
+            col = QColor(*self.mark_rgb)
+            dark = QColor(20, 20, 20, 200)
+            runs = list(self.marks)
+            if self.mark_run:
+                runs.append(self.mark_run)
+            segs = []
+            for run in runs:
+                segs += [(run[i], run[i + 1]) for i in range(len(run) - 1)]
+            live = []
+            if self.marking and self.mark_run and self.mark_hover is not None:
+                live = [(self.mark_run[-1], self.mark_hover)]
+            sel = []
+            if self.cb_selthick.isChecked():
+                scene = getattr(vp, 'scene', None)
+                items = list(getattr(scene, 'selection', None) or [])
+                if items and len(items) < 5000:
+                    m0 = _r_ctx_world(scene)
+                    for e in items:
+                        if _r_is_group(e) or _r_is_face(e):
+                            continue
+                        ends = _r_edge_ends(e)
+                        if ends:
+                            sel.append((_r_m_apply(m0, ends[0]), _r_m_apply(m0, ends[1])))
+            if not (segs or live or sel or self.marking):
+                return
+            painter.save()
+            if self.marking:
+                from PySide6.QtGui import QFont
+                from PySide6.QtCore import QRectF
+                if self.mark_run:
+                    head = "MARKING - line on the go (%d point%s)" % (len(self.mark_run),
+                                                                    "" if len(self.mark_run) == 1 else "s")
+                else:
+                    head = "MARKING - click to start a line"
+                if self.mark_lock is not None:
+                    head += "   [locked to %s]" % AXIS_NAMES[self.mark_lock]
+                lines = [head,
+                         "Esc or right-click: end this line   (again: finished marking)",
+                         "Arrows: Right red, Left green, Up blue, Down free   Backspace: undo point"]
+                fnt = QFont()
+                fnt.setPointSizeF(9.5)
+                painter.setFont(fnt)
+                fm = painter.fontMetrics()
+                bw = max(fm.horizontalAdvance(t) for t in lines) + 16
+                bh = fm.height() * len(lines) + 12
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(20, 20, 20, 190))
+                painter.drawRoundedRect(QRectF(10, 10, bw, bh), 6, 6)
+                for i, t in enumerate(lines):
+                    painter.setPen(QColor(*self.mark_rgb) if i == 0 else QColor(235, 235, 235))
+                    painter.drawText(QPointF(18, 10 + 6 + fm.ascent() + i * fm.height()), t)
+                painter.setBrush(Qt.NoBrush)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+
+            def draw(screen, width, colour, style=Qt.SolidLine):
+                pen = QPen(colour, width, style, Qt.RoundCap, Qt.RoundJoin)
+                painter.setPen(pen)
+                for (x0, y0), (x1, y1) in screen:
+                    painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+
+            s_sel = _mark_segments_px(vp, sel)
+            s_runs = _mark_segments_px(vp, segs)
+            s_live = _mark_segments_px(vp, live)
+            if s_sel:
+                draw(s_sel, w + 3, dark)
+                draw(s_sel, w, col, Qt.DashLine)
+            if s_runs:
+                draw(s_runs, w + 3, dark)
+                draw(s_runs, w, col)
+            if s_live:
+                draw(s_live, w + 3, dark)
+                if self.mark_lock is not None:
+                    draw(s_live, w, QColor(*AXIS_RGB[self.mark_lock]))
+                else:
+                    draw(s_live, w, col.lighter(130), Qt.DashLine)
+            # where it's snapped to one of the marks: a ring (green = an end, blue = on the line)
+            if self.marking and self.mark_snapped is not None:
+                q = _px(vp, QVector3D(*self.mark_snapped[0]))
+                if q is not None:
+                    ring = QColor(30, 200, 60) if self.mark_snapped[1] == 'end' else QColor(30, 140, 255)
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(dark, 5.0))
+                    painter.drawEllipse(QPointF(q[0], q[1]), w + 7, w + 7)
+                    painter.setPen(QPen(ring, 3.0))
+                    painter.drawEllipse(QPointF(q[0], q[1]), w + 7, w + 7)
+            # a dot on each clicked point
+            painter.setPen(QPen(dark, 1.5))
+            painter.setBrush(col)
+            r = max(3.0, w * 0.9)
+            for run in runs:
+                for p in run:
+                    q = _px(vp, QVector3D(*p))
+                    if q is not None:
+                        painter.drawEllipse(QPointF(q[0], q[1]), r, r)
+            painter.restore()
+        except Exception as e:
+            try:
+                painter.restore()
+            except Exception:
+                pass
+            print("%s: drawing the marker line: %s" % (PLUGIN_NAME, e))
+
     def changeEvent(self, e):
         try:
             from PySide6.QtCore import QEvent
@@ -1843,34 +3697,32 @@ class SoilWasteDialog(QDialog):
              's_spacing': self.sp_ssp.value(), 'w_spacing': self.sp_wsp.value(),
              'chunky': self.cb_chunky.isChecked(), 'chunk_mult': self.sp_chunk.value(),
              'bend_dir': self.cb_dir.currentData(), 'detail': self.cb_detail.isChecked(),
-             'pipe_socket': self.cb_psock.isChecked(), 'ears': self.cb_ears.isChecked()}
+             'pipe_socket': self.cb_psock.isChecked(), 'ears': self.cb_ears.isChecked(),
+             'r_system': self.cb_rsys.currentData(), 'r_top': self.cb_rtop.currentData(),
+             'r_bot': self.cb_rbot.currentData(), 's_maxlen': self.sp_smax.value(),
+             'w_maxlen': self.sp_wmax.value(), 'r_flip': self.cb_rflip.isChecked(),
+             'r_avoid': self.cb_ravoid.isChecked()}
         for k, w in self.sp.items():
             v[k] = w.value()
         return v
 
     def set_values(self, d):
-        if 'solid' in d:
-            self.cb_solid.setChecked(bool(d['solid']))
-        if 'chunky' in d:
-            self.cb_chunky.setChecked(bool(d['chunky']))
-        if 'detail' in d:
-            self.cb_detail.setChecked(bool(d['detail']))
-        if 'pipe_socket' in d:
-            self.cb_psock.setChecked(bool(d['pipe_socket']))
-        if 'ears' in d:
-            self.cb_ears.setChecked(bool(d['ears']))
+        for c, key in ((self.cb_solid, 'solid'), (self.cb_chunky, 'chunky'), (self.cb_detail, 'detail'),
+                       (self.cb_psock, 'pipe_socket'), (self.cb_ears, 'ears'), (self.cb_fit, 'fit_wall'),
+                       (self.cb_fix, 'auto_fix'), (self.cb_rflip, 'r_flip'), (self.cb_ravoid, 'r_avoid')):
+            if key in d:
+                c.setChecked(bool(d[key]))
         for w, key in ((self.sp_ss, 's_size'), (self.sp_st, 's_wall'), (self.sp_ws, 'w_size'),
                        (self.sp_wt, 'w_wall'), (self.sp_along, 'along'), (self.sp_drop, 'drop'),
                        (self.sp_below, 'below'), (self.sp_wh, 'w_height'), (self.sp_wgap, 'wall_gap'),
                        (self.sp_ssp, 's_spacing'), (self.sp_wsp, 'w_spacing'),
-                       (self.sp_chunk, 'chunk_mult')):
+                       (self.sp_chunk, 'chunk_mult'), (self.sp_smax, 's_maxlen'), (self.sp_wmax, 'w_maxlen')):
             if d.get(key) is not None:
                 w.setValue(float(d[key]))
         for k, w in self.sp.items():
             if d.get(k) is not None:
                 w.setValue(float(d[k]))
         self.sync()
-
 
     # ---- presets ----
     def all_presets(self):
@@ -1882,11 +3734,8 @@ class SoilWasteDialog(QDialog):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem(self.CUSTOM, None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
@@ -1894,6 +3743,7 @@ class SoilWasteDialog(QDialog):
 
     def apply_preset(self, *_):
         name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)      # opens on this one next time
         p = self.all_presets().get(name) if name else None
         if p:
             self.set_values(p)
@@ -1941,6 +3791,7 @@ class SoilWasteDialog(QDialog):
             return False
         self.user_presets = load_presets()
         self.refresh_presets(select=name)
+        _ui_settings_save(last_preset=name)
         return True
 
     def delete_preset(self):
@@ -2014,6 +3865,9 @@ class SoilWastePipesTool(Tool):
                 pass
 
         cur = dict(DEFAULTS)
+        last = _ui_settings().get('last_values')
+        if isinstance(last, dict):
+            cur.update({k: last[k] for k in DEFAULTS if k in last and k != 'units'})
         if SoilWastePipesTool._saved:
             cur.update(SoilWastePipesTool._saved)
         if target:
@@ -2028,6 +3882,13 @@ class SoilWastePipesTool(Tool):
             SoilWastePipesTool._dialog = None
         dlg.finished.connect(closed)
         eddy_window(dlg, PLUGIN_NAME, EDDY_TIPS, place=True)  # eddy-window
+        if not _ui_settings().get('compact_v3'):
+            # the window remembers its old (bigger) size: shrink it once to the new smaller size
+            try:
+                dlg.adjustSize()
+            except Exception:
+                pass
+            _ui_settings_save(compact_v3=True)
         dlg.show()
 
     def on_deactivate(self, viewport):
@@ -2127,8 +3988,82 @@ class SoilWastePipesTool(Tool):
             pass
         dlg.history.append(before)
 
-    def add_to_scene(self, viewport, vals, target, parts):
-        """parts: list of (group name, world solids, port tags). One undo step for all."""
+    def build_route(self, dlg):
+        """Builds soil or waste pipe runs along the marked runs, or the lines you've selected."""
+        viewport = dlg.viewport
+        vals = dlg.values()
+        SoilWastePipesTool._saved = dict(vals)
+        scene = getattr(viewport, 'scene', None)
+        sel = list(getattr(scene, 'selection', None) or [])
+        marked = False
+        chains = []
+        try:
+            if dlg.marking:
+                dlg.stop_marking()
+            chains = dlg.marked_chains()
+            marked = bool(chains)
+        except Exception as e:
+            print("%s: reading the marked runs: %s" % (PLUGIN_NAME, e))
+        if marked:
+            sel = []                   # find the walls from the model, under the marked runs
+        else:
+            try:
+                chains = route_lines(scene, sel)
+            except Exception as e:
+                chains = []
+                print("%s: reading the lines: %s" % (PLUGIN_NAME, e))
+        if not chains:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Mark the runs first (Follow lines page, 'Mark the run'), "
+                                    "or select the lines you've drawn (Ctrl-click each "
+                                    "one, or select a group with the lines in it), then click this again.\n\n"
+                                    "Draw a line corner to corner where each pipe run goes - down the wall "
+                                    "for a soil stack, out of the wall and down for a waste.")
+            return
+        ROUTE_STATS['limit'] = False
+        box = _r_box(chains, pad=2.5)
+        all_faces = []
+        try:
+            if vals.get('r_avoid', True) or not any(_r_is_face(e) for e in sel):
+                all_faces = route_faces(scene, [], near=box, upright_only=False)
+            if any(_r_is_face(e) for e in sel):
+                faces = route_faces(scene, sel, near=box)
+            else:
+                faces = [f for f in all_faces if abs(f[0][2]) <= 0.35]
+        except Exception as e:
+            faces = []
+            print("%s: finding the walls: %s" % (PLUGIN_NAME, e))
+        try:
+            parts, what, notes = build_soil_route(chains, faces, vals, all_faces if vals.get('r_avoid', True) else None)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(dlg, PLUGIN_NAME, "Could not build along the lines:\n%s" % e)
+            return
+        if not parts:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Nothing could be built along those lines.\n\n" +
+                                    "\n".join(notes))
+            return
+        holder = None
+        try:
+            if dlg.cb_rgroup.isChecked() and len(parts) > 1:
+                # "one piece" in the name: Scale Studio puts the lot on the print bed as one piece
+                holder = "%s (one piece) - %s" % ("Soil pipes" if vals.get('r_system') == 'soil' else "Waste pipes",
+                                                  what)
+        except Exception:
+            pass
+        if not self.add_to_scene(viewport, vals, None, parts, holder=holder):
+            return
+        if marked:
+            dlg.clear_marks()          # built now - the marks have done their job
+        dlg.set_target(None)
+        txt = "Built %s along your %s." % (what, "marked runs" if marked else "lines")
+        if notes:
+            txt += " Note: " + "; ".join(notes) + "."
+        dlg.lbl_target.setText(txt)
+
+    def add_to_scene(self, viewport, vals, target, parts, holder=None):
+        """parts: list of (group name, world solids, port tags). One undo step for all.
+        holder: a name to put all the parts into one group of that name (each part stays a group)."""
         stats = {'faces': 0, 'errors': 0, 'err': None, 'ports': 0}
         sysset = {k: {kk: vals[kk] for kk in v} for k, v in SYSTEM_KEYS.items()}
         tol = 1e-4 * 0.001
@@ -2154,6 +4089,7 @@ class SoilWastePipesTool(Tool):
         def mutate(scene):
             from core.mesh import Mesh
             from core.group import Group
+            made = []
             for name, world, tags in parts:
                 mesh = Mesh()
                 for so in world:
@@ -2184,6 +4120,33 @@ class SoilWastePipesTool(Tool):
                 g = Group(name)
                 g.mesh = mesh
                 _ed3d_organise(scene, g)
+                made.append(g)
+            top = made
+            if holder and len(made) > 1:
+                h = None
+                try:
+                    try:
+                        h = Group(name=holder)
+                    except TypeError:
+                        h = Group(holder)
+                    try:
+                        h.name = holder
+                    except Exception:
+                        pass
+                    if hasattr(h, 'adopt'):
+                        h.adopt(made)
+                    else:
+                        h.children = made
+                    try:
+                        h.component = False
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print("%s: could not make the one group, so the parts go in loose: %s" % (PLUGIN_NAME, e))
+                    h = None
+                if h is not None:
+                    top = [h]
+            for g in top:
                 if hasattr(scene, 'add_group'):
                     scene.add_group(g)
                 elif hasattr(scene, 'groups') and isinstance(scene.groups, list):

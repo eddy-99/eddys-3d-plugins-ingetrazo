@@ -50,6 +50,14 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
+VERSION = "1.4"
+ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
+
+
+def _one_piece(g):
+    """'Roof (one piece)', 'One Piece part2', 'one-piece chimney' - brackets and capitals don't matter."""
+    nm = " ".join(str(getattr(g, 'name', '') or '').lower().replace("-", " ").replace("_", " ").split())
+    return ONE_PIECE in nm
 TOOLBAR_NAME = "ScaleConverterToolbar"
 MM_PER_INCH = 25.4
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_scale_converter.json")
@@ -111,7 +119,7 @@ STUDIO_DEFAULTS = {
     'per_piece': True, 'layout': 'bed', 'colours': True, 'apply_fixes': True, 'view': 'top',
     'png_size': 2000, 'follow': True, 'preview': 'model', 'last_folder': '', 'show_preview': True, 'beside': True, 'next_how': 'slicer', 'print_folder': '',
     'pv_width': 320, 'printers': [], 'printer': '', 'kind': 'fdm', 'print_format': '3mf',
-    'before_fit': None, 'project_folder': '',
+    'before_fit': None, 'project_folder': '', 'tab_name': '', 'split_sizes': [],
 }
 
 COPY_GAP = 0.1   # gap between original and copy, as a fraction of the original's width
@@ -543,7 +551,7 @@ def _piece_groups(e, depth):
 
     def walk(g, lvl):
         kids = _kids(g)
-        if depth and lvl >= depth:
+        if (depth and lvl >= depth) or _one_piece(g):
             out.append((g, subtree(g, [])))
             return
         if faces_of(g):
@@ -1138,6 +1146,22 @@ def piece_leaves(entities, with_tris=True, tops_out=None):
             nm = str(getattr(g, 'name', '') or "Group")
             here = path + [nm]
             faces = _items(getattr(getattr(g, 'mesh', None), 'faces', None))
+            whole = _one_piece(g)                   # everything inside it is one part
+            if whole:
+                tris = []
+                for h, m in _placements(g):
+                    fs = _items(getattr(getattr(h, 'mesh', None), 'faces', None))
+                    if fs:
+                        tris += (_tris_of(fs, place.get(id(h), m)) if with_tris else [None])
+                if tris:
+                    key = "/".join(here)
+                    seen[key] = seen.get(key, 0) + 1
+                    if seen[key] > 1:
+                        key += "#%d" % seen[key]
+                    out.append((key, nm, path[-1] if len(path) >= 2 else nm, tris))
+                    if tops_out is not None:
+                        tops_out.append(ei)
+                return
             if faces:
                 tris = _tris_of(faces, place.get(id(g), getattr(g, 'xform', None))) if with_tris else [None]
                 if tris:
@@ -2074,6 +2098,73 @@ def lay_out_packed(parts, bed_w, bed_d, gap):
     cx, cy = (min(allx) + max(allx)) / 2, (min(ally) + max(ally)) / 2
     placed = [(n, [tuple((c[0] - cx, c[1] - cy, c[2]) for c in t) for t in tr]) for n, tr in placed]
     return placed, (max(allx) - min(allx), max(ally) - min(ally), max(allz) - min(allz))
+
+
+def split_beds(parts, bed_w, bed_d, gap):
+    """When the pieces are too much for one bed: shares them out over as many beds as they need.
+    parts = [(name, tris)] in mm, already standing as they'll print. Biggest first, in rows across
+    each bed; a piece goes on the first bed with room for it (a long piece is turned a quarter turn
+    if that's what lets it fit). Returns [[(index into parts, tris moved)] for each bed], each bed's
+    block centred on the origin. A piece bigger than the bed gets a bed of its own."""
+    if bed_w <= 0 or bed_d <= 0 or not parts:
+        return [[(i, tr) for i, (_n, tr) in enumerate(parts)]]
+    margin = min(gap, 5.0)
+    uw, ud = max(1.0, bed_w - margin), max(1.0, bed_d - margin)
+    info = []
+    for i, (_n, tris) in enumerate(parts):
+        xs = [c[0] for t in tris for c in t]
+        ys = [c[1] for t in tris for c in t]
+        w, d = max(xs) - min(xs), max(ys) - min(ys)
+        if (w > uw + 1e-6 or d > ud + 1e-6) and d <= uw + 1e-6 and w <= ud + 1e-6:
+            # a quarter turn and it fits
+            tris = [tuple((-c[1], c[0], c[2]) for c in t) for t in tris]
+            w, d = d, w
+        xs = [c[0] for t in tris for c in t]
+        ys = [c[1] for t in tris for c in t]
+        zs = [c[2] for t in tris for c in t]
+        info.append((tris, min(xs), min(ys), min(zs), w, d))
+    order = sorted(range(len(info)), key=lambda i: (-info[i][5], -info[i][4]))
+    beds = []
+    for i in order:
+        _t, _x0, _y0, _z0, w, d = info[i]
+        done = False
+        for b in beds:
+            for r in b['rows']:
+                if r['x'] + w <= uw + 1e-6 and d <= r['d'] + 1e-6:
+                    b['items'].append((i, r['x'], r['y']))
+                    r['x'] += w + gap
+                    done = True
+                    break
+            if done:
+                break
+            if b['y'] + d <= ud + 1e-6 and w <= uw + 1e-6:
+                b['rows'].append({'x': w + gap, 'y': b['y'], 'd': d})
+                b['items'].append((i, 0.0, b['y']))
+                b['y'] += d + gap
+                done = True
+                break
+        if not done:
+            beds.append({'rows': [{'x': w + gap, 'y': 0.0, 'd': d}], 'y': d + gap, 'items': [(i, 0.0, 0.0)]})
+    out = []
+    for b in beds:
+        moved = []
+        for i, x, y in sorted(b['items']):
+            tris, x0, y0, z0, _w, _d = info[i]
+            dx, dy, dz = x - x0, y - y0, -z0
+            moved.append((i, [tuple((c[0] + dx, c[1] + dy, c[2] + dz) for c in t) for t in tris]))
+        allx = [c[0] for _i, tr in moved for t in tr for c in t]
+        ally = [c[1] for _i, tr in moved for t in tr for c in t]
+        cx, cy = (min(allx) + max(allx)) / 2, (min(ally) + max(ally)) / 2
+        out.append([(i, [tuple((c[0] - cx, c[1] - cy, c[2]) for c in t) for t in tr]) for i, tr in moved])
+    return out
+
+
+def beds_needed(parts, bed_w, bed_d, gap):
+    """How many beds these pieces (mm, [(name, colour, tris)]) take when shared out over beds."""
+    try:
+        return len(split_beds([(n, tr) for n, _c, tr in parts], bed_w, bed_d, gap))
+    except Exception:
+        return 1
 
 
 # --- Eddy's 3D plugins: hover help and remembered window places (begin) ---
@@ -4508,6 +4599,681 @@ class PreviewCanvas(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# The fast preview: the same box, drawn by the graphics card (OpenGL). Turning, zooming and
+# moving are instant, every triangle is drawn with proper depth (nothing pokes through), smooth
+# edges, and lighting that shows the shape. If the graphics card can't do it, the plain
+# PreviewCanvas above is put back in its place by itself.
+# ---------------------------------------------------------------------------
+_GL = {'COLOR': 0x4000, 'DEPTH': 0x0100, 'DEPTH_TEST': 0x0B71, 'TRIANGLES': 0x0004, 'LINES': 0x0001,
+       'OFFSET_FILL': 0x8037, 'BLEND': 0x0BE2, 'FLOAT': 0x1406, 'CULL': 0x0B44, 'LEQUAL': 0x0203,
+       'SRC_ALPHA': 0x0302, 'ONE_MINUS_SRC_ALPHA': 0x0303, 'MULTISAMPLE': 0x809D, 'SCISSOR': 0x0C11,
+       'STENCIL': 0x0B90}
+
+_GL_TRI_VS = """
+attribute vec3 a_pos;
+attribute vec3 a_nrm;
+attribute vec3 a_col;
+attribute float a_id;
+uniform mat4 u_mvp;
+varying vec3 v_nrm;
+varying vec3 v_col;
+varying float v_id;
+void main() {
+    v_nrm = a_nrm;
+    v_col = a_col;
+    v_id = a_id;
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+"""
+
+_GL_TRI_FS = """
+#ifdef GL_ES
+precision mediump float;
+#endif
+uniform vec3 u_light;
+uniform vec3 u_look;
+uniform float u_picked;
+uniform float u_pick;
+varying vec3 v_nrm;
+varying vec3 v_col;
+varying float v_id;
+void main() {
+    float id = floor(v_id + 0.5);
+    if (u_pick > 0.5) {
+        float k = id + 1.0;
+        gl_FragColor = vec4(mod(k, 256.0) / 255.0, floor(k / 256.0) / 255.0, 1.0, 1.0);
+        return;
+    }
+    vec3 n = normalize(v_nrm);
+    if (dot(n, u_look) > 0.0) n = -n;            // both sides lit, so a face the wrong way round still shows
+    vec3 h = normalize(u_light - u_look);
+    float sh = 0.36 + 0.46 * max(0.0, dot(n, u_light)) + 0.24 * max(0.0, -dot(n, u_look));
+    float sp = pow(max(0.0, dot(n, h)), 40.0) * 0.18;
+    vec3 c = v_col;
+    if (abs(id - u_picked) < 0.5) c = vec3(1.0, 0.882, 0.157);
+    gl_FragColor = vec4(min(c * sh + vec3(sp), vec3(1.0)), 1.0);
+}
+"""
+
+_GL_LINE_VS = """
+attribute vec3 a_pos;
+uniform mat4 u_mvp;
+void main() {
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+"""
+
+_GL_LINE_FS = """
+#ifdef GL_ES
+precision mediump float;
+#endif
+uniform vec4 u_col;
+void main() {
+    gl_FragColor = u_col;
+}
+"""
+
+GL_MAX_TRIS = 1500000        # triangles drawn (a huge model above that is thinned out)
+GL_MAX_EDGE_TRIS = 400000    # fold lines worked out up to this many triangles
+
+
+def _gl_float(prog, name, v):
+    try:
+        prog.setUniformValue1f(name, v)
+    except Exception:
+        prog.setUniformValue(name, float(v))
+
+
+def _gl_ok():
+    try:
+        from PySide6.QtOpenGLWidgets import QOpenGLWidget          # noqa: F401
+        from PySide6.QtOpenGL import QOpenGLShaderProgram, QOpenGLBuffer   # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def make_preview_canvas(parent, owner=None):
+    """The fast (graphics card) preview if this PC can do it, otherwise the plain one."""
+    if _gl_ok():
+        try:
+            return GLPreviewCanvas(parent, owner)
+        except Exception:
+            pass
+    return PreviewCanvas(parent)
+
+
+def _gl_base():
+    try:
+        from PySide6.QtOpenGLWidgets import QOpenGLWidget
+        return QOpenGLWidget
+    except Exception:
+        return QWidget
+
+
+class GLPreviewCanvas(_gl_base()):
+    """Same as PreviewCanvas (same calls, same mouse), drawn by the graphics card."""
+
+    def __init__(self, parent=None, owner=None):
+        super().__init__(parent)
+        from PySide6.QtGui import QSurfaceFormat
+        fmt = QSurfaceFormat()
+        fmt.setDepthBufferSize(24)
+        fmt.setStencilBufferSize(8)
+        fmt.setSamples(4)                          # smooth edges
+        self.setFormat(fmt)
+        self.setMinimumSize(320, 300)
+        self.owner = owner
+        self.az, self.el = 52.0, 30.0
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.parts, self.bed, self.marks = [], None, []
+        self.overlay, self.picked, self.on_pick = [], None, None
+        self.piece_sizes = {}
+        self.empty_text = "Select an object (a group, or its faces)"
+        self.lines_2d = []
+        self._spin = self._drag = None
+        self._quiet = False
+        self.centre, self.radius = (0.0, 0.0, 0.0), 1.0
+        self.axes = _view_axes(self.az, self.el)
+        self.items = []                 # kept for anything that asks whether something is shown
+        self.big = []
+        self.thinned = False
+        self._tri_data = self._edge_data = self._bed_fill = self._bed_grid = None
+        self._n_tri = self._n_edge = self._n_bed_fill = self._n_bed_grid = 0
+        self._dirty = True
+        self._ready = False
+        self._broken = False
+        self._swapped = False
+        self.f = None
+
+    # ---- what's shown
+    def set_parts(self, parts, bed=None, marks=None, keep_view=True):
+        from array import array
+        self.parts = parts or []
+        self.bed = bed
+        self.marks = marks or []
+        self.picked = None
+        total = sum(len(t) for _n, _c, t in self.parts)
+        step = max(1, int(math.ceil(total / float(GL_MAX_TRIS)))) if total else 1
+        self.thinned = step > 1
+        want_edges = total <= GL_MAX_EDGE_TRIS
+        tri = array('f')
+        edge = array('f')
+        lo = [1e30, 1e30, 1e30]
+        hi = [-1e30, -1e30, -1e30]
+        sqrt = math.sqrt
+        for i, (_nm, col, tris) in enumerate(self.parts):
+            cr, cg, cb = col[0] / 255.0, col[1] / 255.0, col[2] / 255.0
+            fi = float(i)
+            src = tris[::step] if step > 1 else tris
+            for t in src:
+                try:
+                    a, b, c = t
+                    ax, ay, az = a[0], a[1], a[2]
+                    bx, by, bz = b[0], b[1], b[2]
+                    cx, cy, cz = c[0], c[1], c[2]
+                except Exception:
+                    continue
+                ux, uy, uz = bx - ax, by - ay, bz - az
+                wx, wy, wz = cx - ax, cy - ay, cz - az
+                nx, ny, nz = uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx
+                L = sqrt(nx * nx + ny * ny + nz * nz)
+                if L < 1e-18:
+                    continue
+                nx, ny, nz = nx / L, ny / L, nz / L
+                tri.extend((ax, ay, az, nx, ny, nz, cr, cg, cb, fi,
+                            bx, by, bz, nx, ny, nz, cr, cg, cb, fi,
+                            cx, cy, cz, nx, ny, nz, cr, cg, cb, fi))
+                for x, y, z in ((ax, ay, az), (bx, by, bz), (cx, cy, cz)):
+                    if x < lo[0]: lo[0] = x
+                    if x > hi[0]: hi[0] = x
+                    if y < lo[1]: lo[1] = y
+                    if y > hi[1]: hi[1] = y
+                    if z < lo[2]: lo[2] = z
+                    if z > hi[2]: hi[2] = z
+            if want_edges and tris:
+                try:
+                    for t, _n, fl in _prep_part(tris, GL_MAX_EDGE_TRIS):
+                        for e in range(3):
+                            if fl[e]:
+                                p_, q_ = t[e], t[(e + 1) % 3]
+                                edge.extend((p_[0], p_[1], p_[2], q_[0], q_[1], q_[2]))
+                except Exception:
+                    pass
+        if self.bed:
+            bx, by = self.bed[0] / 2.0, self.bed[1] / 2.0
+            lo = [min(lo[0], -bx), min(lo[1], -by), min(lo[2], 0.0)]
+            hi = [max(hi[0], bx), max(hi[1], by), max(hi[2], 0.0)]
+        if lo[0] <= hi[0]:
+            c3 = tuple((lo[k] + hi[k]) / 2.0 for k in range(3))
+            self.centre = c3
+            self.radius = max(1e-9, 0.5 * sqrt(sum((hi[k] - lo[k]) ** 2 for k in range(3))))
+        else:
+            self.centre, self.radius = (0.0, 0.0, 0.0), 1.0
+        # the bed: a plate with a grid, just under the pieces so they sit on it cleanly
+        bf, bg = array('f'), array('f')
+        if self.bed:
+            bx, by = self.bed[0] / 2.0, self.bed[1] / 2.0
+            z0 = -self.radius * 0.003
+            z1 = -self.radius * 0.0015
+            bf.extend((-bx, -by, z0, bx, -by, z0, bx, by, z0, -bx, -by, z0, bx, by, z0, -bx, by, z0))
+            step_g = 10.0 if max(bx, by) <= 200 else 50.0
+            x = -bx + step_g
+            while x < bx - 1e-6:
+                bg.extend((x, -by, z1, x, by, z1))
+                x += step_g
+            y = -by + step_g
+            while y < by - 1e-6:
+                bg.extend((-bx, y, z1, bx, y, z1))
+                y += step_g
+            for (x0, y0, x1, y1) in ((-bx, -by, bx, -by), (bx, -by, bx, by), (bx, by, -bx, by), (-bx, by, -bx, -by)):
+                bg.extend((x0, y0, z1, x1, y1, z1))
+        self._tri_data, self._edge_data = tri, edge
+        self._bed_fill, self._bed_grid = bf, bg
+        self._n_tri = len(tri) // 10
+        self._n_edge = len(edge) // 3
+        self._n_bed_fill = len(bf) // 3
+        self._n_bed_grid = len(bg) // 3
+        self.items = [1] if self._n_tri else []
+        self._dirty = True
+        if not keep_view:
+            self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.update()
+
+    def set_marks(self, marks):
+        self.marks = marks or []
+        self.update()
+
+    def set_view(self, az, el):
+        self.az, self.el = az, el
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.view()
+        self.update()
+
+    def view(self):
+        self.axes = _view_axes(self.az, self.el)
+
+    def _map(self):
+        _D, R, U = self.axes
+        c = self.centre
+        cx = c[0] * R[0] + c[1] * R[1] + c[2] * R[2]
+        cy = -(c[0] * U[0] + c[1] * U[1] + c[2] * U[2])
+        w, h = self.width() - 20, self.height() - 20
+        sc = min(w, h) / (2.0 * self.radius) * 1.05 * self.zoom
+        return sc, 10 + w / 2 - cx * sc + self.pan[0], 10 + h / 2 - cy * sc + self.pan[1]
+
+    def _mvp(self, w=None, h=None):
+        """Model mm -> the screen, matching _map exactly (looking straight on, no perspective)."""
+        from PySide6.QtGui import QMatrix4x4
+        w = float(w or self.width() or 1)
+        h = float(h or self.height() or 1)
+        D, R, U = self.axes
+        sc, ox, oy = self._map()
+        k = sc * (w / float(self.width() or 1))       # bigger picture: same view, more pixels
+        ox, oy = ox * w / float(self.width() or 1), oy * h / float(self.height() or 1)
+        c = self.centre
+        cd = c[0] * D[0] + c[1] * D[1] + c[2] * D[2]
+        dk = self.radius * 1.3
+        return QMatrix4x4(2 * k / w * R[0], 2 * k / w * R[1], 2 * k / w * R[2], 2 * ox / w - 1,
+                          2 * k / h * U[0], 2 * k / h * U[1], 2 * k / h * U[2], 1 - 2 * oy / h,
+                          D[0] / dk, D[1] / dk, D[2] / dk, -cd / dk,
+                          0, 0, 0, 1)
+
+    # ---- the graphics card
+    def initializeGL(self):
+        try:
+            from PySide6.QtOpenGL import QOpenGLShaderProgram, QOpenGLShader
+            ctx = self.context()
+            if ctx is None or not ctx.isValid():
+                raise RuntimeError("no OpenGL")
+            self.f = ctx.functions()
+            vs = getattr(QOpenGLShader, 'Vertex', None) or QOpenGLShader.ShaderTypeBit.Vertex
+            fs = getattr(QOpenGLShader, 'Fragment', None) or QOpenGLShader.ShaderTypeBit.Fragment
+            self.p_tri = QOpenGLShaderProgram(self)
+            ok = (self.p_tri.addShaderFromSourceCode(vs, _GL_TRI_VS) and
+                  self.p_tri.addShaderFromSourceCode(fs, _GL_TRI_FS))
+            for n, name in enumerate(('a_pos', 'a_nrm', 'a_col', 'a_id')):
+                self.p_tri.bindAttributeLocation(name, n)
+            ok = ok and self.p_tri.link()
+            self.p_line = QOpenGLShaderProgram(self)
+            ok = ok and (self.p_line.addShaderFromSourceCode(vs, _GL_LINE_VS) and
+                         self.p_line.addShaderFromSourceCode(fs, _GL_LINE_FS))
+            self.p_line.bindAttributeLocation('a_pos', 0)
+            ok = ok and self.p_line.link()
+            if not ok:
+                raise RuntimeError("shaders")
+            self.vao = None
+            try:
+                from PySide6.QtOpenGL import QOpenGLVertexArrayObject
+                v = QOpenGLVertexArrayObject(self)
+                if v.create():
+                    self.vao = v
+            except Exception:
+                self.vao = None
+            self.bufs = {}
+            self._ready = True
+            self._dirty = True
+        except Exception:
+            self._broken = True
+
+    def _buf(self, key, data):
+        """A graphics-card buffer filled with data (an array of floats)."""
+        from PySide6.QtOpenGL import QOpenGLBuffer
+        b = self.bufs.get(key)
+        if b is None:
+            b = QOpenGLBuffer()
+            b.create()
+            self.bufs[key] = b
+        b.bind()
+        raw = data.tobytes() if len(data) else b'\0\0\0\0'
+        try:
+            b.allocate(raw, len(raw))
+        except Exception:
+            from shiboken6 import VoidPtr
+            b.allocate(VoidPtr(raw), len(raw))
+        b.release()
+        return b
+
+    def _upload(self):
+        from array import array
+        self._buf('tri', self._tri_data or array('f'))
+        self._buf('edge', self._edge_data or array('f'))
+        self._buf('bedf', self._bed_fill or array('f'))
+        self._buf('bedg', self._bed_grid or array('f'))
+        self._dirty = False
+
+    def _draw_lines(self, key, n, mvp, rgba, mode=None, data=None):
+        if not n and data is None:
+            return
+        f, P = self.f, self.p_line
+        if data is not None:
+            if not len(data):
+                return
+            self._buf(key, data)
+            n = len(data) // 3
+        b = self.bufs[key]
+        P.bind()
+        P.setUniformValue('u_mvp', mvp)
+        from PySide6.QtGui import QVector4D
+        P.setUniformValue('u_col', QVector4D(*rgba))
+        b.bind()
+        P.enableAttributeArray(0)
+        P.setAttributeBuffer(0, _GL['FLOAT'], 0, 3, 12)
+        f.glDrawArrays(mode if mode is not None else _GL['LINES'], 0, n)
+        P.disableAttributeArray(0)
+        b.release()
+        P.release()
+
+    def _draw_scene(self, mvp, pick=False, quiet=False):
+        """Everything in the box, with the depth test on. pick: each piece in its own flat colour."""
+        from PySide6.QtGui import QVector3D
+        f = self.f
+        if self._dirty:
+            self._upload()
+        if self.vao is not None:
+            self.vao.bind()
+        f.glDisable(_GL['SCISSOR'])
+        f.glDisable(_GL['STENCIL'])
+        f.glDisable(_GL['CULL'])
+        f.glDisable(_GL['BLEND'])
+        f.glEnable(_GL['DEPTH_TEST'])
+        f.glDepthFunc(_GL['LEQUAL'])
+        try:
+            f.glDepthMask(True)
+        except Exception:
+            f.glDepthMask(1)
+        f.glClear(_GL['DEPTH'])
+        try:
+            f.glEnable(_GL['MULTISAMPLE'])
+        except Exception:
+            pass
+        if not pick and self._n_bed_fill:
+            self._draw_lines('bedf', self._n_bed_fill, mvp, (236 / 255., 238 / 255., 242 / 255., 1.0),
+                             _GL['TRIANGLES'])
+            self._draw_lines('bedg', self._n_bed_grid, mvp, (195 / 255., 201 / 255., 211 / 255., 1.0))
+        if self._n_tri:
+            D, _R, _U = self.axes
+            L = (-0.3, -0.45, 0.84) if D[2] <= 0 else (-0.3, -0.45, -0.84)
+            ll = math.sqrt(sum(x * x for x in L))
+            P = self.p_tri
+            b = self.bufs['tri']
+            P.bind()
+            P.setUniformValue('u_mvp', mvp)
+            P.setUniformValue('u_light', QVector3D(L[0] / ll, L[1] / ll, L[2] / ll))
+            P.setUniformValue('u_look', QVector3D(D[0], D[1], D[2]))
+            _gl_float(P, 'u_picked', float(self.picked) if self.picked is not None else -10.0)
+            _gl_float(P, 'u_pick', 1.0 if pick else 0.0)
+            b.bind()
+            for n, (off, size) in enumerate(((0, 3), (12, 3), (24, 3), (36, 1))):
+                P.enableAttributeArray(n)
+                P.setAttributeBuffer(n, _GL['FLOAT'], off, size, 40)
+            f.glEnable(_GL['OFFSET_FILL'])
+            f.glPolygonOffset(1.0, 1.0)              # the faces sit just behind their fold lines
+            f.glDrawArrays(_GL['TRIANGLES'], 0, self._n_tri * 3)
+            f.glDisable(_GL['OFFSET_FILL'])
+            for n in range(4):
+                P.disableAttributeArray(n)
+            b.release()
+            P.release()
+            if not pick and self._n_edge:
+                f.glEnable(_GL['BLEND'])
+                f.glBlendFunc(_GL['SRC_ALPHA'], _GL['ONE_MINUS_SRC_ALPHA'])
+                self._draw_lines('edge', self._n_edge, mvp, (0.12, 0.12, 0.12, 0.85))
+                f.glDisable(_GL['BLEND'])
+        if not pick and self.marks:
+            from array import array
+            m = array('f')
+            for a, bb in self.marks:
+                m.extend((a[0], a[1], a[2], bb[0], bb[1], bb[2]))
+            f.glDisable(_GL['DEPTH_TEST'])          # gaps found by a check always show
+            try:
+                f.glLineWidth(2.0)
+            except Exception:
+                pass
+            self._draw_lines('marks', 0, mvp, (220 / 255., 20 / 255., 30 / 255., 1.0), data=m)
+            try:
+                f.glLineWidth(1.0)
+            except Exception:
+                pass
+        f.glDisable(_GL['DEPTH_TEST'])
+        if self.vao is not None:
+            self.vao.release()
+
+    def _background(self, p, w, h):
+        from PySide6.QtGui import QColor, QLinearGradient, QBrush
+        from PySide6.QtCore import QRectF
+        g = QLinearGradient(0, 0, 0, h)
+        g.setColorAt(0.0, QColor(252, 252, 250))
+        g.setColorAt(1.0, QColor(214, 220, 226))
+        p.fillRect(QRectF(0, 0, w, h), QBrush(g))
+
+    def paintGL(self):
+        from PySide6.QtGui import QPainter, QColor
+        from PySide6.QtCore import Qt
+        if self._broken or not self._ready:
+            self._fall_back()
+            return
+        p = QPainter(self)
+        try:
+            self._background(p, self.width(), self.height())
+            p.beginNativePainting()
+            try:
+                self._draw_scene(self._mvp())
+            except Exception:
+                self._broken = True
+            finally:
+                p.endNativePainting()
+            if self._broken:
+                p.end()
+                self._fall_back()
+                return
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setRenderHint(QPainter.TextAntialiasing)
+            if not self._n_tri:
+                p.setPen(QColor(90, 90, 90))
+                p.drawText(self.rect(), Qt.AlignCenter, self.empty_text)
+            p.setPen(QColor(30, 30, 30))
+            y = 18
+            for ln in self.overlay:
+                p.drawText(10, y, ln)
+                y += 16
+            if self.thinned:
+                p.setPen(QColor(150, 90, 20))
+                p.drawText(10, y, "A very big model: some of it is left out of this picture (not the files)")
+                y += 16
+                p.setPen(QColor(30, 30, 30))
+            if self.picked is not None and self.picked < len(self.parts):
+                nm = self.parts[self.picked][0]
+                sz = (self.piece_sizes or {}).get(self.picked, "")
+                p.drawText(10, y + 4, "Picked: %s  %s" % (nm, sz))
+            if not self._quiet:
+                p.setPen(QColor(100, 100, 100))
+                p.drawText(8, self.height() - 8, "Left-drag: turn   Wheel: zoom   Right-drag: move   "
+                                                 "Double-click: fit   Click: name a piece")
+        finally:
+            if p.isActive():
+                p.end()
+
+    def _fall_back(self):
+        """The graphics card couldn't draw it: put the plain preview in this one's place."""
+        if self._swapped:
+            return
+        self._swapped = True
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._swap)
+        except Exception:
+            pass
+
+    def _swap(self):
+        try:
+            par = self.parentWidget()
+            lay = par.layout() if par is not None else None
+            new = PreviewCanvas(par)
+            new.on_pick = self.on_pick
+            new.empty_text = self.empty_text
+            new.overlay = self.overlay
+            new.piece_sizes = self.piece_sizes
+            new.setToolTip(self.toolTip())
+            new.setMinimumSize(self.minimumSize())
+            new.az, new.el = self.az, self.el
+            new.set_parts(self.parts, self.bed, self.marks)
+            if lay is not None:
+                lay.replaceWidget(self, new)
+            if self.owner is not None and getattr(self.owner, 'canvas', None) is self:
+                self.owner.canvas = new
+            self.hide()
+            self.deleteLater()
+        except Exception:
+            pass
+
+    # ---- the mouse
+    def _pos(self, ev):
+        try:
+            q = ev.position()
+            return q.x(), q.y()
+        except Exception:
+            return ev.x(), ev.y()
+
+    def wheelEvent(self, ev):
+        try:
+            dy = ev.angleDelta().y()
+        except Exception:
+            dy = 0
+        if not dy:
+            return
+        mx, my = self._pos(ev)
+        sc, ox, oy = self._map()
+        wx, wy = (mx - ox) / sc, (my - oy) / sc
+        self.zoom = max(0.2, min(200.0, self.zoom * 1.15 ** (dy / 120.0)))
+        sc2, ox2, oy2 = self._map()
+        self.pan = (self.pan[0] + mx - (ox2 + wx * sc2), self.pan[1] + my - (oy2 + wy * sc2))
+        self.update()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.update()
+
+    def mousePressEvent(self, ev):
+        from PySide6.QtCore import Qt
+        mx, my = self._pos(ev)
+        try:
+            if ev.button() in (Qt.RightButton, Qt.MiddleButton):
+                self._drag = (mx, my, self.pan[0], self.pan[1])
+                return
+        except Exception:
+            pass
+        self._spin = (mx, my, self.az, self.el, False)
+
+    def mouseMoveEvent(self, ev):
+        mx, my = self._pos(ev)
+        if self._spin is not None:
+            x0, y0, az0, el0, moved = self._spin
+            if not moved and abs(mx - x0) + abs(my - y0) <= 4:
+                return
+            self._spin = (x0, y0, az0, el0, True)
+            self.az = (az0 - (mx - x0) * 0.45) % 360.0
+            self.el = max(-89.0, min(89.0, el0 + (my - y0) * 0.35))
+            self.view()
+            self.update()
+            return
+        if self._drag is not None:
+            self.pan = (self._drag[2] + mx - self._drag[0], self._drag[3] + my - self._drag[1])
+            self.update()
+
+    def mouseReleaseEvent(self, ev):
+        sp, self._spin = self._spin, None
+        self._drag = None
+        if sp is None or sp[4]:
+            return
+        i = self.part_at(sp[0], sp[1])
+        self.picked = i
+        self.update()
+        if self.on_pick is not None:
+            try:
+                self.on_pick(i)
+            except Exception:
+                pass
+
+    def _offscreen(self, w, h, samples=0):
+        from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
+        ff = QOpenGLFramebufferObjectFormat()
+        att = getattr(QOpenGLFramebufferObject, 'CombinedDepthStencil', None)
+        if att is None:
+            att = QOpenGLFramebufferObject.Attachment.CombinedDepthStencil
+        ff.setAttachment(att)
+        if samples:
+            ff.setSamples(samples)
+        return QOpenGLFramebufferObject(int(w), int(h), ff)
+
+    def part_at(self, mx, my):
+        """Which piece is under the pointer: each piece drawn in its own colour, off screen."""
+        if not self._n_tri or not self._ready:
+            return None
+        w, h = max(1, self.width()), max(1, self.height())
+        try:
+            self.makeCurrent()
+            fbo = self._offscreen(w, h)
+            fbo.bind()
+            self.f.glViewport(0, 0, w, h)
+            self.f.glClearColor(0.0, 0.0, 0.0, 0.0)
+            self.f.glClear(_GL['COLOR'] | _GL['DEPTH'])
+            self._draw_scene(self._mvp(), pick=True)
+            fbo.release()
+            img = fbo.toImage()
+            self.doneCurrent()
+            x, y = int(mx), int(my)
+            if not (0 <= x < img.width() and 0 <= y < img.height()):
+                return None
+            c = img.pixelColor(x, y)
+            if c.blue() < 128:
+                return None
+            k = c.red() + 256 * c.green()
+            return (k - 1) if 1 <= k <= len(self.parts) else None
+        except Exception:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+            return None
+
+    def picture(self, size):
+        """A picture of the preview as it is now, size pixels across (for PNG export)."""
+        from PySide6.QtGui import QPixmap, QImage, QPainter
+        w, h = max(1, self.width()), max(1, self.height())
+        k = size / float(max(w, h))
+        W, H = max(1, int(w * k)), max(1, int(h * k))
+        try:
+            self.makeCurrent()
+            fbo = self._offscreen(W, H, 4)
+            fbo.bind()
+            self.f.glViewport(0, 0, W, H)
+            self.f.glClearColor(0.0, 0.0, 0.0, 0.0)
+            self.f.glClear(_GL['COLOR'] | _GL['DEPTH'])
+            keep = self.picked
+            self.picked = None
+            try:
+                self._draw_scene(self._mvp(W, H))
+            finally:
+                self.picked = keep
+            fbo.release()
+            shot = fbo.toImage()
+            self.doneCurrent()
+            out = QImage(W, H, QImage.Format_ARGB32_Premultiplied)
+            p = QPainter(out)
+            self._background(p, W, H)
+            p.drawImage(0, 0, shot)
+            p.end()
+            return QPixmap.fromImage(out)
+        except Exception:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+            return QPixmap.fromImage(self.grabFramebuffer())
+
+
+# ---------------------------------------------------------------------------
 # The window: pages (tabs) on the left, the preview on the right
 # ---------------------------------------------------------------------------
 INFO_TEXT = (
@@ -4615,7 +5381,7 @@ class StudioDialog(QDialog):
 
     def __init__(self, viewport, tool, parent=None):
         super().__init__(parent or viewport)
-        self.setWindowTitle(PLUGIN_NAME)
+        self.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
         self.setModal(False)
         self.viewport, self.tool = viewport, tool
         self.settings = load_settings()
@@ -4702,11 +5468,21 @@ class StudioDialog(QDialog):
         split = QSplitter(Qt.Horizontal)
         lay.addWidget(split, 1)
         self.tabs = QTabWidget()
-        split.addWidget(self.tabs)
+        # the page names go in two rows of buttons above the pages, so none hide behind arrows
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(3)
+        self.tab_rows = QGridLayout()
+        self.tab_rows.setContentsMargins(0, 0, 0, 0)
+        self.tab_rows.setSpacing(2)
+        ll.addLayout(self.tab_rows)
+        ll.addWidget(self.tabs, 1)
+        split.addWidget(left)
         right = self.right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
-        self.canvas = PreviewCanvas(right)
+        self.canvas = make_preview_canvas(right, self)
         self.canvas.on_pick = self.piece_picked
         self.canvas.setToolTip("A preview of what's selected. Left-drag to turn it, wheel to zoom, right-drag to "
                                "move, double-click to fit. Click a piece to see its name and size.")
@@ -4729,6 +5505,12 @@ class StudioDialog(QDialog):
         self.b_nextbed.setMaximumWidth(110)
         self.b_nextbed.setVisible(False)
         vrow.addWidget(self.b_nextbed)
+        self.b_sendone = QPushButton("Send this bed only")
+        self.b_sendone.setToolTip("When it's too much for one bed: sends just the bed shown here to the "
+                                  "slicer, so you can print one bed at a time. 'Next bed' picks the bed.")
+        self.b_sendone.clicked.connect(self.send_this_bed)
+        self.b_sendone.setVisible(False)
+        vrow.addWidget(self.b_sendone)
         for lab, az, el, tip in (("3D", 52.0, 30.0, "A view from above and to one side."),
                                  ("Top", 270.0, 89.0, "Looking straight down."),
                                  ("Front", 90.0, 0.0, "Looking at the front."),
@@ -4756,6 +5538,7 @@ class StudioDialog(QDialog):
         self.build_print_page()
         self.build_repair_page()
         self.build_export_page()
+        self.build_tab_rows()
         self.pn_ready()
         # the page you were on last time - by its name, so a new page doesn't change which one opens
         names = [self.tabs.tabText(i) for i in range(self.tabs.count())]
@@ -4853,6 +5636,12 @@ class StudioDialog(QDialog):
         self.cb_pv.toggled.connect(self.toggle_preview)
         self.page_shown(self.tabs.currentIndex())
         self.resize(760 if self.cb_pv.isChecked() else 440, 560)
+        # the bar between the pages and the preview: back where you left it, and remembered when moved
+        self.split.splitterMoved.connect(lambda *_: self._save_timer.start(1200))
+        try:
+            QTimer.singleShot(0, self.restore_split)
+        except Exception:
+            pass
         self.watch_selection(force=True)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.watch_selection)
@@ -4860,6 +5649,38 @@ class StudioDialog(QDialog):
         self._timer.start(800)
 
     # ------------------------------------------------------------------ pages
+    def build_tab_rows(self):
+        """Every page's name as a button, in two rows over the pages (in place of the tabs, which
+        hid some behind little arrows when the window's narrow). The window needn't be any wider."""
+        n = self.tabs.count()
+        per = (n + 1) // 2                      # 7 pages: 4 on the top row, 3 below
+        self.tab_group = QButtonGroup(self)
+        self.tab_group.setExclusive(True)
+        style = ("QPushButton { padding: 3px 6px; border: 1px solid palette(mid); border-radius: 3px; "
+                 "background: palette(button); }"
+                 "QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); "
+                 "font-weight: bold; }")
+        for i in range(n):
+            b = QPushButton(self.tabs.tabText(i))
+            b.setCheckable(True)
+            b.setToolTip(self.tabs.tabToolTip(i) or self.tabs.tabText(i).replace("&&", "&"))
+            b.setStyleSheet(style)
+            b.setMinimumWidth(10)
+            self.tab_group.addButton(b, i)
+            self.tab_rows.addWidget(b, i // per, i % per)
+        try:
+            self.tab_group.idClicked.connect(self.tabs.setCurrentIndex)
+        except Exception:
+            self.tab_group.buttonClicked.connect(lambda b: self.tabs.setCurrentIndex(self.tab_group.id(b)))
+
+        def follow(i):
+            b = self.tab_group.button(i)
+            if b is not None:
+                b.setChecked(True)
+        self.tabs.currentChanged.connect(follow)
+        follow(self.tabs.currentIndex())
+        self.tabs.tabBar().hide()
+
     def _page(self, title, tip=None):
         w = QWidget()
         v = QVBoxLayout(w)
@@ -5553,7 +6374,24 @@ class StudioDialog(QDialog):
             'show_preview': self.cb_pv.isChecked(), 'beside': self.cb_beside.isChecked(),
             'next_how': self.cb_next.currentData(), 'before_fit': self.st.get('before_fit'),
             'project_folder': self.st.get('project_folder', '')})
+        try:
+            if self.right.isVisible():
+                st['split_sizes'] = [int(x) for x in self.split.sizes()]
+        except Exception:
+            pass
         update_settings(studio=dict(st))
+
+    def restore_split(self):
+        """Puts the bar between the pages and the preview where it was when the window was last closed."""
+        sz = self.st.get('split_sizes')
+        if not (isinstance(sz, list) and len(sz) == 2 and self.right.isVisible()):
+            return
+        try:
+            total = sum(self.split.sizes())
+            left = max(200, min(int(sz[0]), total - 280))
+            self.split.setSizes([left, max(280, total - left)])
+        except Exception:
+            pass
 
     def closeEvent(self, ev):
         try:
@@ -6478,6 +7316,7 @@ class StudioDialog(QDialog):
             raw = self.raw_parts()
             self.fill_piece_table(raw)
             groups = self.planned_slicers() if self.cb_preview.currentData() == 'bed' else None
+            self.b_sendone.setVisible(False)
             if groups:
                 self.preview_planned_bed(groups)
             elif self.cb_preview.currentData() == 'bed':
@@ -6485,6 +7324,18 @@ class StudioDialog(QDialog):
                 self._bed_note = []
                 parts, _notes, _w = self.make_parts({'use_scale': True, 'layout': 'bed', 'apply_fixes': False,
                                                     'per_piece': True})
+                beds = self._bed_split
+                if beds and len(beds) > 1:
+                    # too much for one bed: 'Next bed' shows each one
+                    k = getattr(self, '_plan_view', 0) % len(beds)
+                    parts = beds[k]
+                    self.b_nextbed.setVisible(True)
+                    self.b_sendone.setVisible(True)
+                    s = tris_size([t for _n, _c, tr in parts for t in tr])
+                    self._bed_note = ["Bed %d of %d - too much for one bed, so it goes as %d files" % (
+                        k + 1, len(beds), len(beds)),
+                        "%d piece%s, %s mm" % (len(parts), "" if len(parts) == 1 else "s",
+                                               " x ".join(_fmt_mm(v) for v in s))]
                 bed = (self.bed[0].value(), self.bed[1].value()) if self.cb_bed.isChecked() else None
                 if bed is None and parts:
                     s = tris_size([t for _n, _c, tr in parts for t in tr])
@@ -6516,6 +7367,7 @@ class StudioDialog(QDialog):
         """The pieces in mm ready for a file: scaled, repaired, laid out. Returns (parts, notes,
         anything worth a warning)."""
         notes, warn = [], False
+        self._bed_split = None          # set by lay_on_bed when it takes more than one bed
         if o.get('parts') is not None:
             # ready-made pieces (in mm, already scaled and mended) - the objects gathered on one bed
             parts = list(o['parts'])
@@ -6570,7 +7422,13 @@ class StudioDialog(QDialog):
         lay = o.get('layout', 'keep')
         if lay == 'bed':
             parts = self.lay_on_bed(parts, flat=self.cb_flat.isChecked() and o.get('parts') is None)
-            if not o.get('per_piece', True) and len(parts) > 1:
+            if self._bed_split and not o.get('per_piece', True):
+                # one file holding each bed's pieces (resin STL)
+                nb = len(self._bed_split)
+                self._bed_split = [[("%s - bed %d of %d" % (o.get('name') or self.name(), k + 1, nb), b[0][1],
+                                     [t for _n, _c, tr in b for t in tr])] for k, b in enumerate(self._bed_split)]
+                parts = [p for b in self._bed_split for p in b]
+            elif not o.get('per_piece', True) and len(parts) > 1:
                 # one file holding them all (resin STL): laid out side by side on the plate first
                 parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
         elif lay == 'centre' and parts:
@@ -6592,6 +7450,12 @@ class StudioDialog(QDialog):
             bd = self.bed[1].value() if self.cb_bed.isChecked() else 0.0
             placed, _size = lay_out_packed([(n, tr) for n, _c, tr in parts], bw, bd,
                                            max(0.2, self.sp_gap.value()))
+            if bw > 0 and bd > 0 and (_size[0] > bw + 1e-6 or _size[1] > bd + 1e-6):
+                # too much for one bed: as many beds as it needs, each its own file in the slicer
+                beds = split_beds([(n, tr) for n, _c, tr in parts], bw, bd, max(0.2, self.sp_gap.value()))
+                if len(beds) > 1:
+                    self._bed_split = [[(parts[i][0], parts[i][1], tr) for i, tr in b] for b in beds]
+                    return [p for b in self._bed_split for p in b]
             parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, parts)]
         elif parts:
             parts = [(parts[0][0], parts[0][1], stand_centred(parts[0][2]))]
@@ -6897,7 +7761,7 @@ class StudioDialog(QDialog):
                 lines.append("%s: %s" % (nm, text))
                 continue
             sent += 1
-            note = open_in_slicer(files, path) if open_them else ("Saved: " + ", ".join(
+            note = self.open_beds(files, path) if open_them else ("Saved: " + ", ".join(
                 os.path.basename(x) for x in files))
             lines.append("%s: %d piece%s%s. %s" % (nm, len(idx), "" if len(idx) == 1 else "s",
                                                   (" (on %s's bed)" % pr.get('name')) if pr else "", note))
@@ -6936,6 +7800,26 @@ class StudioDialog(QDialog):
             self.warn_resin_3mf()
         if ok and self.cb_preview.currentData() != 'bed':
             self.cb_preview.setCurrentIndex(self.cb_preview.findData('bed'))   # show what went to the slicer
+        return ok
+
+    def send_this_bed(self, *_):
+        """'Send this bed only' under the preview: when the pieces take more than one bed, saves just
+        the bed shown and opens it in the slicer - one bed at a time."""
+        live = self.selection()
+        if not live:
+            self.report("Select the object (a group, or its faces) first.", bad=True)
+            return False
+        self._waiting = False
+        self.watch_selection(force=True)
+        if self.planned_slicers():
+            self.report("Your pieces go to more than one slicer: use 'Send to slicer' - each slicer gets "
+                        "its own pieces.", bad=True)
+            return False
+        o = self.for_slicer(self.print_opts(), self.ed_slicer.text().strip(), None)
+        o['only_bed'] = getattr(self, '_plan_view', 0)
+        ok = self.export(o, to_path=self.print_path, open_it=True)
+        if ok:
+            self.warn_resin_3mf()
         return ok
 
     def browse_print_folder(self, *_):
@@ -7279,7 +8163,8 @@ class StudioDialog(QDialog):
         t = "%s: %d piece%s, %s mm altogether, on %s (%s x %s mm)" % (
             nm, len(parts), "" if len(parts) == 1 else "s", " x ".join(_fmt_mm(v) for v in s), where,
             _fmt_mm(bed[0]), _fmt_mm(bed[1]))
-        t += " - fits." if fits else " - TOO BIG: take something off, or send fewer at a time."
+        t += " - fits." if fits else self.more_beds_words(parts, bed, pr,
+                                                          " - TOO BIG: take something off, or send fewer at a time.")
         return t, fits
 
     def gathered_fit_html(self):
@@ -7334,8 +8219,19 @@ class StudioDialog(QDialog):
         t = "%s: %d piece%s, %s mm altogether, on %s (%s x %s mm)" % (
             nm, len(parts), "" if len(parts) == 1 else "s", " x ".join(_fmt_mm(v) for v in s), where,
             _fmt_mm(bed[0]), _fmt_mm(bed[1]))
-        t += " - fits." if fits else " - TOO BIG for that bed."
+        t += " - fits." if fits else self.more_beds_words(parts, bed, pr, " - TOO BIG for that bed.")
         return t, fits
+
+    def more_beds_words(self, parts, bed, pr, too_big):
+        """When it's too much for one bed: how many beds it goes on (or too_big if a piece is
+        bigger than the bed itself)."""
+        if len(parts) < 2:
+            return too_big
+        gap = self.printer_settings(pr)[3]
+        nb = beds_needed(parts, bed[0], bed[1], max(0.2, gap))
+        if nb < 2 or any(tris_size(tr)[2] > bed[2] + 1e-6 for _n, _c, tr in parts):
+            return too_big
+        return " - too much for one bed: it goes on %d beds (a file for each, each opened on its own)." % nb
 
     def bed_note(self, parts, bed, path, pr, i, n):
         """Two short lines over the preview: which printer's bed, and does it all fit."""
@@ -7465,7 +8361,7 @@ class StudioDialog(QDialog):
                 continue
             sent += 1
             done_keys.append(key)
-            note = open_in_slicer(files, path)
+            note = self.open_beds(files, path)
             lines.append("%s: %d piece%s%s. %s" % (nm, n_p, "" if n_p == 1 else "s",
                                                   (" on %s's bed" % pr.get('name')) if pr else "", note))
         if sent:
@@ -7997,6 +8893,7 @@ class StudioDialog(QDialog):
         o = self.export_opts()
         o.update(override or {})
         self._last_files = []
+        self._last_beds = []
         if not self.ents and o.get('parts') is None:
             self.report("Select the object (a group, or its faces) first.", bad=True)
             return False
@@ -8055,7 +8952,34 @@ class StudioDialog(QDialog):
                 what = "a drawing of %d piece%s" % (len(parts), "" if len(parts) == 1 else "s")
             else:
                 fparts = to_file(parts, umm, bool(o.get('y_up')))
-                if key in ('stl', 'stla') and o.get('per_piece') and len(fparts) > 1:
+                beds = self._bed_split if o.get('layout') == 'bed' else None
+                if beds and len(beds) > 1 and key in ('3mf', 'stl', 'stla'):
+                    # too much for one bed: a file for each bed, each opened as its own bed in the slicer
+                    stem = path[:-len(ext)] if path.lower().endswith(ext) else path
+                    files = []
+                    only = o.get('only_bed')
+                    if only is not None:
+                        only = int(only) % len(beds)
+                    for bi, bp in enumerate(beds, 1):
+                        if only is not None and bi - 1 != only:
+                            continue
+                        if key == '3mf':
+                            hx, hy = self.bed[0].value() / 2.0, self.bed[1].value() / 2.0
+                            bp = [(n, c, [tuple((q[0] + hx, q[1] + hy, q[2]) for q in t) for t in tr])
+                                  for n, c, tr in bp]
+                        bpath = "%s - bed %d of %d%s" % (stem, bi, len(beds), ext)
+                        bf = self._write_bed(bpath, ext, key, writer, to_file(bp, umm, bool(o.get('y_up'))),
+                                             bool(o.get('per_piece')))
+                        files += bf
+                        self._last_beds.append(bf)
+                    path = os.path.dirname(stem) or stem
+                    if only is not None:
+                        nb_ = len(beds[only])
+                        what = "bed %d of %d only - %d piece%s" % (only + 1, len(beds), nb_, "" if nb_ == 1 else "s")
+                    else:
+                        what = "%d piece%s - too much for one bed, so on %d beds (a file for each bed)" % (
+                            sum(len(b) for b in beds), "" if sum(len(b) for b in beds) == 1 else "s", len(beds))
+                elif key in ('stl', 'stla') and o.get('per_piece') and len(fparts) > 1:
                     folder = path[:-len(ext)]
                     os.makedirs(folder, exist_ok=True)
                     files, used = [], set()
@@ -8092,12 +9016,44 @@ class StudioDialog(QDialog):
             msg += "\n" + ln
         if self.cb_open.isChecked() if open_it is None else open_it:
             printing = key in ('3mf', 'stl', 'stla')
-            msg += "\n" + open_in_slicer(files[:1] if not printing else files,
-                                         self.ed_slicer.text().strip() if printing else "")
+            msg += "\n" + (self.open_beds(files, self.ed_slicer.text().strip()) if printing else
+                           open_in_slicer(files[:1], ""))
         msg += "\nYour model in the work area is just as it was."
         self.report(msg, warn)
         self.save_now()
         return True
+
+    def _write_bed(self, bpath, ext, key, writer, fparts, per_piece):
+        """Saves one bed's pieces: one file, or (STL, a file per piece) a folder for that bed."""
+        if key in ('stl', 'stla') and per_piece and len(fparts) > 1:
+            folder = bpath[:-len(ext)]
+            os.makedirs(folder, exist_ok=True)
+            files, used = [], set()
+            for pn, pc, ptr in fparts:
+                fn = "".join(ch for ch in pn if ch not in '\\/:*?"<>|').strip() or "piece"
+                base, i = fn, 2
+                while fn.lower() in used:
+                    fn, i = "%s %d" % (base, i), i + 1
+                used.add(fn.lower())
+                fp = os.path.join(folder, fn + ext)
+                writer(fp, [(pn, pc, ptr)])
+                files.append(fp)
+            return files
+        return list(writer(bpath, fparts) or [bpath])
+
+    def open_beds(self, files, slicer):
+        """Opens what was just saved. When it took more than one bed, each bed opens on its own
+        (the slicer started once for each bed), so the beds don't land on top of each other."""
+        beds = [b for b in (getattr(self, '_last_beds', None) or []) if b]
+        if len(beds) < 2:
+            return open_in_slicer(files, slicer)
+        import time
+        notes = []
+        for k, bf in enumerate(beds):
+            if k:
+                time.sleep(1.5)          # let the slicer get going before the next bed
+            notes.append(open_in_slicer(bf, slicer))
+        return "Too much for one bed: opened %d beds, one after the other - %s" % (len(beds), notes[-1])
 
     # ------------------------------------------------------------------ odds and ends
     def report(self, text, bad=False):

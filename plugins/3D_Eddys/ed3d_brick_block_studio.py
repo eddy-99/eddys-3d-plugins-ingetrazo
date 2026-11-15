@@ -36,7 +36,34 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "3"             # shown in the window title, so you can tell which file is loaded
+VERSION = "7"             # shown in the window title, so you can tell which file is loaded
+
+
+PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
+               ("heads", (218, 208, 182)), ("coping", (196, 190, 178)), ("backing", (205, 200, 188)))
+
+
+def _part_attrs(scene, name):
+    """The face paint for one part of the walling built into a wall (marked as walling, so the
+    Whole building page knows that wall has some)."""
+    import sys as _sys
+    a = None
+    try:
+        for _nm, lc in list(_sys.modules.items()):
+            if _nm.endswith("ed3d_layers_colours") and hasattr(lc, '_pick_row'):
+                pal = lc.load_settings()['palette']
+                row = lc._pick_row(pal, [name], PLUGIN_NAME)
+                if row is not None:
+                    a = dict(lc._paint_attrs(scene, row, False))
+                break
+    except Exception as _e:
+        print("%s: colour %r: %s" % (PLUGIN_NAME, name, _e))
+    if a is None:
+        low = name.lower()
+        rgb = next((c for w, c in PLAIN_PAINT if low.startswith(w) or w in low), (190, 182, 160))
+        a = {"color": tuple(c / 255.0 for c in rgb)}
+    a[BRICK_MARK] = 1
+    return a
 
 
 def _ed3d_organise(scene, group):
@@ -348,6 +375,66 @@ def _merge(pieces, eps):
     return loops
 
 
+def _hull(pts):
+    pts = sorted(set((round(p[0], 12), round(p[1], 12)) for p in pts))
+    if len(pts) < 3:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, hi = [], []
+    for p in pts:
+        while len(lo) >= 2 and cross(lo[-2], lo[-1], p) <= 0:
+            lo.pop()
+        lo.append(p)
+    for p in reversed(pts):
+        while len(hi) >= 2 and cross(hi[-2], hi[-1], p) <= 0:
+            hi.pop()
+        hi.append(p)
+    return lo[:-1] + hi[:-1]
+
+
+def _smooth_hole(h):
+    """(hole, box, convex) for an opening. One that is very nearly convex - a round window with
+    little teeth round it from a brick ring - is taken as its smooth outline, so the bricks round
+    it are cut cleanly instead of in thin slices."""
+    if _is_convex(h):
+        return (h, _bbox(h), True)
+    hull = _hull(h)
+    if len(hull) >= 3 and abs(_area(h)) >= 0.97 * abs(_area(hull)):
+        return (hull, _bbox(hull), True)
+    return (h, _bbox(h), False)
+
+
+def _seg_cross(a, b, c, d):
+    def o(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    d1, d2, d3, d4 = o(c, d, a), o(c, d, b), o(a, b, c), o(a, b, d)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 * d2 < 0 and d3 * d4 < 0
+
+
+def _overlaps(pc, hole):
+    """Does a piece (a brick) really overlap an opening - not just its box?"""
+    if any(_pip(q[0], q[1], hole) for q in pc):
+        return True
+    if any(_pip(q[0], q[1], pc) for q in hole):
+        return True
+    cx = sum(q[0] for q in pc) / len(pc)
+    cy = sum(q[1] for q in pc) / len(pc)
+    if _pip(cx, cy, hole):
+        return True
+    bx1, bx2, by1, by2 = _bbox(pc)
+    n, m = len(pc), len(hole)
+    for j in range(m):
+        c, d = hole[j], hole[(j + 1) % m]
+        if max(c[0], d[0]) < bx1 or min(c[0], d[0]) > bx2 or max(c[1], d[1]) < by1 or min(c[1], d[1]) > by2:
+            continue
+        for i in range(n):
+            if _seg_cross(pc[i], pc[(i + 1) % n], c, d):
+                return True
+    return False
+
+
 def trim_poly(poly, holes, subdiv, min_frag):
     pieces = [list(poly)]
     bx1, bx2, by1, by2 = _bbox(poly)
@@ -363,6 +450,8 @@ def trim_poly(poly, holes, subdiv, min_frag):
                 nxt.append(pc)
             elif convex:
                 nxt.extend(_subtract_convex(pc, hole))
+            elif not _overlaps(pc, hole):
+                nxt.append(pc)                  # near an uneven opening but not touching it: left whole
             else:
                 nxt.extend(_subtract_concave(pc, hole, subdiv))
         pieces = nxt
@@ -1006,7 +1095,9 @@ def outline_notches(outline):
     if all(on) or not any(on):
         return []
     out = []
-    start = on.index(False)                     # walk round from a corner off the bottom line
+    # walk round from a corner ON the bottom line, so every doorway is met from its start (one that
+    # began at a corner off the line could be cut in two and joined up wrongly)
+    start = (on.index(True) + 1) % n
     i = 0
     while i < n:
         k = (start + i) % n
@@ -1083,6 +1174,492 @@ def find_openings(wall, others, unit_label, k=1.0):
                      % (name, (x1 - x0) * k, (y1 - y0) * k, unit_label, (x0 - min_u) * k,
                         (y0 - min_v) * k)))
     return info, (sel if sel else None)
+
+
+# ---------------------------------------------------------------------------
+# Whole building: finding the walls (like the Whole building page in 3D Period Windows)
+# Each wall group's outside face is found (the big face with a matching back face behind it),
+# taken into the world, and listed with a tick box. Walls that already have walling on them
+# are marked, and start unticked.
+# ---------------------------------------------------------------------------
+REC_KEY = "ed3d_brick_block_studio"
+_NOT_WALLS = ("floor", "ledge", "plate", "roof", "chimney", "subframe", "glazing", "gutter", "pipe",
+              "tile", "walling", "quoin", "coping", "backing", "rubble", "heads and sills", "brick",
+              "stone work", "canopy", "fence", "plank", "step", "sill", "frame", "sash", "post",
+              "lintel", "brace", "stud", "rail", "rafter", "purlin", "truss", "nogging", "fascia",
+              "barge", "soffit", "finial", "core", "pot", "flaunching")
+# words that mean 'not a wall' anywhere in a group's name or the names of the groups it's in
+_NEVER_WALLS = ("subframe", "chimney", "barge", "fascia", "soffit", "finial", "gutter", "downpipe",
+                "roof", "canopy", "fence", "glazing frame", "truss")
+_WALL_MAX = 0.6          # thickest wall looked for, as a fraction of a metre-drawn model (600 mm)
+
+
+def _pos3(v):
+    for get in (lambda: (v.x(), v.y(), v.z()), lambda: (v.x, v.y, v.z), lambda: (v[0], v[1], v[2])):
+        try:
+            x, y, z = get()
+            return (float(x), float(y), float(z))
+        except Exception:
+            pass
+    return None
+
+
+def _kids(g):
+    out = []
+    for attr in ('children', 'groups'):
+        out += _items(getattr(g, attr, None))
+    return out
+
+
+def _as_matrix(m):
+    if m is None:
+        return None
+    if hasattr(m, 'map'):
+        return m
+    try:
+        from PySide6.QtGui import QMatrix4x4
+        vals = [float(x) for x in m]
+        if len(vals) == 16:
+            return QMatrix4x4(*vals).transposed()
+    except Exception:
+        pass
+    return None
+
+
+def _placements(top):
+    """(group, world matrix or None) for a group and every group inside it."""
+    try:
+        from core.group import iter_placements
+        return [(g, _as_matrix(m)) for g, m in iter_placements(top)]
+    except Exception:
+        pass
+    out = []
+
+    def walk(g, base, depth):
+        m = _as_matrix(getattr(g, 'xform', None))
+        if base is not None:
+            m = base if m is None else base * m
+        out.append((g, m))
+        if depth < 30:
+            for c in _kids(g):
+                walk(c, m, depth + 1)
+    walk(top, None, 0)
+    return out
+
+
+def _wmap(m, p):
+    if m is None:
+        return p
+    q = m.map(QVector3D(*p))
+    return (q.x(), q.y(), q.z())
+
+
+def _inverse(m):
+    if m is None:
+        return None
+    try:
+        inv = m.inverted()
+        if isinstance(inv, tuple):
+            inv, ok = inv
+            if not ok:
+                return None
+        return inv
+    except Exception:
+        return None
+
+
+BRICK_MARK = 'ed3d_brick'      # set on the faces of walling built into a wall
+
+
+def _mesh_has_walling(mesh):
+    for f in _items(getattr(mesh, 'faces', None)):
+        a = getattr(f, 'attrs', None)
+        if isinstance(a, dict) and a.get(BRICK_MARK):
+            return True
+    return False
+
+
+def _vsub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _vdot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vlen(a):
+    return math.sqrt(_vdot(a, a))
+
+
+def _newell(pts):
+    nx = ny = nz = 0.0
+    n = len(pts)
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    return (nx, ny, nz)
+
+
+def _unit(a):
+    L = _vlen(a)
+    return (a[0] / L, a[1] / L, a[2] / L) if L > 1e-12 else (0.0, 0.0, 0.0)
+
+
+def _mid(pts):
+    xs, ys, zs = [q[0] for q in pts], [q[1] for q in pts], [q[2] for q in pts]
+    return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0, (min(zs) + max(zs)) / 2.0)
+
+
+class WorldFace:
+    """A wall face taken into the world (its group may be moved or turned), shaped like a mesh
+    face so the walling can be laid on it the same way as on a picked face."""
+    def __init__(self, pts, holes, obj, mesh):
+        self.vertices = [QVector3D(*q) for q in pts]
+        self.holes = [[QVector3D(*q) for q in h] for h in holes]
+        self.normal = QVector3D(*_unit(_newell(pts)))
+        self.obj = obj          # the real face, in its group's mesh
+        self.mesh = mesh
+
+
+def _world_faces(mesh, m):
+    out = []
+    for f in _items(getattr(mesh, 'faces', None)):
+        pts = [q for q in (_pos3(v) for v in _items(getattr(f, 'vertices', None))) if q is not None]
+        if len(pts) < 3:
+            continue
+        hls = []
+        for h in _items(getattr(f, 'holes', None)):
+            hp = [q for q in (_pos3(v) for v in _items(h)) if q is not None]
+            if len(hp) >= 3:
+                hls.append([_wmap(m, q) for q in hp])
+        wp = [_wmap(m, q) for q in pts]
+        nv = _newell(wp)
+        area = _vlen(nv) / 2.0 - sum(_vlen(_newell(h)) / 2.0 for h in hls)
+        out.append({'pts': wp, 'holes': hls, 'n': _unit(nv), 'area': area, 'obj': f,
+                    'attrs': dict(getattr(f, 'attrs', None) or {})})
+    return out
+
+
+def _split_at(loops, pts, tol):
+    """Adds any of pts that lie part way along an edge of a loop into that edge, so faces that
+    meet with a corner half way along another face's edge still share whole edges."""
+    out = []
+    for lp in loops:
+        new = []
+        n = len(lp)
+        for i in range(n):
+            a, b = lp[i], lp[(i + 1) % n]
+            new.append(a)
+            ab = _vsub(b, a)
+            L2 = _vdot(ab, ab)
+            if L2 < 1e-24:
+                continue
+            on = []
+            for q in pts:
+                t = _vdot(_vsub(q, a), ab) / L2
+                if 1e-6 < t < 1 - 1e-6:
+                    c = (a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t)
+                    if _vlen(_vsub(q, c)) < tol:
+                        on.append((t, q))
+            on.sort()
+            last = None
+            for t, q in on:
+                if last is None or t - last > 1e-9:
+                    new.append(q)
+                    last = t
+        out.append(new)
+    return out
+
+
+def _join_flat(faces, n, tol):
+    """Joins faces lying flat together into outlines: (outers, holes), 3D loops - outers
+    anticlockwise round n, holes the other way. Edges two faces share cancel out."""
+    allpts = [q for fd in faces for lp in [fd['pts']] + fd['holes'] for q in lp]
+    key = lambda q: (round(q[0] / tol), round(q[1] / tol), round(q[2] / tol))
+    pt, edges = {}, {}
+
+    def add_loop(loop, ccw):
+        if (_vdot(_newell(loop), n) > 0) != ccw:
+            loop = list(reversed(loop))
+        ks = [key(q) for q in loop]
+        for q, k in zip(loop, ks):
+            pt.setdefault(k, q)
+        for i in range(len(ks)):
+            e = (ks[i], ks[(i + 1) % len(ks)])
+            if e[0] != e[1]:
+                edges[e] = edges.get(e, 0) + 1
+    for fd in faces:
+        loops = _split_at([fd['pts']] + fd['holes'], allpts, tol)
+        add_loop(loops[0], True)
+        for h in loops[1:]:
+            add_loop(h, False)
+    for e in list(edges):
+        r = (e[1], e[0])
+        if e in edges and r in edges:
+            c = min(edges[e], edges[r])
+            edges[e] -= c
+            edges[r] -= c
+    nxt = {}
+    for (a, b), c in edges.items():
+        for _ in range(c):
+            nxt.setdefault(a, []).append(b)
+    loops, guard = [], 0
+    while nxt and guard < 200000:
+        a0 = next(iter(nxt))
+        loop, a = [a0], a0
+        while guard < 200000:
+            guard += 1
+            bs = nxt.get(a)
+            if not bs:
+                break
+            b = bs.pop()
+            if not bs:
+                del nxt[a]
+            if b == a0:
+                break
+            loop.append(b)
+            a = b
+        if len(loop) >= 3:
+            loops.append(_drop_straight([pt[k] for k in loop], tol))
+    outers, holes = [], []
+    for lp in loops:
+        if len(lp) >= 3:
+            (outers if _vdot(_newell(lp), n) > 0 else holes).append(lp)
+    return outers, holes
+
+
+def _drop_straight(loop, tol):
+    """Takes out corners that lie on a straight line between their neighbours."""
+    out = list(loop)
+    changed = True
+    while changed and len(out) > 3:
+        changed = False
+        for i in range(len(out)):
+            a, b, c = out[i - 1], out[i], out[(i + 1) % len(out)]
+            ac = _vsub(c, a)
+            L = _vlen(ac)
+            if L < 1e-12:
+                continue
+            ab = _vsub(b, a)
+            cr = (ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0])
+            if _vlen(cr) / L < tol and 0 < _vdot(ab, ac) < L * L:
+                del out[i]
+                changed = True
+                break
+    return out
+
+
+def _whole_face(faces, fd):
+    """The wall's face as one: every face lying flat with it (same plane, same way round, same
+    paint) joined together - building windows and doors into a wall can cut its face into
+    several pieces. Returns [(outline, holes)], one for each separate piece of face."""
+    n = fd['n']
+    size = max(_vlen(_vsub(q, fd['pts'][0])) for q in fd['pts']) or 1.0
+    tol = size * 1e-6
+    same = [g for g in faces if g['area'] > 0 and _vdot(g['n'], n) > 0.9999
+            and all(abs(_vdot(_vsub(q, fd['pts'][0]), n)) < tol * 10 for q in g['pts'])
+            and g['attrs'] == fd['attrs']]
+    if len(same) <= 1:
+        return [(fd['pts'], fd['holes'])]
+    try:
+        outers, holes = _join_flat(same, n, tol)
+    except Exception:
+        return [(fd['pts'], fd['holes'])]
+    if not outers:
+        return [(fd['pts'], fd['holes'])]
+    # each hole goes with the piece of face round it
+    up = (0.0, 0.0, 1.0)
+    along = _unit((up[1] * n[2] - up[2] * n[1], up[2] * n[0] - up[0] * n[2], up[0] * n[1] - up[1] * n[0]))
+    flat = lambda lp: [(_vdot(q, along), q[2]) for q in lp]
+    res = []
+    for o in outers:
+        fo = flat(o)
+        mine = [h for h in holes if _pip(*flat(h)[0], fo) or _pip(*_mid2(flat(h)), fo)]
+        res.append((o, mine))
+    res.sort(key=lambda r: -abs(_area(flat(r[0]))))
+    return res
+
+
+def _mid2(pts):
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
+def _wall_face(faces, centre, inside=False):
+    """The wall's outside face (or inside, if asked): the biggest upright face with a face the
+    other way round behind it, up to a wall's thickness away. None if it isn't a wall."""
+    up = (0.0, 0.0, 1.0)
+    side = [fd for fd in faces if fd['area'] > 0 and abs(_vdot(fd['n'], up)) < 0.05]
+    if not side:
+        return None
+    side.sort(key=lambda fd: -fd['area'])
+    size = max(_vlen(_vsub(q, side[0]['pts'][0])) for q in side[0]['pts']) or 1.0
+    wall_max = _WALL_MAX * (1.0 if size < 50.0 else 1000.0)
+    best = None
+    for a in side[:12]:
+        for b in side:
+            if b is a or _vdot(a['n'], b['n']) > -0.995:
+                continue
+            d = _vdot(_vsub(a['pts'][0], b['pts'][0]), a['n'])
+            if not (0.0 < d <= wall_max):
+                continue
+            score = min(a['area'], b['area'])
+            if best is None or score > best[0]:
+                best = (score, a, b, d)
+        if best is not None:
+            break
+    if best is None:
+        return None
+    _s, a, b, t = best
+    outward = _vdot(a['n'], _vsub(_mid(a['pts']), centre)) >= 0
+    if outward == bool(inside):
+        a, b = b, a
+    return a, t
+
+
+def _brick_records(scene):
+    """Walling already made by this plugin: [(centre, normal, size)] - plus the boxes round older
+    walling made before it was recorded, as [(lo, hi)]."""
+    recs, boxes = [], []
+    for top in _items(getattr(scene, 'groups', None)):
+        for g, m in _placements(top):
+            ext = getattr(g, 'ext', None)
+            rec = ext.get(REC_KEY) if isinstance(ext, dict) else None
+            if isinstance(rec, dict) and rec.get('at'):
+                recs.append((tuple(rec['at']), tuple(rec.get('n') or (0, 0, 0)), float(rec.get('size') or 1.0)))
+                continue
+            name = str(getattr(g, 'name', '') or '')
+            if name.startswith("3D Brick & Block Work") or name.startswith("3D Stone Work"):
+                pts = []
+                for g2, m2 in _placements(g):
+                    for f in _items(getattr(getattr(g2, 'mesh', None), 'faces', None)):
+                        for v in _items(getattr(f, 'vertices', None)):
+                            q = _pos3(v)
+                            if q is not None:
+                                pts.append(_wmap(m2, q))
+                if pts:
+                    boxes.append((tuple(min(q[i] for q in pts) for i in range(3)),
+                                  tuple(max(q[i] for q in pts) for i in range(3))))
+    return recs, boxes
+
+
+def _is_ours(g):
+    """Walling made by this plugin, or a Subframe (its posts, lintels and braces are never walls)."""
+    ext = getattr(g, 'ext', None)
+    if isinstance(ext, dict) and REC_KEY in ext:
+        return True
+    name = str(getattr(g, 'name', '') or '')
+    return name.startswith(("3D Brick & Block Work", "3D Stone Work", "Rubble pile", "Subframe",
+                            "Glazing frames"))
+
+
+def _has_walling(fd, recs, boxes):
+    c = _mid(fd['pts'])
+    size = max(_vlen(_vsub(q, fd['pts'][0])) for q in fd['pts']) or 1.0
+    tol = size * 2e-4
+    for at, n, _sz in recs:
+        if _vlen(_vsub(at, c)) <= tol * 5 and _vdot(n, fd['n']) > 0.99:
+            return True
+    for lo, hi in boxes:
+        if all(lo[i] - tol <= c[i] <= hi[i] + tol for i in range(3)):
+            return True
+    return False
+
+
+def find_building_walls(scene, inside_walls=False, inside_faces=False):
+    """The walls in the selected building or groups (the whole model if nothing is selected):
+    [dict(name, face (WorldFace), group, bricked, length, height, openings)], and how many
+    groups were skipped (not walls)."""
+    sel = _items(getattr(scene, 'selection', None))
+    picked = [e for e in sel if getattr(e, 'mesh', None) is not None or _kids(e)]
+    tops = _items(getattr(scene, 'groups', None))
+    if picked:
+        def in_tree(t, g):
+            return any(x is g for x, _ in _placements(t))
+        tops = [t for t in tops if any(in_tree(t, g) for g in picked)]
+    places, order = {}, []
+    for t in tops:
+        for g, m in _placements(t):
+            if id(g) not in places:
+                places[id(g)] = (g, m)
+                order.append(id(g))
+    parents = {}                          # the names of the groups each group is inside
+
+    def _walk_names(g, above, depth=0):
+        if depth > 40:
+            return
+        for c in _kids(g):
+            parents[id(c)] = above + [str(getattr(g, 'name', '') or '')]
+            _walk_names(c, parents[id(c)], depth + 1)
+    for t in tops:
+        _walk_names(t, [])
+    if picked:
+        want = set()
+        for pg in picked:
+            for g, _m in _placements(pg):
+                want.add(id(g))
+        order = [k for k in order if k in want]
+    # the middle of the building(s), to tell the outside of a wall from the inside
+    allp = []
+    for k in order:
+        g, m = places[k]
+        for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+            for v in _items(getattr(f, 'vertices', None)):
+                q = _pos3(v)
+                if q is not None:
+                    allp.append(_wmap(m, q))
+    centre = _mid(allp) if allp else (0.0, 0.0, 0.0)
+    recs, boxes = _brick_records(scene)
+    ours = set()                          # walling, rubble piles ... made by this plugin: never walls
+    for k in order:
+        g, _m = places[k]
+        if _is_ours(g):
+            ours.update(id(x) for x, _ in _placements(g))
+    out, skipped = [], 0
+    for k in order:
+        if k in ours:
+            continue
+        g, m = places[k]
+        mesh = getattr(g, 'mesh', None)
+        if mesh is None or not _items(getattr(mesh, 'faces', None)):
+            continue
+        name = str(getattr(g, 'name', '') or 'Wall')
+        last = name.lower().split(" - ")[-1]
+        if any(w_ in nm_.lower() for nm_ in [name] + parents.get(k, []) for w_ in _NEVER_WALLS):
+            continue
+        if "inside wall" in last:
+            if not inside_walls:
+                continue
+        elif any(w_ in last for w_ in _NOT_WALLS):
+            continue
+        faces = _world_faces(mesh, m)
+        got = _wall_face(faces, centre, inside_faces)
+        if got is None:
+            skipped += 1
+            continue
+        fd, t = got
+        pieces = _whole_face(faces, fd)
+        wf = WorldFace(pieces[0][0], pieces[0][1], fd['obj'], mesh)
+        wf.more = [WorldFace(o, h, fd['obj'], mesh) for o, h in pieces[1:]]
+        inv = _inverse(m)
+        if m is not None and inv is None:
+            inv = False                       # can't be turned back: walling goes in a group of its own
+        for x_ in [wf] + wf.more:
+            x_.into = (mesh, inv)
+        n_ = fd['n']
+        upd = (0.0, 0.0, 1.0)
+        along = _unit((upd[1] * n_[2] - upd[2] * n_[1], upd[2] * n_[0] - upd[0] * n_[2],
+                       upd[0] * n_[1] - upd[1] * n_[0]))
+        xs = [_vdot(q, along) for q in pieces[0][0]]
+        zs = [q[2] for q in pieces[0][0]]
+        k_ = 1000.0 if max(max(xs) - min(xs), max(zs) - min(zs)) < 50.0 else 1.0
+        n_notch = len(outline_notches([(x, z) for x, z in zip(xs, zs)]))
+        out.append({'name': name, 'face': wf, 'group': g, 'fd': fd,
+                    'bricked': _mesh_has_walling(mesh) or _has_walling(fd, recs, boxes),
+                    'length': (max(xs) - min(xs)) * k_, 'height': (max(zs) - min(zs)) * k_,
+                    'openings': len(pieces[0][1]) + n_notch})
+    return out, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -1687,7 +2264,7 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     def picked(k):
         return chosen is None or hole_ids[k] in chosen
 
-    real_holes = [(h, _bbox(h), _is_convex(h)) for h in holes]
+    real_holes = [_smooth_hole(h) for h in holes]
 
     # ---- copings, quoins and opening dressings come first: the walling fits round them
     placed = []                  # convex shapes that later pieces must keep out of
@@ -2655,21 +3232,31 @@ def unit_colour(mat, kind, shade):
 
 
 def sample_wall(v):
-    """A sample panel for the preview: (W, H, outline, holes)."""
+    """A sample gable wall for the preview, like 3D Subframe's: an arched doorway up from the bottom
+    and a window, so the walling, quoins, heads, sills and copings show round them.
+    Returns (W, H, outline, holes)."""
     A, B, J = v['length'], v['height'], v['joint']
-    W = 10 * A + 9 * J
+    W = 12 * A + 11 * J
     if v.get('ruin') or v.get('holes_n') or v.get('foot'):
-        W = max(W, 3200.0 * v.get('_mm', 1.0))      # room to show the damage
-    H = 0.62 * W
+        W = max(W, 3600.0 * v.get('_mm', 1.0))      # room to show the damage
+    H = 0.5 * W
     if v.get('material', 'brick') == 'brick':
         H = max(1, round(H / (B + J))) * (B + J) - J if B + J > 0 else H
-    outline = [(0.0, 0.0), (W, 0.0), (W, H), (0.0, H)]
-    holes = []
-    if v.get('soldier') or v.get('q_open') or v.get('heads') or v.get('sills'):
-        w, h = 0.24 * W, 0.36 * H
-        x0, y0 = (W - w) / 2.0, 0.26 * H
-        holes = [[(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)]]
-    return W, H, outline, holes
+    G = 0.24 * W                                     # the gable above the eaves
+    outline = [(0.0, 0.0), (W, 0.0), (W, H), (W / 2.0, H + G), (0.0, H)]
+    # the doorway: an arched head, cut up from the bottom of the wall
+    dw, dh = 0.17 * W, 0.62 * H
+    dx = 0.14 * W
+    r = dw / 2.0
+    door = [(dx, 0.0), (dx + dw, 0.0), (dx + dw, dh - r)]
+    door += [(dx + r + r * math.cos(math.pi * k / 10.0), dh - r + r * math.sin(math.pi * k / 10.0))
+             for k in range(1, 10)]
+    door += [(dx, dh - r)]
+    # the window: square, to the right
+    ww, wh = 0.22 * W, 0.42 * H
+    wx, wy = 0.6 * W, 0.3 * H
+    window = [(wx, wy), (wx + ww, wy), (wx + ww, wy + wh), (wx, wy + wh)]
+    return W, H + G, outline, [door, window]
 
 
 def wall_preview_solids(v):
@@ -2863,10 +3450,12 @@ class StudioPreview(QWidget):
                     self.caption = "Rubble pile - %d pieces" % self.v.get('_placed', 0)
                 else:
                     solids, res = wall_preview_solids(self.v)
-                    self.items = render_items(solids, (-0.38, 0.3, 1.0), (0, 1, 0), (-0.5, 0.6, 0.65))
+                    self.items = render_items(solids, (-0.2, 0.14, 1.0), (0, 1, 0), (-0.5, 0.6, 0.65))
                     st = res['stats']
-                    self.caption = "%s - %d units" % (MATERIAL_NAMES.get(self.v.get('material'), ""),
-                                                      st['units'] + st['quoins'] + st['copings'])
+                    mat = self.v.get('material')
+                    self.caption = "%d units on this sample wall - %.0f x %.0f mm %s" % (
+                        st['units'] + st['quoins'] + st['copings'], self.v['length'], self.v['height'],
+                        "bricks" if mat == 'brick' else MATERIAL_NAMES.get(mat, "stones").split(" (")[0].lower())
                     if st['removed']:
                         self.caption += ", %d knocked out" % st['removed']
             except Exception as e:
@@ -3142,6 +3731,320 @@ FIELDS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# The key: a drawing showing what each lettered size is (laid out like 3D Subframe's)
+# ---------------------------------------------------------------------------
+KEY_NOTES = ["A  brick or stone length", "B  brick or stone height", "C  stands out from the wall",
+             "D  mortar joint", "E  header width (brick end)", "F  quoin long face", "G  quoin short face",
+             "H  quoin height", "I  quoins stand out further", "J  coping height",
+             "K  coping stone length", "L  coping overhang", "M  rubble pile length", "N  rubble pile width",
+             "P  rubble pile height"]
+
+
+class KeyDrawing(QWidget):
+    """A drawing that shows what each lettered size is."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(360, 690)
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+        from PySide6.QtCore import QPointF, QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / 690.0)
+        p.scale(k, k)
+        brick, header = QColor(181, 86, 60), QColor(142, 64, 44)
+        mortar, wallc = QColor(222, 214, 200), QColor(200, 196, 188)
+        stone, coping = QColor(218, 208, 182), QColor(196, 190, 178)
+        rubble = QColor(160, 120, 96)
+        red = QColor(200, 40, 40)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+
+        def poly(pts, col):
+            p.setPen(QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+        def box(x, y, w, h, col):
+            poly([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], col)
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = math.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + math.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * math.cos(a + s_), y + 6 * math.sin(a + s_)))
+            p.setPen(red)
+            p.drawText(QRectF(tx - 10, ty - 9, 20, 18), Qt.AlignCenter, letter)
+
+        def title(x, y, text):
+            p.setFont(f)
+            p.setPen(QColor(60, 60, 60))
+            p.drawText(QRectF(x, y, 340, 18), Qt.AlignLeft, text)
+
+        # ---- the walling from the front: Flemish bond (stretchers and headers in turn)
+        title(10, 4, "Walling from the front")
+        X0, Y0, X1 = 40.0, 28.0, 340.0
+        bh, jg, A_, E_ = 22.0, 6.0, 62.0, 28.0
+        rows = 5
+        box(X0, Y0, X1 - X0, rows * (bh + jg) - jg, mortar)
+        p.save()
+        p.setClipRect(QRectF(X0, Y0, X1 - X0, rows * (bh + jg)))
+        for r in range(rows):
+            y = Y0 + r * (bh + jg)
+            x = X0 - (0.0 if r % 2 == 0 else (E_ + jg) / 2.0 + (A_ + jg) / 2.0)
+            i = 0
+            while x < X1:
+                w = A_ if i % 2 == 0 else E_
+                box(x, y, w, bh, brick if i % 2 == 0 else header)
+                x += w + jg
+                i += 1
+        p.restore()
+        # under the bottom course: stretcher A, header E; up the left end: height B, joint D
+        ya = Y0 + rows * (bh + jg) - jg + 8
+        dim(X0, ya, X0 + A_, ya, "A", X0 + A_ / 2.0, ya + 12)
+        dim(X0 + A_ + jg, ya, X0 + A_ + jg + E_, ya, "E", X0 + A_ + jg + E_ / 2.0, ya + 12)
+        dim(X0 - 8, Y0, X0 - 8, Y0 + bh, "B", X0 - 20, Y0 + bh / 2.0)
+        dim(X0 - 8, Y0 + bh, X0 - 8, Y0 + bh + jg, "D", X0 - 20, Y0 + bh + jg + 6)
+
+        # ---- the wall seen end on: walling, a quoin, the coping on top
+        title(10, 188, "The wall seen end on")
+        wx, wtop, wbot = 60.0, 236.0, 430.0
+        box(wx, wtop, 40, wbot - wtop, wallc)              # the wall (the face the walling goes on)
+        C_, I_, J_, L_ = 16.0, 10.0, 20.0, 12.0
+        y = wtop
+        while y < 360:                                      # bricks standing out C from the face
+            box(wx - C_, y, C_, min(bh * 0.7, 360 - y), brick)
+            y += bh * 0.7 + 3
+        box(wx - C_ - I_, 364, C_ + I_, 30, stone)          # a quoin, standing out I past the walling
+        box(wx - C_ - I_, 397, C_ + I_, 30, stone)
+        box(wx - C_ - L_, wtop - J_, 40 + C_ + 2 * L_, J_, coping)    # the coping on the top
+        dim(wx - C_, 300, wx, 300, "C", wx - C_ - 14, 300)
+        dim(wx - C_ - I_, 412, wx - C_, 412, "I", wx - C_ - I_ / 2.0, 400 + 26)
+        xj = wx + 40 + L_ + 8
+        dim(xj, wtop - J_, xj, wtop, "J", xj + 12, wtop - J_ / 2.0)
+        dim(wx - C_ - L_, wtop - J_ - 8, wx - C_, wtop - J_ - 8, "L", wx - C_ - L_ - 14, wtop - J_ - 8)
+
+        # ---- a corner with quoins, and coping stones along the top
+        title(150, 188, "A corner, from the front")
+        cx0, cx1, ctop, cbot = 150.0, 330.0, 236.0, 430.0
+        box(cx0, ctop, cx1 - cx0, cbot - ctop, mortar)
+        y = ctop + 4
+        r = 0
+        while y + bh * 0.7 <= cbot:                         # walling behind
+            x = cx0 + (0 if r % 2 == 0 else -30)
+            while x < cx1:
+                x0_, x1_ = max(x, cx0), min(x + 56, cx1)
+                if x1_ > x0_:
+                    box(x0_, y, x1_ - x0_, bh * 0.7, brick)
+                x += 60
+            y += bh * 0.7 + 4
+            r += 1
+        F_, G_, H_ = 80.0, 46.0, 34.0
+        y = cbot
+        i = 0
+        while y - H_ >= ctop + 6:                           # quoins up the corner, long and short in turn
+            w = F_ if i % 2 == 0 else G_
+            box(cx1 - w, y - H_, w, H_ - 3, stone)
+            y -= H_
+            i += 1
+        K_ = 54.0
+        x = cx0 - 6
+        while x < cx1 + 6:                                  # coping stones along the top
+            box(x, ctop - J_, min(K_, cx1 + 6 - x), J_, coping)
+            x += K_ + 3
+        dim(cx1 - F_, cbot + 10, cx1, cbot + 10, "F", cx1 - F_ / 2.0, cbot + 22)
+        dim(cx1 - G_, cbot - H_ - 12, cx1, cbot - H_ - 12, "G", cx1 - G_ - 12, cbot - H_ - 12)
+        dim(cx1 + 14, cbot - H_, cx1 + 14, cbot, "H", cx1 + 24, cbot - H_ / 2.0)
+        dim(cx0 - 6, ctop - J_ - 8, cx0 - 6 + K_, ctop - J_ - 8, "K", cx0 + K_ + 12, ctop - J_ - 8)
+
+        # ---- the rubble pile: from above and from the side
+        title(10, 452, "A rubble pile, from above and from the side")
+        ex, ey, ew, eh = 30.0, 480.0, 140.0, 70.0
+        p.setPen(QPen(rubble.darker(150), 0.8))
+        p.setBrush(rubble)
+        p.drawEllipse(QRectF(ex, ey, ew, eh))
+        rng = random.Random(4)
+        for _ in range(26):                                  # a few loose pieces
+            a, rr = rng.random() * 2 * math.pi, math.sqrt(rng.random()) * 0.8
+            px, py = ex + ew / 2 + rr * ew / 2 * math.cos(a), ey + eh / 2 + rr * eh / 2 * math.sin(a)
+            box(px - 5, py - 2.5, 10, 5, brick)
+        dim(ex, ey + eh + 10, ex + ew, ey + eh + 10, "M", ex + ew / 2.0, ey + eh + 22)
+        dim(ex - 10, ey, ex - 10, ey + eh, "N", ex - 20, ey + eh / 2.0)
+        bx0, bx1, by = 200.0, 340.0, 556.0
+        mound = [(bx0, by)] + [(bx0 + (bx1 - bx0) * t / 20.0,
+                                by - 62.0 * math.sin(math.pi * t / 20.0) ** 0.8) for t in range(1, 20)] + [(bx1, by)]
+        poly(mound, rubble)
+        for t in range(3, 18, 3):
+            xx = bx0 + (bx1 - bx0) * t / 20.0
+            yy = by - 62.0 * math.sin(math.pi * t / 20.0) ** 0.8
+            box(xx - 5, yy - 2, 10, 5, brick)
+        dim(bx1 + 8, by - 62, bx1 + 8, by, "P", bx1 + 16, by - 31)
+
+        # ---- the notes
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        half = (len(KEY_NOTES) + 1) // 2
+        for i, t in enumerate(KEY_NOTES):
+            col, row = (0, i) if i < half else (1, i - half)
+            p.drawText(QRectF(10 + col * 175, 590 + row * 12.0, 175, 13), Qt.AlignLeft | Qt.AlignVCenter, t)
+        p.end()
+
+
+# which settings make each kind of piece - looked up by a group's name when you click on it
+PIECE_KEYS = [
+    ("Walling", ('length', 'height', 'depth', 'joint', 'header_len')),
+    ("Quoins", ('q_long', 'q_short', 'q_h', 'q_proud')),
+    ("Heads and sills", ('q_h', 'q_proud')),
+    ("Coping", ('c_h', 'c_len', 'c_over')),
+    ("Backing", ('backing',)),
+    ("Rubble (", ('foot_w', 'foot_amt')),
+    ("Loose pieces", ('pile_len', 'pile_wid', 'pile_h', 'pile_n')),
+    ("Rubble core", ('pile_len', 'pile_wid', 'pile_h')),
+    ("Rubble pile", ('pile_len', 'pile_wid', 'pile_h', 'pile_n')),
+    ("Planks and timbers", ('plank_len', 'plank_w', 'plank_t')),
+    ("Barrels", ('barrel_d', 'barrel_h')),
+    ("Crates", ('crate_size',)),
+]
+
+
+def piece_keys(name):
+    name = str(name or '')
+    for word, keys in PIECE_KEYS:
+        if name.startswith(word):
+            return keys
+    return ()
+
+
+# window settings: the page you were on, your last settings, the preset order
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_brick_block_studio.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f_:
+            d = json.load(f_)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f_:
+            json.dump(d, f_, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>How to use it</b><br>"
+             "Select a wall face and click 'Apply to face' - the walling, quoins, copings and damage set on "
+             "the pages go on it. Or select a floor or the ground and click 'Make rubble pile'.<br><br>"
+             "<b>Whole building</b><br>"
+             "Select the building (or nothing, for the whole model), click Find on the Whole building page, "
+             "tick the walls you want and click 'Brick the ticked walls'. Plain walls start ticked; walls "
+             "that already have walling start unticked. One Undo takes them all away.<br><br>"
+             "<b>Openings</b><br>"
+             "Openings in the face are found for you. On the Openings page, tick the ones that get a "
+             "soldier course, quoins, a stone head or a sill.<br><br>"
+             "<b>Clicking on walling</b><br>"
+             "Click on walling, quoins or coping in the model and the sizes that made it light up here.<br><br>"
+             "<b>Printing</b><br>Keep 'Closed units (with backs)' ticked so every unit is a closed solid. "
+             "Sizes are real-world mm - Scale Studio takes it down to your model scale.")
+
+
+class TwoRowTabs(QWidget):
+    """Pages with their tabs on two rows, so they all show without scrolling across.
+    Works like a QTabWidget: addTab, setTabToolTip, currentIndex, setCurrentIndex, currentChanged."""
+    try:
+        from PySide6.QtCore import Signal as _Signal
+        currentChanged = _Signal(int)
+    except Exception:
+        currentChanged = None
+
+    def __init__(self, rows=2, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QGridLayout, QStackedWidget, QButtonGroup
+        self._rows = rows
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self._grid = QGridLayout()
+        self._grid.setSpacing(2)
+        lay.addLayout(self._grid)
+        self._stack = QStackedWidget()
+        try:
+            from PySide6.QtWidgets import QFrame
+            self._stack.setFrameShape(QFrame.StyledPanel)
+        except Exception:
+            pass
+        lay.addWidget(self._stack, 1)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons = []
+        self._group.idClicked.connect(self.setCurrentIndex)
+
+    def _relayout(self):
+        n = len(self._buttons)
+        per = max(1, -(-n // self._rows))         # tabs on each row
+        for b in self._buttons:
+            self._grid.removeWidget(b)
+        for i, b in enumerate(self._buttons):
+            self._grid.addWidget(b, i // per, i % per)
+
+    def addTab(self, widget, title):
+        b = QPushButton(title.replace("&&", "&"))
+        b.setCheckable(True)
+        b.setStyleSheet("QPushButton { padding: 3px 8px; }"
+                        "QPushButton:checked { font-weight: bold; background-color: palette(base); "
+                        "border: 1px solid palette(mid); border-bottom: 2px solid palette(highlight); }")
+        i = len(self._buttons)
+        self._group.addButton(b, i)
+        self._buttons.append(b)
+        self._stack.addWidget(widget)
+        self._relayout()
+        if i == 0:
+            b.setChecked(True)
+        return i
+
+    def setTabToolTip(self, i, tip):
+        if 0 <= i < len(self._buttons):
+            self._buttons[i].setToolTip(tip)
+
+    def tabText(self, i):
+        return self._buttons[i].text() if 0 <= i < len(self._buttons) else ""
+
+    def count(self):
+        return len(self._buttons)
+
+    def currentIndex(self):
+        return self._stack.currentIndex()
+
+    def setCurrentIndex(self, i):
+        try:
+            i = int(i)
+        except Exception:
+            return
+        if not 0 <= i < len(self._buttons) or i == self._stack.currentIndex() and self._buttons[i].isChecked():
+            return
+        self._buttons[i].setChecked(True)
+        self._stack.setCurrentIndex(i)
+        try:
+            self.currentChanged.emit(i)
+        except Exception:
+            pass
+
+
 class BrickDialog(QDialog):
     CUSTOM = "-- Custom --"
 
@@ -3157,27 +4060,43 @@ class BrickDialog(QDialog):
         self._sold_linked = cur.get('soldier_len') is None
 
         lay = QVBoxLayout(self)
+        # the writing at the top - how to use it, the face picked and what the last build did - only
+        # shows when the Info button (bottom of the window) is pressed; it's off each time it opens
+        self.info_box = QWidget()
+        ib = QVBoxLayout(self.info_box)
+        ib.setContentsMargins(0, 0, 0, 0)
+        self.lbl_info = QLabel(INFO_TEXT)
+        self.lbl_info.setWordWrap(True)
+        ib.addWidget(self.lbl_info)
         self.lbl_face = QLabel()
         self.lbl_face.setWordWrap(True)
         self.lbl_face.setStyleSheet("font-weight: bold;")
-        lay.addWidget(self.lbl_face)
+        ib.addWidget(self.lbl_face)
+        self.lbl_report = QLabel()
+        self.lbl_report.setWordWrap(True)
+        self.lbl_report.setVisible(False)
+        ib.addWidget(self.lbl_report)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
 
-        # ---- the picture on the left, the settings beside it ----
+        # ---- the preview and key on the left, the pages beside them ----
         side = QHBoxLayout()
         lay.addLayout(side, 1)
         self.views = QTabWidget()
         self.preview = StudioPreview('3d')
-        self.preview.setToolTip("A sample piece of wall as it will be built (or the rubble pile, on the "
-                                "Rubble pile tab). It changes as you change the settings.")
-        self.sizes = StudioPreview('sizes')
-        self.sizes.setToolTip("The sizes lettered: the letters match the settings.")
+        self.preview.setToolTip("A sample gable wall with a door and a window, as it will be built (or the "
+                                "rubble pile, on the Rubble pile page). It changes as you change the settings.")
         self.views.addTab(self.preview, "Preview")
-        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
-        self.views.setTabToolTip(0, "A sample piece of wall (or the rubble pile) as it will be built.")
-        self.views.setTabToolTip(1, "The sizes lettered: the letters match the settings.")
+        from PySide6.QtWidgets import QScrollArea
+        key_scroll = QScrollArea()
+        key_scroll.setWidgetResizable(True)
+        key_scroll.setWidget(KeyDrawing())
+        self.views.addTab(key_scroll, "Key (A, B, C...)")
+        self.views.setTabToolTip(0, "A sample wall (or the rubble pile) as it will be built.")
+        self.views.setTabToolTip(1, "What each lettered size is.")
         side.addWidget(self.views, 1)
 
-        self.tabs = QTabWidget()
+        self.tabs = TwoRowTabs(2)
         self.pages = {}
         for title in TABS:
             pg = QWidget()
@@ -3264,7 +4183,13 @@ class BrickDialog(QDialog):
         self.cb_swap = check("Swap axes", "Swap the wall's width and height directions.")
         self.cb_group = check("New group", "Put the walling in a new group of its own (with a group "
                                            "for each part: walling, quoins, copings, rubble, backing).")
-        for c in (self.cb_back, self.cb_swap, self.cb_group):
+        self.cb_join = check("Build the walling into its wall (prints as one piece)",
+                             "The bricks or stones become part of the wall's own group, like windows and doors "
+                             "built in - so in Scale Studio's Pieces page each wall lays flat and prints as one "
+                             "piece, walling and all. They're painted with 3D Layers & Colours' colours. "
+                             "Rubble at the foot stays a group of its own. Untick to put the walling in groups "
+                             "of its own instead.")
+        for c in (self.cb_back, self.cb_swap, self.cb_join, self.cb_group):
             F["Walling"].addRow(c)
 
         # ---- Bond ----
@@ -3486,6 +4411,7 @@ class BrickDialog(QDialog):
         row(Rp, 'pile_custom')
         row(Rp, 'custom_scale')
         row(Rp, 'pile_seed')
+        self._add_building_page()
         self.tabs.currentChanged.connect(self.changed)
 
         # ---- presets, report, buttons ----
@@ -3494,6 +4420,15 @@ class BrickDialog(QDialog):
         self.cb_preset = QComboBox()
         _compact_combo(self.cb_preset, 16)
         prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
         self.btn_save = QPushButton("Save")
         self.btn_saveas = QPushButton("Save as...")
         self.btn_delete = QPushButton("Delete")
@@ -3501,10 +4436,6 @@ class BrickDialog(QDialog):
         for b_ in (self.btn_save, self.btn_saveas, self.btn_delete, self.btn_folder):
             prow.addWidget(b_)
         lay.addLayout(prow)
-        self.lbl_report = QLabel()
-        self.lbl_report.setWordWrap(True)
-        self.lbl_report.setVisible(False)
-        lay.addWidget(self.lbl_report)
         brow = QHBoxLayout()
         self.btn_apply = QPushButton("Apply to face")
         self.btn_apply.setToolTip("Covers the selected face (a wall) with the walling, quoins, copings "
@@ -3513,9 +4444,21 @@ class BrickDialog(QDialog):
         self.btn_pile = QPushButton("Make rubble pile")
         self.btn_pile.setToolTip("Makes a heap of loose bricks or stones (Rubble pile tab) on the selected face.")
         btn_close = QPushButton("Close")
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page (Walling, Bond, Whole building...) you "
+                                   "had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setChecked(False)
+        self.b_info.setToolTip("Shows how to use it, the face you've picked, and what the last build came out like.")
+        self.b_info.toggled.connect(self.toggle_info)
         brow.addWidget(self.btn_apply)
         brow.addWidget(self.btn_pile)
         brow.addStretch(1)
+        brow.addWidget(self.b_info)
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(btn_close)
         lay.addLayout(brow)
         lay.setSpacing(4)
@@ -3531,6 +4474,169 @@ class BrickDialog(QDialog):
         self.btn_pile.clicked.connect(self.pile_clicked)
         btn_close.clicked.connect(self.close)
         self.set_values(cur)
+        # open at the page used last time
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(st.get('tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        # show the preset you last picked - without loading it over the top of your settings
+        last = st.get('last_preset')
+        if last and last in self.preset_order():
+            self.refresh_presets(select=last)
+        # click on walling in the model and the sizes that made it light up here
+        self._sel_names = None
+        self._lit = []
+        try:
+            from PySide6.QtCore import QTimer
+            self._sel_timer = QTimer(self)
+            self._sel_timer.timeout.connect(self.watch_selection)
+            self._sel_timer.start(400)
+        except Exception:
+            pass
+
+    # ---- whole building: tick the walls that get walling ----
+    def _add_building_page(self):
+        from PySide6.QtWidgets import QAbstractItemView
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        info = QLabel("Select the building (or some of its wall groups) and click Find - or click it with "
+                      "nothing selected for the whole model. Every wall is listed with a tick box: plain "
+                      "walls start ticked, walls that already have walling on them start unticked. Click a "
+                      "line to light that wall's face up in the model. Then 'Brick the ticked walls': each "
+                      "gets the walling, quoins, copings and damage set on the other pages, round all its "
+                      "openings. One Undo takes them all away.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        self.btn_find = QPushButton("Find walls in the selected building")
+        self.btn_find.setToolTip("Lists the walls in the selected building or groups (or the whole model if "
+                                 "nothing is selected), with a tick box for each.")
+        lay.addWidget(self.btn_find)
+        self.cb_inside_walls = QCheckBox("Include inside walls")
+        self.cb_inside_walls.setToolTip("List Floor Plan's inside walls (room dividers) too, so they can have "
+                                        "walling on them.")
+        self.cb_inside_faces = QCheckBox("Use the inside face of each wall")
+        self.cb_inside_faces.setToolTip("Puts the walling on the inside face of the walls (the side facing the "
+                                        "middle of the building) instead of the outside.")
+        lay.addWidget(self.cb_inside_walls)
+        lay.addWidget(self.cb_inside_faces)
+        self.lst_walls = QListWidget()
+        self.lst_walls.setToolTip("Ticked walls get walling. Click a line to light that wall's face up in "
+                                  "the model.")
+        self.lst_walls.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        lay.addWidget(self.lst_walls, 1)
+        trow = QHBoxLayout()
+        b_plain = QPushButton("Tick all plain walls")
+        b_plain.setToolTip("Ticks every wall that has no walling on it yet.")
+        b_none = QPushButton("Untick all")
+        b_none.setToolTip("Unticks every wall.")
+        trow.addWidget(b_plain)
+        trow.addWidget(b_none)
+        trow.addStretch(1)
+        lay.addLayout(trow)
+        self.btn_brick_walls = QPushButton("Brick the ticked walls")
+        self.btn_brick_walls.setToolTip("Covers the outside face of every ticked wall with the walling set on "
+                                        "the other pages. One Undo takes them all away.")
+        lay.addWidget(self.btn_brick_walls)
+        self.lbl_walls = QLabel()
+        self.lbl_walls.setWordWrap(True)
+        lay.addWidget(self.lbl_walls)
+        self.found_walls = []
+        self.btn_find.clicked.connect(self.find_walls)
+        self.cb_inside_walls.toggled.connect(lambda *_: self.find_walls() if self.found_walls else None)
+        self.cb_inside_faces.toggled.connect(lambda *_: self.find_walls() if self.found_walls else None)
+        b_plain.clicked.connect(lambda: self._tick_walls(True))
+        b_none.clicked.connect(lambda: self._tick_walls(False))
+        self.lst_walls.itemSelectionChanged.connect(self._wall_picked)
+        self.btn_brick_walls.clicked.connect(lambda: self.tool.brick_walls_from_dialog(self)
+                                             if self.tool is not None else None)
+        self.tabs.addTab(page, "Whole building")
+        self.tabs.setTabToolTip(self.tabs.count() - 1, "Find the walls of a building and tick the ones that "
+                                                       "get walling.")
+
+    def find_walls(self):
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        try:
+            self.found_walls, skipped = find_building_walls(scene, self.cb_inside_walls.isChecked(),
+                                                            self.cb_inside_faces.isChecked())
+        except Exception as e:
+            self.found_walls, skipped = [], 0
+            QMessageBox.warning(self, PLUGIN_NAME, "Could not look for walls:\n%s" % e)
+            return
+        self.fill_walls()
+        nb = sum(1 for w in self.found_walls if w['bricked'])
+        if self.found_walls:
+            txt = "Found %d wall%s" % (len(self.found_walls), "" if len(self.found_walls) == 1 else "s")
+            txt += (" - %d already ha%s walling (unticked)." % (nb, "s" if nb == 1 else "ve")) if nb else "."
+        else:
+            txt = ("No walls found. Select the building (the group holding the walls) and click Find again, "
+                   "or click Find with nothing selected for the whole model.")
+        if skipped:
+            txt += " %d group%s didn't look like a wall (no face front and back)." % (skipped,
+                                                                                   "" if skipped == 1 else "s")
+        self.lbl_walls.setText(txt)
+
+    def fill_walls(self):
+        self.lst_walls.blockSignals(True)
+        self.lst_walls.clear()
+        for i, w in enumerate(self.found_walls):
+            txt = "%s  -  %.0f x %.0f mm" % (w['name'], w['length'], w['height'])
+            if w['openings']:
+                txt += ", %d opening%s" % (w['openings'], "" if w['openings'] == 1 else "s")
+            if w['bricked']:
+                txt += "  - has walling"
+            it = QListWidgetItem(txt)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setData(Qt.UserRole, i)
+            if w['bricked']:
+                f = it.font()
+                f.setBold(True)
+                it.setFont(f)
+            it.setCheckState(Qt.Unchecked if w['bricked'] else Qt.Checked)
+            self.lst_walls.addItem(it)
+        self.lst_walls.blockSignals(False)
+
+    def _tick_walls(self, on):
+        for i in range(self.lst_walls.count()):
+            it = self.lst_walls.item(i)
+            w = self.found_walls[i] if i < len(self.found_walls) else None
+            it.setCheckState(Qt.Checked if (on and w is not None and not w['bricked']) else Qt.Unchecked)
+
+    def ticked_walls(self):
+        out = []
+        for i in range(self.lst_walls.count()):
+            it = self.lst_walls.item(i)
+            if it.checkState() == Qt.Checked and i < len(self.found_walls):
+                out.append(self.found_walls[i])
+        return out
+
+    def _wall_picked(self):
+        """Lights up the faces of the wall lines clicked in the list."""
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        rows = sorted({self.lst_walls.row(it) for it in self.lst_walls.selectedItems()})
+        if not rows:
+            return
+        try:
+            scene.selection.clear()
+            for r in rows:
+                if r < len(self.found_walls):
+                    scene.selection.add(self.found_walls[r]['face'].obj)
+        except Exception:
+            return
+        self.wall = None
+        try:
+            self.viewport.notify_scene_changed()
+        except Exception:
+            try:
+                self.viewport.update()
+            except Exception:
+                pass
 
     # ---- values ----
     def _sold_unlink(self, *_):
@@ -3539,6 +4645,7 @@ class BrickDialog(QDialog):
 
     def checks(self):
         return {'back_faces': self.cb_back, 'swap': self.cb_swap, 'new_group': self.cb_group,
+                'join_wall': self.cb_join,
                 'soldier': self.cb_sold, 'even_ends': self.cb_even, 'quoins_l': self.cb_ql,
                 'quoins_r': self.cb_qr, 'q_open': self.cb_qo, 'q_courses': self.cb_qc,
                 'heads': self.cb_heads, 'sills': self.cb_sills, 'copings': self.cb_cop,
@@ -3702,6 +4809,7 @@ class BrickDialog(QDialog):
         self._row_vis("Damage", self.cb_hang, v['ruin'] or holes or missing)
         self._row_vis("Rubble pile", self.cb_bkind, v['pile_barrels'] > 0)
         self.cb_ccourse.setEnabled(brick and v['copings'])
+        self.cb_group.setEnabled(not v.get('join_wall'))
         for w_ in (self.cb_bond, self.cb_off, self.cb_head, self.cb_sold, self.cb_even, self.cb_qc):
             w_.setEnabled(brick)
         self.sp_every.setEnabled(brick and self.cb_head.isChecked())
@@ -3722,7 +4830,7 @@ class BrickDialog(QDialog):
             pass
         pv = self.preview_values(v)
         self.preview.set_values(pv, what)
-        self.sizes.set_values(pv, what)
+        _ui_settings_save(last_values={k: v[k] for k in DEFAULTS if k in v and k != 'soldier_holes'})
 
     def preview_values(self, v):
         p = dict(v)
@@ -3777,6 +4885,57 @@ class BrickDialog(QDialog):
         self.lbl_report.setStyleSheet("color: %s;" % ("#b35900" if bad else "#2e7d32"))
         self.lbl_report.setText(text)
         self.lbl_report.setVisible(True)
+        # the report waits behind the Info button; the button says when there's something to read
+        if not self.b_info.isChecked():
+            self.b_info.setText("Info (!)" if bad else "Info (new)")
+            self.b_info.setStyleSheet("font-weight: bold; color: %s;" % ("#b35900" if bad else "#2e7d32"))
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        if on:
+            self.b_info.setText("Info")
+            self.b_info.setStyleSheet("")
+
+    def watch_selection(self):
+        """Looks at what's selected in the model; for walling we made, lights up the size boxes that
+        set it (and turns to their page)."""
+        try:
+            if not self.isVisible():
+                return
+            scene = getattr(self.viewport, 'scene', None)
+            sel = _items(getattr(scene, 'selection', None)) if scene is not None else []
+            names = tuple(str(getattr(e, 'name', '') or '') for e in sel)
+        except Exception:
+            return
+        if names == self._sel_names:
+            return
+        self._sel_names = names
+        keys = []
+        for nm in names:
+            for k_ in piece_keys(nm):
+                if k_ not in keys:
+                    keys.append(k_)
+        self.light_up(keys)
+
+    def light_up(self, keys):
+        for s_, lab_ in self._lit:
+            try:
+                s_.setStyleSheet("")
+                lab_.setStyleSheet("")
+            except Exception:
+                pass
+        self._lit = []
+        for k_ in keys:
+            if k_ in self.sp:
+                s_, lab_ = self.sp[k_]
+                s_.setStyleSheet("background-color: #fff3a0;")
+                lab_.setStyleSheet("background-color: #fff3a0; font-weight: bold;")
+                self._lit.append((s_, lab_))
+        if keys and keys[0] in self._key_tab:
+            try:
+                self.tabs.setCurrentIndex(TABS.index(self._key_tab[keys[0]]))
+            except Exception:
+                pass
 
     # ---- openings list ----
     def fill_openings(self, openings, preselected):
@@ -3805,7 +4964,8 @@ class BrickDialog(QDialog):
         sel = _selected_wall(self.viewport)
         if sel is None:
             self.lbl_face.setText("Select a face (a wall), then click 'Apply to face' - or a floor or the "
-                                  "ground, then 'Make rubble pile'.")
+                                  "ground, then 'Make rubble pile' - or use the Whole building page to "
+                                  "tick the walls of a building.")
             return None
         wall, others, unit_label = sel
         if wall is not self.wall:
@@ -3840,15 +5000,30 @@ class BrickDialog(QDialog):
         d.update(self.user_presets)
         return d
 
+    def preset_order(self):
+        """Every preset name, in your order (new ones at the end)."""
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.refresh_presets(select=name)
+
     def refresh_presets(self, select=None):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem(self.CUSTOM, None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         if select:
             for i in range(self.cb_preset.count()):
                 if self.cb_preset.itemData(i) == select:
@@ -3858,6 +5033,7 @@ class BrickDialog(QDialog):
 
     def apply_preset(self, _idx=None):
         name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)      # opens on this one next time
         p = self.all_presets().get(name) if name else None
         if not p:
             return
@@ -3914,6 +5090,7 @@ class BrickDialog(QDialog):
             return False
         self.user_presets = load_presets()
         self.refresh_presets(select=name)
+        _ui_settings_save(last_preset=name)
         return True
 
     def delete_preset(self):
@@ -3931,6 +5108,8 @@ class BrickDialog(QDialog):
             QMessageBox.warning(self, PLUGIN_NAME, "Could not delete it:\n%s" % e)
         self.user_presets = load_presets()
         self.refresh_presets()
+        if _ui_settings().get('last_preset') == name:
+            _ui_settings_save(last_preset=None)
 
     def open_folder(self):
         try:
@@ -3952,7 +5131,7 @@ DEFAULTS = {
     'offset_seed': 1, 'offset_rmax': 1.0,
     'header_every': 0, '_header_n': 5,
     'soldier': False, 'soldier_len': None, 'corner_angle': 35.0,
-    'subdiv': 4, 'back_faces': True, 'swap': False, 'new_group': True, 'hole_gap': 0.01,
+    'subdiv': 4, 'back_faces': True, 'swap': False, 'new_group': True, 'join_wall': True, 'hole_gap': 0.01,
     'even_ends': True, 'min_end_pct': 50.0,
     'quoins_l': False, 'quoins_r': False, 'q_open': False, 'q_courses': True,
     'q_long': 450.0, 'q_short': 225.0, 'q_h': 290.0, 'q_proud': 10.0, 'heads': False, 'sills': False,
@@ -4025,6 +5204,9 @@ EDDY_TIPS = {
     'Use selected object': 'Select a group or component in the model, then press this to drop copies of it '
                            'in the rubble pile.',
     'Clear': 'Forget the object you picked for the rubble pile.',
+    'Tick all plain walls': 'Ticks every wall that has no walling on it yet.',
+    'Untick all': 'Unticks every wall.',
+    'Brick the ticked walls': 'Covers every ticked wall with the walling set on the other pages, in one Undo.',
 }
 EDDY_TIPS_END = None
 
@@ -4212,12 +5394,10 @@ class BrickBlockStudioTool(Tool):
                 pass
 
         sel = _selected_wall(viewport)
-        if sel is None:
-            QMessageBox.warning(viewport, "No Face Selected",
-                                "Please select a flat surface (face) before running %s." % PLUGIN_NAME)
-            return
-        wall, others, unit_label = sel
-        openings, preselected = find_openings(wall, others, "mm", 1000.0 if unit_label == "m" else 1.0)
+        wall, openings, preselected = None, [], None
+        if sel is not None:
+            wall, others, unit_label = sel
+            openings, preselected = find_openings(wall, others, "mm", 1000.0 if unit_label == "m" else 1.0)
 
         cur = dict(DEFAULTS)
         if BrickBlockStudioTool._saved:
@@ -4228,12 +5408,20 @@ class BrickBlockStudioTool(Tool):
                     if saved.get(key) is not None:
                         saved[key] = saved[key] * 1000.0
             cur.update(saved)
+        else:
+            last = _ui_settings().get('last_values')
+            if isinstance(last, dict):
+                cur.update({k: last[k] for k in DEFAULTS if k in last})     # the last settings used
         if preselected:
             cur['soldier'] = True      # you picked openings, so you probably want the course
 
         dialog = BrickDialog(cur, openings, preselected, viewport, tool=self, viewport=viewport)
         dialog.wall = wall
         dialog.read_selection()
+        if sel is None:
+            # nothing (or a whole building) picked: start on the Whole building page and look for walls
+            dialog.tabs.setCurrentIndex(dialog.tabs.count() - 1)
+            dialog.find_walls()
         BrickBlockStudioTool._dialog = dialog
 
         def closed(*_):
@@ -4375,6 +5563,52 @@ class BrickBlockStudioTool(Tool):
         face = getattr(self, 'active_face', None)
         if face is None:
             return None
+        job = self._layout_parts(face, vals)
+        if isinstance(job, tuple):
+            return job
+        p, res, n_loose, remove = job['p'], job['res'], job['n_loose'], job['remove']
+        mat_name = job['mat_name']
+        if p.get('join_wall'):
+            scene_ = getattr(viewport, 'scene', None)
+            m_ = mesh_of_face(scene_, face) if scene_ is not None else None
+            if m_ is not None and m_ is not getattr(scene_, 'mesh', None):
+                job['into'] = (m_, None)      # a wall in a group: the walling joins that group's mesh
+        nf = self.add_jobs(viewport, [job], p['new_group'])
+        if nf is None:
+            return None
+        st = res['stats']
+        msg = "%s: %d units" % (mat_name, st['units'])
+        if st['quoins']:
+            msg += ", %d quoins/heads/sills" % st['quoins']
+        if st['copings']:
+            msg += ", %d coping pieces" % st['copings']
+        if st['removed']:
+            msg += "; %d knocked out by the damage" % st['removed']
+        if st.get('hanging'):
+            msg += " (%d of them left hanging, so taken out)" % st['hanging']
+        if n_loose:
+            msg += "; %d loose pieces at the foot" % n_loose
+        msg += ". %d faces." % nf
+        if job.get('into'):
+            msg += " Built into the wall's own group."
+        if remove:
+            msg += " Deleted the face under them."
+        elif p.get('ruin') or p.get('holes_n') or p.get('miss_through'):
+            msg += (" The face is still whole behind the damage: tick 'Delete the face' (with a backing "
+                    "sheet) to see the broken top and holes.")
+        if (p.get('through') or p.get('miss_through')) and not p.get('backing'):
+            msg += " To see right through, set a backing sheet thickness: the holes are cut through that."
+        if self._errors[0]:
+            msg += " %d faces could not be made (%s)." % self._errors
+        try:
+            viewport.flash_status("%s: %d units, %d faces" % (PLUGIN_NAME, st['units'], nf), 3000)
+        except Exception:
+            pass
+        return (msg, bool(self._errors[0]))
+
+    def _layout_parts(self, face, vals):
+        """Everything for one wall face, ready to add: dict(parts, top, remove, rec, ...), or
+        (message, True) if nothing fits."""
         p = _full(vals)
         fr = self._frame(face, p['swap'])
         if fr is None:
@@ -4420,37 +5654,64 @@ class BrickBlockStudioTool(Tool):
         if not parts:
             return ("Nothing fitted on that face (is it smaller than one unit?).", True)
         top = "%s - %s" % ("3D Brick & Block Work" if mat == 'brick' else "3D Stone Work", mat_name)
-        remove = [face] if p.get('remove_face') else []
-        nf = self.add_to_scene(viewport, parts, top, p['new_group'], remove)
+        real = getattr(face, 'obj', face)            # a wall found on the Whole building page
+        remove = [real] if p.get('remove_face') else []
+        c = _mid([_pos3(vertex_to_vector3d(v)) for v in face.vertices])   # the middle of the face's box
+        rec = {'at': [round(c[0], 7), round(c[1], 7), round(c[2], 7)],
+               'n': [round(fr['n'].x(), 5), round(fr['n'].y(), 5), round(fr['n'].z(), 5)],
+               'size': max(W, H), 'material': mat}
+        into = None
+        if p.get('join_wall'):
+            into = getattr(face, 'into', None)
+            if into is not None and into[1] is False:
+                into = None
+        return {'parts': parts, 'top': top, 'remove': remove, 'rec': rec, 'p': p, 'res': res,
+                'n_loose': n_loose, 'mat_name': mat_name, 'into': into}
+
+    def brick_walls_from_dialog(self, dialog):
+        """Whole building page: walling on every ticked wall, all in one Undo."""
+        walls = dialog.ticked_walls()
+        if not walls:
+            QMessageBox.information(dialog, PLUGIN_NAME, "Click Find, then tick the walls that get walling.")
+            return
+        vals = dialog.get_values()
+        self._remember(vals)
+        vals['soldier_holes'] = None          # every opening in every wall is dressed
+        jobs, bad, units = [], [], 0
+        for w in walls:
+            for k_, face in enumerate([w['face']] + list(getattr(w['face'], 'more', []))):
+                try:
+                    job = self._layout_parts(face, vals)
+                except Exception as e:
+                    bad.append("%s (%s)" % (w['name'], e))
+                    continue
+                if isinstance(job, tuple):
+                    if k_ == 0:
+                        bad.append("%s (%s)" % (w['name'], job[0]))
+                    continue
+                job['top'] = "%s - %s" % (job['top'], w['name'])
+                if k_ and job.get('rec'):
+                    job['rec'] = None             # the main face carries the record
+                jobs.append(job)
+                units += job['res']['stats']['units']
+        if not jobs:
+            dialog.show_report("Nothing was built: " + "; ".join(bad), True)
+            return
+        nf = self.add_jobs(dialog.viewport, jobs, vals.get('new_group', True))
         if nf is None:
-            return None
-        st = res['stats']
-        msg = "%s: %d units" % (mat_name, st['units'])
-        if st['quoins']:
-            msg += ", %d quoins/heads/sills" % st['quoins']
-        if st['copings']:
-            msg += ", %d coping pieces" % st['copings']
-        if st['removed']:
-            msg += "; %d knocked out by the damage" % st['removed']
-        if st.get('hanging'):
-            msg += " (%d of them left hanging, so taken out)" % st['hanging']
-        if n_loose:
-            msg += "; %d loose pieces at the foot" % n_loose
-        msg += ". %d faces." % nf
-        if remove:
-            msg += " Deleted the face under them."
-        elif p.get('ruin') or p.get('holes_n') or p.get('miss_through'):
-            msg += (" The face is still whole behind the damage: tick 'Delete the face' (with a backing "
-                    "sheet) to see the broken top and holes.")
-        if (p.get('through') or p.get('miss_through')) and not p.get('backing'):
-            msg += " To see right through, set a backing sheet thickness: the holes are cut through that."
+            return
+        msg = "Walling on %d wall%s: %d units, %d faces." % (len(jobs), "" if len(jobs) == 1 else "s", units, nf)
+        if bad:
+            msg += " Skipped: " + "; ".join(bad) + "."
         if self._errors[0]:
             msg += " %d faces could not be made (%s)." % self._errors
+        dialog.show_report(msg, bool(bad or self._errors[0]))
+        dialog.wall = None
+        dialog.find_walls()                   # the walls just done now show 'has walling'
         try:
-            viewport.flash_status("%s: %d units, %d faces" % (PLUGIN_NAME, st['units'], nf), 3000)
+            dialog.viewport.flash_status("%s: %d walls, %d units" % (PLUGIN_NAME, len(jobs), units), 3000)
         except Exception:
             pass
-        return (msg, bool(self._errors[0]))
 
     def make_pile_on(self, viewport, face, vals):
         p = _full(vals)
@@ -4486,42 +5747,60 @@ class BrickBlockStudioTool(Tool):
             msg += " %d faces could not be made (%s)." % self._errors
         return (msg, bool(self._errors[0]))
 
-    def add_to_scene(self, viewport, parts, top_name, new_group=True, remove=()):
+    def add_to_scene(self, viewport, parts, top_name, new_group=True, remove=(), rec=None):
         """One parent group holding a child group per part (walling, quoins, copings,
         backing, rubble). The geometry is already in place, so no transforms are needed.
         new_group off: everything goes into the loose geometry, as before."""
+        return self.add_jobs(viewport, [{'parts': parts, 'top': top_name, 'remove': list(remove), 'rec': rec}],
+                             new_group)
+
+    def add_jobs(self, viewport, jobs, new_group=True):
+        """Adds the walling for one or more walls in one Undo step: for each, a parent group
+        holding a child group per part, marked with where its wall face is (so the Whole
+        building page knows that wall has walling)."""
         stats = {'faces': 0, 'errors': 0, 'err': None}
         tol = 1e-7
 
-        def fill(mesh, solids):
+        def fill(mesh, solids, xf=None, attrs=None):
             for so in solids:
                 verts = {}
 
                 def vx(p_):
+                    if xf is not None:
+                        q_ = xf.map(QVector3D(*p_))
+                        p_ = (q_.x(), q_.y(), q_.z())
                     k = (round(p_[0] / tol), round(p_[1] / tol), round(p_[2] / tol))
                     if k not in verts:
                         verts[k] = VertexWrapper(*p_)
                     return verts[k]
                 for outer, holes in so:
+                    made = []
                     try:
                         if holes:
                             hs = [[vx(q) for q in h] for h in holes]
                             try:
-                                mesh.add_face([vx(q) for q in outer], hs)
+                                made.append(mesh.add_face([vx(q) for q in outer], hs))
                             except TypeError:          # an older IngeTrazo: holes one by one
                                 f_ = mesh.add_face([vx(q) for q in outer])
                                 for h in hs:
                                     mesh.add_hole(f_, h)
+                                made.append(f_)
                         elif TRIANGULATE_FRONT and len(outer) > 4:
                             vs = [vx(q) for q in outer]
                             for i in range(1, len(vs) - 1):
-                                mesh.add_face([vs[0], vs[i], vs[i + 1]])
+                                made.append(mesh.add_face([vs[0], vs[i], vs[i + 1]]))
                         else:
-                            mesh.add_face([vx(q) for q in outer])
+                            made.append(mesh.add_face([vx(q) for q in outer]))
                         stats['faces'] += 1
                     except Exception as e:
                         stats['errors'] += 1
                         stats['err'] = e
+                    if attrs:
+                        for f_ in made:
+                            try:
+                                f_.attrs = dict(attrs)
+                            except Exception:
+                                pass
 
         def make_group(Group, mesh, name):
             try:
@@ -4539,45 +5818,72 @@ class BrickBlockStudioTool(Tool):
                 pass
             return g
 
+        def mark(g, rec):
+            if not rec:
+                return
+            try:
+                ext = getattr(g, 'ext', None)
+                if not isinstance(ext, dict):
+                    g.ext = {}
+                    ext = g.ext
+                ext[REC_KEY] = dict(rec)
+            except Exception:
+                pass
+
         def mutate(scene):
             from core.mesh import Mesh
             from core.group import Group
             if not new_group:
                 target = getattr(scene, 'mesh', None) or getattr(viewport, 'mesh', None)
                 if target is not None:
-                    for _, solids in parts:
-                        fill(target, solids)
+                    for job in jobs:
+                        into = job.get('into')
+                        for name_, solids in job['parts']:
+                            if into is not None and not name_.startswith("Rubble ("):
+                                fill(into[0], solids, into[1], _part_attrs(scene, name_))
+                            else:
+                                fill(target, solids)
                     if stats['faces'] == 0:
                         raise RuntimeError("No faces could be created (%s)." % stats['err'])
                     for f, m_ in targets:
                         remove_face(scene, m_, f)
                     return
-            kids = []
-            for name, solids in parts:
-                mesh = Mesh()
-                fill(mesh, solids)
-                kids.append(make_group(Group, mesh, name))
+            to_add = []
+            for job in jobs:
+                kids = []
+                into = job.get('into')
+                for name, solids in job['parts']:
+                    if into is not None and not name.startswith("Rubble ("):
+                        # built into the wall: its own mesh, in its own terms, painted part by part
+                        fill(into[0], solids, into[1], _part_attrs(scene, name))
+                        continue
+                    mesh = Mesh()
+                    fill(mesh, solids)
+                    kids.append(make_group(Group, mesh, name))
+                parent = None
+                if len(kids) > 1:
+                    try:
+                        parent = Group(name=job['top'])
+                        if hasattr(parent, 'adopt'):
+                            parent.adopt(kids)
+                        else:
+                            parent.children = kids
+                        parent.component = False
+                    except Exception:
+                        parent = None          # an older IngeTrazo: add them side by side
+                elif kids:
+                    try:
+                        kids[0].name = job['top']
+                    except Exception:
+                        pass
+                for g in ([parent] if parent is not None else kids):
+                    to_add.append((g, job.get('rec'), parent is None))
             if stats['faces'] == 0:
                 raise RuntimeError("No faces could be created (%s)." % stats['err'])
-            parent = None
-            if len(kids) > 1:
-                try:
-                    parent = Group(name=top_name)
-                    if hasattr(parent, 'adopt'):
-                        parent.adopt(kids)
-                    else:
-                        parent.children = kids
-                    parent.component = False
-                except Exception:
-                    parent = None          # an older IngeTrazo: add them side by side
-            elif kids:
-                try:
-                    kids[0].name = top_name
-                except Exception:
-                    pass
-            for g in ([parent] if parent is not None else kids):
+            for g, rec, loose in to_add:
+                mark(g, rec)
                 _ed3d_organise(scene, g)
-                if hasattr(scene, 'add_group') and parent is None:
+                if hasattr(scene, 'add_group') and loose:
                     scene.add_group(g)
                 else:
                     scene.groups.append(g)
@@ -4585,15 +5891,21 @@ class BrickBlockStudioTool(Tool):
                 remove_face(scene, m_, f)
 
         scene0 = getattr(viewport, 'scene', None)
+        remove = []
+        for job in jobs:
+            remove += list(job.get('remove') or [])
         targets = [(f, mesh_of_face(scene0, f)) for f in remove] if scene0 is not None else []
         targets = [(f, m_) for f, m_ in targets if m_ is not None]
         try:
             meshes = list({id(m_): m_ for _, m_ in targets}.values())
+            for job in jobs:                       # walls the walling is built into
+                if job.get('into') is not None and all(job['into'][0] is not m_ for m_ in meshes):
+                    meshes.append(job['into'][0])
             if not new_group:
                 tm = getattr(scene0, 'mesh', None)
                 if tm is not None and all(tm is not m_ for m_ in meshes):
                     meshes.append(tm)
-            viewport.history.execute(make_command(mutate, meshes) if targets else SnapshotImport(mutate))
+            viewport.history.execute(make_command(mutate, meshes) if meshes else SnapshotImport(mutate))
         except Exception as e:
             QMessageBox.warning(viewport, PLUGIN_NAME, "Could not add it:\n%s" % e)
             return None

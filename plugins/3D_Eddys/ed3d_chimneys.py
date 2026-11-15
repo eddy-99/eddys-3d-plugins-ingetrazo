@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Chimneys"
-VERSION = "3"
+VERSION = "4"
 
 
 def _ed3d_organise(scene, group):
@@ -2573,6 +2573,12 @@ class ChimneyDialog(QDialog):
         self.tabs.setTabToolTip(4, "The roof ventilator: louvred box, cap and finial.")
         self.tabs.setTabToolTip(5, "The distillery kiln's steep swept roof the Doig ventilator stands on.")
         self.tabs.setTabToolTip(6, "The weather vane.")
+        # every tab shows when the window opens - no scroll arrows (the window is made wide enough)
+        from PySide6.QtCore import Qt as _Qt
+        for tw_ in (self.views, self.tabs):
+            tw_.setUsesScrollButtons(False)
+            tw_.setElideMode(_Qt.TextElideMode.ElideNone)
+            tw_.tabBar().setExpanding(False)
         row.addWidget(self.tabs, 1)
         self.w = {}
         for tab, key, label, lo, hi, dec, suf, tip in FIELDS:
