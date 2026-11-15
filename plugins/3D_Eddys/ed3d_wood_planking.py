@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Wood Planking"
-VERSION = "5"
+VERSION = "6"
 
 
 def _ed3d_organise(scene, group):
@@ -1439,6 +1439,192 @@ class PlankPreview(QWidget):
         p.end()
 
 
+class PlankKey(QWidget):
+    """What each lettered size is (6): the boards end on in each style, and a boarded wall."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(240, 440)       # drawn to scale, so it fits whatever size
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        import math as _m
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        k = min(float(self.width()) / 360.0, self.height() / 660.0)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        wood, wood2, face = QColor(196, 150, 96), QColor(170, 124, 74), QColor(205, 205, 200)
+        back = QColor(150, 150, 140)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+
+        def poly(pts, col):
+            p.setPen(QPen(col.darker(160), 0.8))
+            p.setBrush(col)
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+
+        def box(x, y, w, h, col):
+            poly([(x, y), (x + w, y), (x + w, y + h), (x, y + h)], col)
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = _m.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + _m.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * _m.cos(a + s_), y + 6 * _m.sin(a + s_)))
+            p.setFont(f)
+            p.setPen(red)
+            p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+        def title(x, y, t):
+            p.setPen(QColor(60, 60, 60))
+            p.setFont(f)
+            p.drawText(QRectF(x, y, 340, 18), Qt.AlignLeft, t)
+
+        # ---- V-jointed boards end on (cut through), on the backing sheet
+        title(10, 4, "Boards end on (cut through)")
+        y0 = 70.0
+        box(20, y0, 320, 10, back)                         # I backing sheet
+        bw, gap, th, ch = 90.0, 10.0, 22.0, 8.0
+        for i in range(3):
+            x = 30 + i * (bw + gap)
+            poly([(x, y0), (x + bw, y0), (x + bw, y0 - th + ch), (x + bw - ch, y0 - th),
+                  (x + ch, y0 - th), (x, y0 - th + ch)], wood)
+        dim(30, y0 - th - 12, 30 + bw + gap, y0 - th - 12, "A", 30 + (bw + gap) / 2, y0 - th - 24)
+        dim(30 + 3 * (bw + gap) + 4, y0, 30 + 3 * (bw + gap) + 4, y0 - th, "B", 30 + 3 * (bw + gap) + 16,
+            y0 - th / 2)
+        dim(30 + bw, y0 + 22, 30 + bw + gap, y0 + 22, "C", 30 + bw + gap / 2, y0 + 34)
+        dim(30 + 2 * bw + gap - ch, y0 - th - 4, 30 + 2 * bw + gap, y0 - th - 4, "D", 30 + 2 * bw + gap + 8,
+            y0 - th - 14)
+        dim(14, y0, 14, y0 + 10, "I", 6, y0 + 5)
+
+        # ---- weatherboarding end on (level boards, so seen from the side)
+        title(10, 112, "Weatherboards, side on")
+        wx = 60.0
+        p.setPen(QPen(face.darker(150), 0.8))
+        p.setBrush(face)
+        p.drawRect(QRectF(wx - 6, 130, 6, 150))           # the wall face
+        for i in range(3):
+            yt = 135 + i * 46.0
+            poly([(wx, yt), (wx + 6, yt), (wx + 22, yt + 50), (wx, yt + 50)], wood2 if i % 2 else wood)
+        dim(wx, 135 + 2 * 46 + 58, wx + 22, 135 + 2 * 46 + 58, "B", wx + 11, 135 + 2 * 46 + 70)
+        dim(wx, 134, wx + 6, 134, "E", wx + 22, 137)
+
+        # ---- board and batten end on
+        title(185, 112, "Board & batten, end on")
+        by0 = 210.0
+        for i in range(3):
+            x = 160 + i * 62.0
+            box(x, by0 - 16, 58, 16, wood)
+        for i in range(2):
+            x = 160 + (i + 1) * 62.0 - 2 - 14
+            box(x, by0 - 30, 32, 14, wood2)
+        dim(160 + 62 - 16, by0 - 42, 160 + 62 + 16, by0 - 42, "F", 160 + 62, by0 - 54)
+        dim(160 + 2 * 62 + 22, by0 - 30, 160 + 2 * 62 + 22, by0 - 16, "G", 160 + 2 * 62 + 34, by0 - 23)
+        # a trim (or corner board) on the boards, end on
+        title(185, 222, "A trim, end on")
+        ty0 = 275.0
+        for i in range(3):
+            box(170 + i * 58.0, ty0 - 12, 55, 12, wood)
+        box(215, ty0 - 26, 70, 14, wood2)
+        dim(298, ty0 - 26, 298, ty0 - 12, "L", 310, ty0 - 19)
+
+        # ---- a boarded wall from the front, with a window, trims and a corner board
+        title(10, 300, "A boarded wall from the front")
+        X0, X1, Y0, Y1 = 40.0, 320.0, 330.0, 520.0
+        cw = 22.0
+        box(X0, Y0, cw, Y1 - Y0, wood2)                     # corner board
+        bx = X0 + cw + 3
+        i = 0
+        while bx < X1 - 4:
+            w_ = min(26.0, X1 - bx)
+            joint = Y0 + 70 + (i % 3) * 30
+            box(bx, Y0, w_ - 3, joint - Y0 - 2, wood)
+            ragged = [(bx, joint), (bx + w_ - 3, joint)]
+            bottom = Y1 - (14 if i % 2 else 6) if bx < X0 + 140 else Y1
+            poly(ragged + [(bx + w_ - 3, bottom), (bx + (w_ - 3) / 2, bottom - (8 if i % 3 == 0 else 0)),
+                           (bx, bottom)], wood)
+            bx += w_
+            i += 1
+        # the window, its trim and the gap round it
+        wx0, wy0, ww, wh = 180.0, 360.0, 80.0, 90.0
+        tw = 12.0
+        box(wx0 - 6 - tw, wy0 - 6 - tw, ww + 12 + 2 * tw, wh + 12 + 2 * tw, wood2)   # trim
+        box(wx0 - 6, wy0 - 6, ww + 12, wh + 12, QColor(250, 250, 246))              # the gap
+        box(wx0, wy0, ww, wh, QColor(170, 200, 220))                                 # the window
+        # a jagged hole and a skew board
+        poly([(120, 400), (134, 394), (140, 408), (132, 420), (118, 416)], QColor(250, 250, 246))
+        # one board hanging skew off its top nail, beside the window
+        sx, sy, sl_, sw_ = 297.0, Y0 + 8, 150.0, 23.0
+        a_ = _m.radians(-10.0)
+        q_ = [(0, 0), (sw_, 0), (sw_, sl_), (0, sl_)]
+        poly([(sx + x * _m.cos(a_) - y * _m.sin(a_), sy + x * _m.sin(a_) + y * _m.cos(a_)) for x, y in q_],
+             wood2)
+        p.setPen(QPen(QColor(120, 120, 120), 0.8, Qt.DashLine))
+        p.drawLine(QPointF(sx, sy), QPointF(sx, sy + sl_))
+        p.setPen(QPen(red, 1.1))
+        p.setFont(f)
+        p.drawText(QRectF(sx + 10, sy + sl_ * 0.75, 24, 18), Qt.AlignCenter, "P")
+        dim(X0, Y1 + 12, X0 + cw, Y1 + 12, "M", X0 + cw / 2, Y1 + 24)
+        dim(wx0 - 6 - tw, wy0 - 30, wx0 - 6, wy0 - 30, "K", wx0 - 6 - tw / 2, wy0 - 42)
+        dim(wx0 + ww, wy0 + wh + 20, wx0 + ww + 6, wy0 + wh + 20, "J", wx0 + ww + 16, wy0 + wh + 30)
+        dim(X1 + 24, Y0, X1 + 24, Y0 + 70, "H", X1 + 34, Y0 + 35)
+        dim(X0 + cw + 6, Y1 - 30, X0 + cw + 6, Y1, "N", X0 + cw + 18, Y1 - 40)
+        dim(114, 430, 142, 430, "O", 128, 442)
+        f2 = QFont()
+        f2.setPointSizeF(8.0)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        notes = ["A  board width (gap included)", "B  board thickness", "C  gap between boards",
+                 "D  V / rebate depth, log bulge", "E  thin edge (weatherboards)", "F  batten width",
+                 "G  batten thickness", "H  board length (butt joints)", "I  backing sheet",
+                 "J  gap round openings", "K  trim width", "L  trim / corner thickness",
+                 "M  corner board width", "N  rotted bottom edge", "O  hole size", "P  skew angle"]
+        for i_, t_ in enumerate(notes):
+            p.drawText(QRectF(10 if i_ < 8 else 190, 558 + (i_ % 8) * 12.0, 175, 12),
+                       Qt.AlignLeft | Qt.AlignVCenter, t_)
+        p.end()
+
+
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_wood_planking.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>Boarding a face</b><br>"
+             "Select a face - a wall, a door, a floor or a platform - and click 'Board selected face(s)'. "
+             "The boards are trimmed to the face's outline and stop short of any windows and doors in it. "
+             "Select several faces to board them all in one go. Sizes are real-world mm.<br><br>"
+             "<b>Pages</b><br>Boards: the style, which way they run and their sizes. Weathering: odd widths, "
+             "missing boards, rotted bottoms, holes and boards hanging skew. Trims: boards round the openings "
+             "and at the corners. The letters are on the Key page.<br><br>"
+             "<b>Printing</b><br>The boards never overlap, so it's ready to print. With a backing sheet (I) the "
+             "whole face prints as one piece.<br><br>"
+             "<b>Presets</b><br>Pick one to fill everything in. Save updates the one you have open; Save as "
+             "makes a new one; the arrows move it up or down the list; Folder opens where they're kept.")
+
+
 # ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
@@ -1473,22 +1659,22 @@ WFIELDS = [
                                                                      "some less, by up to this much."),
     ('missing', "Missing boards", 0.0, 90.0, 1, " %", "Leave out this share of boards (or lengths of "
                                                       "board) for a run-down look."),
-    ('rot_h', "Rotted bottom edge (how far up)", 0.0, 3000.0, 0, " mm",
+    ('rot_h', "N   Rotted bottom edge (how far up)", 0.0, 3000.0, 0, " mm",
      "The bottoms of the boards rotted away into a ragged, jagged edge, up to this high. 0 = none."),
     ('holes', "Jagged holes (per square metre)", 0.0, 50.0, 1, "",
      "Rotted-through holes and broken-out knots in the boards. 0 = none."),
-    ('hole_size', "Hole size", 5.0, 2000.0, 0, " mm", "About how big the jagged holes are."),
+    ('hole_size', "O   Hole size", 5.0, 2000.0, 0, " mm", "About how big the jagged holes are."),
     ('skew_pct', "Skew boards (hanging off one nail)", 0.0, 60.0, 1, " %",
      "This share of boards hang skew from a nail at the top. The boards beside them are cut back "
      "clear, so nothing overlaps."),
-    ('skew_ang', "Skew angle (up to)", 0.0, 45.0, 1, " deg", "How far the skew boards hang over."),
+    ('skew_ang', "P   Skew angle (up to)", 0.0, 45.0, 1, " deg", "How far the skew boards hang over."),
 ]
 TFIELDS = [
-    ('hole_gap', "Gap round openings", 0.0, 200.0, 1, " mm",
+    ('hole_gap', "J   Gap round openings", 0.0, 200.0, 1, " mm",
      "How far the boards stop short of a window or door, so they don't touch its frame."),
-    ('trim_w', "Trim width", 5.0, 1000.0, 1, " mm", "The boards framing each opening."),
-    ('trim_t', "Trim thickness", 0.5, 200.0, 1, " mm", "Trims and corner boards."),
-    ('corner_w', "Corner board width", 5.0, 1000.0, 1, " mm", "Upright boards at each end of the face."),
+    ('trim_w', "K   Trim width", 5.0, 1000.0, 1, " mm", "The boards framing each opening."),
+    ('trim_t', "L   Trim thickness", 0.5, 200.0, 1, " mm", "Trims and corner boards."),
+    ('corner_w', "M   Corner board width", 5.0, 1000.0, 1, " mm", "Upright boards at each end of the face."),
 ]
 
 
@@ -1502,6 +1688,11 @@ class PlankDialog(QDialog):
         self.user_presets = load_presets()
         self._busy = False
         lay = QVBoxLayout(self)
+        # how to use it - only shows when Info is pressed
+        self.info_box = QLabel(INFO_TEXT)
+        self.info_box.setWordWrap(True)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
         self.lbl = QLabel("Select a face (a wall, door, floor...), then click 'Board selected face(s)'. "
                           "Sizes are real-world mm.")
         self.lbl.setWordWrap(True)
@@ -1514,9 +1705,18 @@ class PlankDialog(QDialog):
 
         row = QHBoxLayout()
         lay.addLayout(row)
+        from PySide6.QtWidgets import QTabWidget, QScrollArea
+        # ---- left: the preview and the key
+        self.left = QTabWidget()
         self.preview = PlankPreview()
-        row.addWidget(self.preview, 1)
-        from PySide6.QtWidgets import QTabWidget
+        self.left.addTab(self.preview, "Preview")
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(PlankKey())
+        self.left.addTab(ks, "Key (A, B, C...)")
+        self.left.setTabToolTip(1, "What each lettered size is.")
+        row.addWidget(self.left, 1)
+        # ---- right: the pages
         self.tabs = QTabWidget()
         row.addWidget(self.tabs, 1)
         self.sp = {}
@@ -1566,6 +1766,15 @@ class PlankDialog(QDialog):
         prow.addWidget(QLabel("Preset:"))
         self.cb_preset = QComboBox()
         prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
         b_save = QPushButton("Save")
         b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
         b_saveas = QPushButton("Save as...")
@@ -1583,6 +1792,25 @@ class PlankDialog(QDialog):
         b_close = QPushButton("Close")
         brow.addWidget(self.b_add)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(st.get('tab', 0)))
+                self.left.setCurrentIndex(int(st.get('left_tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.left.currentChanged.connect(lambda i: _ui_settings_save(left_tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
 
@@ -1598,8 +1826,32 @@ class PlankDialog(QDialog):
         b_dir.clicked.connect(self.open_folder)
         self.b_add.clicked.connect(lambda: self.tool.add_from_dialog(self))
         b_close.clicked.connect(self.close)
-        self.refresh_presets()
+        self.refresh_presets(select=st.get('last_preset'))
         self.set_values(cur)
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def preset_order(self):
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.refresh_presets(select=name)
 
     def _fields(self, form, fields):
         for key, label, lo, hi, dec, suf, tip in fields:
@@ -1670,11 +1922,8 @@ class PlankDialog(QDialog):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem("-- Custom --", None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
@@ -1682,6 +1931,7 @@ class PlankDialog(QDialog):
 
     def apply_preset(self, *_):
         name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)      # opens on this one next time
         if name and name in BUILTIN_PRESETS:
             self.set_values(BUILTIN_PRESETS[name])
         elif name and name in self.user_presets:

@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QDoubleSpinBox, QPushButton, QLabel, QMessageBox, QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Station Canopies"
-VERSION = "1"
+VERSION = "2"
 
 
 def _ed3d_organise(scene, group):
@@ -1407,94 +1407,94 @@ def _form(page):
 
 # (tab, key, label, low, high, decimals, suffix, tip) - the letters match the Sizes drawing
 FIELDS = [
-    ("Canopy", 'length', "Length (0 = the face)", 0.0, 500000.0, 0, " mm",
+    ("Canopy", 'length', "A   Length (0 = the face)", 0.0, 500000.0, 0, " mm",
      "How long the canopy is. 0 = the whole length of the face you selected (or 6 m with nothing "
      "selected). A set length is centred on the face."),
-    ("Canopy", 'depth', "A  Depth out from wall", 500.0, 20000.0, 0, " mm",
+    ("Canopy", 'depth', "B   Depth out from wall", 500.0, 20000.0, 0, " mm",
      "Lean-to and ridge and furrow: how far the canopy reaches out from the wall to its front edge."),
-    ("Canopy", 'width', "A  Width (island)", 1000.0, 30000.0, 0, " mm",
+    ("Canopy", 'width', "C   Width (island)", 1000.0, 30000.0, 0, " mm",
      "Island: the canopy's whole width across, edge to edge."),
-    ("Canopy", 'edge_back', "Set back from platform edge", 0.0, 5000.0, 0, " mm",
+    ("Canopy", 'edge_back', "D   Set back from platform edge", 0.0, 5000.0, 0, " mm",
      "Island, with 'Width from the platform' ticked: how far each edge of the canopy stops short of the "
      "platform edge."),
-    ("Canopy", 'h_back', "B  Height at the wall", 1500.0, 20000.0, 0, " mm",
+    ("Canopy", 'h_back', "E   Height at the wall", 1500.0, 20000.0, 0, " mm",
      "Lean-to: the underside of the roof where it meets the wall, above the platform."),
-    ("Canopy", 'h_front', "C  Height at the front", 1500.0, 20000.0, 0, " mm",
+    ("Canopy", 'h_front', "F   Height at the front", 1500.0, 20000.0, 0, " mm",
      "Lean-to and ridge and furrow: the underside of the roof at the front edge, above the platform."),
-    ("Canopy", 'h_centre', "B  Height at centre (island)", 1500.0, 20000.0, 0, " mm",
+    ("Canopy", 'h_centre', "G   Height at centre (island)", 1500.0, 20000.0, 0, " mm",
      "Island: the underside of the roof over the middle (the ridge, or the edges of a butterfly roof)."),
-    ("Canopy", 'island_pitch', "Roof pitch (island)", 0.0, 30.0, 1, " deg",
+    ("Canopy", 'island_pitch', "H   Roof pitch (island)", 0.0, 30.0, 1, " deg",
      "Island: how steeply the roof falls each way. Canopies are low: 5 to 10 degrees."),
     ("Canopy", 'lean_sweep', "Bell-cast sweep (lean-to)", 0.0, 100.0, 0, " %",
      "Lean-to: 0 = a straight roof. More sweeps it like a bell - steep off the wall, curving out flat at "
      "the front. Lead, plain or glazed all follow the curve."),
-    ("Canopy", 'bay', "D  Column spacing", 500.0, 20000.0, 0, " mm",
+    ("Canopy", 'bay', "J   Column spacing", 500.0, 20000.0, 0, " mm",
      "About how far apart the columns are (they're spaced evenly along the length). 3 m is typical."),
-    ("Canopy", 'end_in', "E  First column in from end", 0.0, 10000.0, 0, " mm",
+    ("Canopy", 'end_in', "K   First column in from end", 0.0, 10000.0, 0, " mm",
      "How far the end columns stand in from the ends of the canopy."),
-    ("Canopy", 'col_set', "F  Columns back from front", 0.0, 10000.0, 0, " mm",
+    ("Canopy", 'col_set', "L   Columns back from front", 0.0, 10000.0, 0, " mm",
      "Lean-to and ridge and furrow: how far the column row stands back from the front edge."),
-    ("Canopy", 'z_off', "Platform above face bottom", -5000.0, 20000.0, 0, " mm",
+    ("Canopy", 'z_off', "M   Platform above face bottom", -5000.0, 20000.0, 0, " mm",
      "Lean-to and ridge and furrow: where the platform is, measured up from the bottom of the wall face. "
      "0 = the platform is at the foot of the wall."),
-    ("Canopy", 'wall_gap', "Gap off the wall", 0.0, 50.0, 2, " mm",
+    ("Canopy", 'wall_gap', "N   Gap off the wall", 0.0, 50.0, 2, " mm",
      "A hair's gap between the canopy and the wall, so no faces lie on top of each other."),
-    ("Columns", 'col_d', "G  Column diameter", 50.0, 1000.0, 0, " mm",
+    ("Columns", 'col_d', "O   Column diameter", 50.0, 1000.0, 0, " mm",
      "Cast iron: across the shaft. 150 mm is typical (1.9 mm at 1:80)."),
-    ("Columns", 'post_w', "G  Post size", 50.0, 1000.0, 0, " mm", "Timber: the square post's size."),
-    ("Columns", 'pier_w', "G  Pier size", 100.0, 2000.0, 0, " mm",
+    ("Columns", 'post_w', "P   Post size", 50.0, 1000.0, 0, " mm", "Timber: the square post's size."),
+    ("Columns", 'pier_w', "Q   Pier size", 100.0, 2000.0, 0, " mm",
      "Brick pier: its size across (340 mm is a brick and a half)."),
-    ("Columns", 'bracket', "H  Bracket size", 100.0, 3000.0, 0, " mm",
+    ("Columns", 'bracket', "R   Bracket size", 100.0, 3000.0, 0, " mm",
      "How far the spandrels or knee braces reach along the beam (and down the column)."),
-    ("Columns", 'bracket_t', "Bracket thickness", 5.0, 500.0, 0, " mm",
+    ("Columns", 'bracket_t', "S   Bracket thickness", 5.0, 500.0, 0, " mm",
      "How thick the spandrels (and knee braces) are. For printing keep it 32 mm or more at 1:80 "
      "(0.4 mm); 40 is safer."),
     ("Columns", 'segments', "Round segments", 8.0, 96.0, 0, "",
      "How many sides round things have: the columns all the way round, the curve of the spandrels and the "
      "pierced holes (half as many). More is smoother but makes the model bigger. 24 is good; 48 for close-ups "
      "or resin."),
-    ("Columns", 'beam_d', "I  Beam depth", 50.0, 2000.0, 0, " mm",
+    ("Columns", 'beam_d', "T   Beam depth", 50.0, 2000.0, 0, " mm",
      "The beam along the top of the columns, and the front fascia."),
-    ("Columns", 'beam_w', "Beam width", 30.0, 1000.0, 0, " mm", "How thick the beams are."),
-    ("Roof", 'roof_t', "J  Roof thickness", 5.0, 1000.0, 0, " mm",
+    ("Columns", 'beam_w', "U   Beam width", 30.0, 1000.0, 0, " mm", "How thick the beams are."),
+    ("Roof", 'roof_t', "V   Roof thickness", 5.0, 1000.0, 0, " mm",
      "The roof covering. For 1:80 printing keep it 60 mm or more (0.75 mm)."),
-    ("Roof", 'roll_sp', "Lead rolls every", 200.0, 3000.0, 0, " mm",
+    ("Roof", 'roll_sp', "W   Lead rolls every", 200.0, 3000.0, 0, " mm",
      "Lead roofs: how far apart the rolls are - the width of one lead sheet (about 600 mm)."),
-    ("Roof", 'roll_d', "Lead roll size", 10.0, 300.0, 0, " mm",
+    ("Roof", 'roll_d', "X   Lead roll size", 10.0, 300.0, 0, " mm",
      "Lead roofs: how big round the rolls are (about 50 mm; 0.6 mm at 1:80)."),
-    ("Roof", 'bar_w', "Glazing bar width", 10.0, 500.0, 0, " mm", "Glazed roofs: the bars between the panes."),
-    ("Roof", 'bar_sp', "Glazing bars every", 100.0, 5000.0, 0, " mm",
+    ("Roof", 'bar_w', "Y   Glazing bar width", 10.0, 500.0, 0, " mm", "Glazed roofs: the bars between the panes."),
+    ("Roof", 'bar_sp', "Z   Glazing bars every", 100.0, 5000.0, 0, " mm",
      "Glazed roofs: how far apart the bars are (about 600 mm)."),
-    ("Roof", 'rf_w', "K  Ridge spacing", 500.0, 20000.0, 0, " mm",
+    ("Roof", 'rf_w', "AA  Ridge spacing", 500.0, 20000.0, 0, " mm",
      "Ridge and furrow: from one valley gutter to the next (each ridge's width)."),
-    ("Roof", 'rf_pitch', "Ridge pitch", 5.0, 60.0, 1, " deg", "Ridge and furrow: how steep each ridge is."),
-    ("Roof", 'flash_t', "N  Flashing thickness", 1.0, 200.0, 1, " mm",
+    ("Roof", 'rf_pitch', "AB  Ridge pitch", 5.0, 60.0, 1, " deg", "Ridge and furrow: how steep each ridge is."),
+    ("Roof", 'flash_t', "AC  Flashing thickness", 1.0, 200.0, 1, " mm",
      "Lean-to: how thick the lead flashing against the wall is. For 1:80 printing 32 mm (0.4 mm) or more."),
-    ("Roof", 'flash_up', "O  Flashing up the wall", 20.0, 2000.0, 0, " mm",
+    ("Roof", 'flash_up', "AD  Flashing up the wall", 20.0, 2000.0, 0, " mm",
      "Lean-to: how far the flashing's upstand runs up the wall above the roof."),
-    ("Roof", 'flash_cover', "P  Flashing onto the roof", 20.0, 2000.0, 0, " mm",
+    ("Roof", 'flash_cover', "AE  Flashing onto the roof", 20.0, 2000.0, 0, " mm",
      "Lean-to: how far the flashing's apron lies down over the roof from the wall."),
-    ("Bell roof", 'bell_w', "A  Width at the eaves", 500.0, 30000.0, 0, " mm",
+    ("Bell roof", 'bell_w', "AF  Width at the eaves", 500.0, 30000.0, 0, " mm",
      "How wide the roof is at the eaves (not used when 'Size from the face' is ticked)."),
-    ("Bell roof", 'bell_d', "A  Depth at the eaves", 500.0, 30000.0, 0, " mm",
+    ("Bell roof", 'bell_d', "AG  Depth at the eaves", 500.0, 30000.0, 0, " mm",
      "How deep the roof is at the eaves, front to back (not used when 'Size from the face' is ticked)."),
-    ("Bell roof", 'bell_over', "Overhang", 0.0, 3000.0, 0, " mm",
+    ("Bell roof", 'bell_over', "AH  Overhang", 0.0, 3000.0, 0, " mm",
      "How far the eaves stand out past the face it's built on (and past the fascia)."),
-    ("Bell roof", 'bell_h', "H  Rise", 100.0, 20000.0, 0, " mm", "How tall the roof is, eaves to the flat top."),
-    ("Bell roof", 'bell_tw', "T  Top width", 50.0, 20000.0, 0, " mm", "The flat top's width."),
-    ("Bell roof", 'bell_td', "T  Top depth", 50.0, 20000.0, 0, " mm", "The flat top's depth."),
+    ("Bell roof", 'bell_h', "AI  Rise", 100.0, 20000.0, 0, " mm", "How tall the roof is, eaves to the flat top."),
+    ("Bell roof", 'bell_tw', "AJ  Top width", 50.0, 20000.0, 0, " mm", "The flat top's width."),
+    ("Bell roof", 'bell_td', "AK  Top depth", 50.0, 20000.0, 0, " mm", "The flat top's depth."),
     ("Bell roof", 'bell_sweep', "Sweep (bell-cast)", 0.0, 100.0, 0, " %",
      "How much the faces sweep: 0 = straight hips, more = flat at the eaves and steep at the top, like a bell."),
-    ("Bell roof", 'bell_cap', "Cap on top", 0.0, 2000.0, 0, " mm", "The cap on the flat top. 0 = none."),
-    ("Bell roof", 'bell_fascia', "Fascia depth", 0.0, 2000.0, 0, " mm",
+    ("Bell roof", 'bell_cap', "AL  Cap on top", 0.0, 2000.0, 0, " mm", "The cap on the flat top. 0 = none."),
+    ("Bell roof", 'bell_fascia', "AM  Fascia depth", 0.0, 2000.0, 0, " mm",
      "The fascia (with a moulded step) round under the eaves. 0 = none."),
     ("Bell roof", 'bell_ncol', "Columns along each side", 2.0, 12.0, 0, "",
      "On columns: how many along each side, the corners included (2 = just the corners)."),
-    ("Valance", 'board_w', "L  Board width", 20.0, 2000.0, 0, " mm",
+    ("Valance", 'board_w', "AN  Board width", 20.0, 2000.0, 0, " mm",
      "One valance board. They're fitted a whole number to the length, so it may change a little."),
-    ("Valance", 'val_h', "M  Valance depth", 50.0, 3000.0, 0, " mm",
+    ("Valance", 'val_h', "AO  Valance depth", 50.0, 3000.0, 0, " mm",
      "How far the valance hangs down, to the tips of the boards."),
-    ("Valance", 'val_t', "Board thickness", 5.0, 200.0, 0, " mm",
+    ("Valance", 'val_t', "AP  Board thickness", 5.0, 200.0, 0, " mm",
      "How thick the boards are. For 1:80 printing 32 mm or more (0.4 mm); 40 is safer."),
 ]
 
@@ -1561,53 +1561,85 @@ def preview_items(v):
 
 
 def sizes_drawing(v):
-    """The end section and a few valance boards, with the letters. Returns (lines, labels):
-    lines [(x0, y0, x1, y1, kind)], labels [(x, y, text)], y up, mm."""
+    """The key (2): an end view, a front view of a few bays and three valance boards, every size
+    marked with its letter. Returns (lines, labels): lines [(x0, y0, x1, y1, kind)],
+    labels [(x, y, text)], y up, mm."""
     lines, labels = [], []
     kind = v['kind']
     bd = v['beam_d']
     vh = v['val_h']
+    rt = max(5.0, v['roof_t'])
+    cs = v['col_d'] if v['col_style'] not in TIMBER_STYLES + ('brick',) else \
+        v['post_w'] if v['col_style'] in TIMBER_STYLES else v['pier_w']
+    cl = 'O' if v['col_style'] not in TIMBER_STYLES + ('brick',) else 'P' if v['col_style'] in TIMBER_STYLES else 'Q'
 
     def dim(x0, y0, x1, y1, txt, off=(0, 0)):
         lines.append((x0, y0, x1, y1, 'dim'))
         labels.append(((x0 + x1) / 2 + off[0], (y0 + y1) / 2 + off[1], txt))
+
+    def rect(x0, y0, x1, y1, k):
+        lines.extend([(x0, y0, x1, y0, k), (x1, y0, x1, y1, k), (x1, y1, x0, y1, k), (x0, y1, x0, y0, k)])
+
+    def column(xc, ztop, side_letters=True, br_dir=(1,)):
+        rect(xc - cs / 2, 0, xc + cs / 2, ztop, 'col')
+        if v.get('brackets'):
+            br = v['bracket']
+            for sg in br_dir:
+                lines.append((xc + sg * cs / 2, ztop - br * 0.6, xc + sg * (cs / 2 + br), ztop, 'col'))
+            if side_letters:
+                sg = br_dir[0]
+                dim(xc + sg * cs / 2, ztop + 120, xc + sg * (cs / 2 + v['bracket']), ztop + 120, "R", (0, 130))
+        if side_letters:
+            dim(xc - cs / 2, -250, xc + cs / 2, -250, cl, (0, -160))
+    top_y = 0.0
     if kind in ('lean', 'ridge'):
         D = v['depth']
         Hf = v['h_front']
         Hb = Hf if kind == 'ridge' else max(Hf, v['h_back'])
         yc = D - v['col_set']
-        zr = Hf + (Hb - Hf) * (D - yc) / D
-        lines += [(0, -200, 0, Hb + 900, 'wall'), (-600, 0, D + 900, 0, 'ground'),
-                  (yc, 0, yc, zr - bd, 'col'), (yc - 60, zr - bd, yc + 60, zr - bd, 'col'),
-                  (D, Hf, D, Hf - vh, 'val')]
+        zm = v['z_off']
+        lines += [(0, min(-200, -zm - 100), 0, Hb + 900, 'wall'), (-600, 0, D + 900, 0, 'ground')]
+        if abs(zm) > 1:
+            lines.append((-500, -zm, 0, -zm, 'ground'))
+            dim(-450, -zm, -450, 0, "M", (-160, 0))
         sw_ = max(0.0, min(1.0, v.get('lean_sweep', 0.0) / 100.0)) if kind == 'lean' else 0.0
 
         def zr_(y):
             u_ = y / D
             return Hb + (Hf - Hb) * ((1.0 - (1.0 - u_) ** (1.0 + 2.5 * sw_)) if sw_ > 0 else u_)
         for k_ in range(24):
-            lines.append((D * k_ / 24, zr_(D * k_ / 24), D * (k_ + 1) / 24, zr_(D * (k_ + 1) / 24), 'roof'))
+            a_, b_ = D * k_ / 24, D * (k_ + 1) / 24
+            lines.append((a_, zr_(a_), b_, zr_(b_), 'roof'))
+            lines.append((a_, zr_(a_) + rt, b_, zr_(b_) + rt, 'roof'))
+        lines.append((D, Hf, D, Hf + rt, 'roof'))
         zr = zr_(yc)
-        dim(0, -350, D, -350, "A", (0, -160))
+        lines.append((yc - 300, zr - bd, D, Hf - bd, 'col'))          # the beam, seen end on as its depth
+        column(yc, zr - bd, br_dir=(-1, 1))
+        lines.append((D, Hf, D, Hf - vh, 'val'))
+        dim(0, -650, D, -650, "B", (0, -160))
         if kind == 'lean':
-            dim(-300, 0, -300, Hb, "B", (-160, 0))
-        dim(D + 350, 0, D + 350, Hf, "C", (160, 0))
-        dim(yc, Hf - vh - 250, D, Hf - vh - 250, "F", (0, -160))
-        dim(D + 150, Hf, D + 150, Hf - vh, "M", (130, 0))
-        dim(yc + 120, zr - bd, yc + 120, zr, "I", (120, 0))
+            dim(-250, 0, -250, Hb, "E", (-160, 0))
+        dim(D + 350, 0, D + 350, Hf, "F", (160, 0))
+        dim(yc, Hf - vh - 250, D, Hf - vh - 250, "L", (0, -160))
+        dim(D + 150, Hf, D + 150, Hf - vh, "AO", (150, 0))
+        dim(yc - cs / 2 - 120, zr - bd, yc - cs / 2 - 120, zr, "T", (-130, 0))
+        dim(D + 150, Hf, D + 150, Hf + rt, "V", (150, 60))
+        labels.append((-140, Hb + 650, "N"))
         if kind == 'lean' and v.get('flash'):
-            t_ = v['roof_t']
-            sec = flashing_section(lambda y: Hb + (Hf - Hb) * y / D + t_, v)
+            sec = flashing_section(lambda y: Hb + (Hf - Hb) * y / D + rt, v)
             for p_, q_ in zip(sec, sec[1:] + sec[:1]):
                 lines.append((p_[0], p_[1], q_[0], q_[1], 'flash'))
             dim(sec[0][0] + 120 + v['flash_cover'], sec[1][1], sec[0][0] + 120 + v['flash_cover'], sec[-1][1],
-                "O", (130, 0))
-            dim(0, sec[-1][1] + 120, v['flash_cover'], sec[-1][1] + 120, "P", (0, 130))
-            labels.append((v['flash_cover'] * 0.5, sec[1][1] - 220, "N"))
+                "AD", (150, 0))
+            dim(0, sec[-1][1] + 120, v['flash_cover'], sec[-1][1] + 120, "AE", (0, 130))
+            labels.append((v['flash_cover'] * 0.5, sec[1][1] - 220, "AC"))
         x_end = D + 900
+        top_y = Hb + 900
+        Hcol = Hf
     elif kind == 'bell':
         W, H = v['bell_w'], v['bell_h']
-        ze = (v['h_centre'] if v.get('bell_cols') else 0.0) + v['bell_fascia'] + v['roof_t']
+        cols = v.get('bell_cols')
+        ze = (v['h_centre'] if cols else 0.0) + v['bell_fascia'] + v['roof_t']
         rg = bell_rings(W, v['bell_d'], min(W * 0.9, v['bell_tw']), v['bell_td'], H, v['bell_sweep'] / 100.0, 24)
         lines.append((-W / 2 - 600, 0, W / 2 + 600, 0, 'ground'))
         for a_, b_ in zip(rg, rg[1:]):
@@ -1615,19 +1647,26 @@ def sizes_drawing(v):
                 lines.append((sg * a_[0], ze + a_[2], sg * b_[0], ze + b_[2], 'roof'))
         lines.append((-rg[-1][0], ze + H, rg[-1][0], ze + H, 'roof'))
         lines.append((-W / 2, ze, W / 2, ze, 'roof'))
+        if v['bell_cap'] > 0:
+            rect(-rg[-1][0] * 0.8, ze + H, rg[-1][0] * 0.8, ze + H + v['bell_cap'], 'roof')
+            dim(rg[-1][0] * 0.8 + 150, ze + H, rg[-1][0] * 0.8 + 150, ze + H + v['bell_cap'], "AL", (150, 0))
+        fw = W / 2 - v['bell_over']
         if v['bell_fascia'] > 0:
-            fw = W / 2 - v['bell_over']
-            lines += [(-fw, ze - v['roof_t'], -fw, ze - v['roof_t'] - v['bell_fascia'], 'val'),
-                      (fw, ze - v['roof_t'], fw, ze - v['roof_t'] - v['bell_fascia'], 'val')]
-        if v.get('bell_cols'):
-            fw = W / 2 - v['bell_over'] - 60
-            lines += [(-fw, 0, -fw, ze - v['roof_t'] - v['bell_fascia'], 'col'),
-                      (fw, 0, fw, ze - v['roof_t'] - v['bell_fascia'], 'col')]
-            dim(-W / 2 - 300, 0, -W / 2 - 300, ze - v['roof_t'] - v['bell_fascia'], "B", (-160, 0))
-        dim(-W / 2, -350, W / 2, -350, "A", (0, -160))
-        dim(W / 2 + 300, ze, W / 2 + 300, ze + H, "H", (160, 0))
-        dim(-rg[-1][0], ze + H + 250, rg[-1][0], ze + H + 250, "T", (0, 150))
+            rect(-fw, ze - v['roof_t'] - v['bell_fascia'], fw, ze - v['roof_t'], 'val')
+            dim(-fw - 150, ze - v['roof_t'] - v['bell_fascia'], -fw - 150, ze - v['roof_t'], "AM", (-170, 0))
+        dim(fw, ze - 200, W / 2, ze - 200, "AH", (0, -150))
+        if cols:
+            zc = ze - v['roof_t'] - v['bell_fascia']
+            column(-fw + cs / 2 + 60, zc, side_letters=False)
+            column(fw - cs / 2 - 60, zc, br_dir=(-1,))
+            dim(-W / 2 - 300, 0, -W / 2 - 300, zc, "G", (-160, 0))
+        dim(-W / 2, -650, W / 2, -650, "AF", (0, -170))
+        dim(W / 2 + 300, ze, W / 2 + 300, ze + H, "AI", (170, 0))
+        dim(-rg[-1][0], ze + H + 250 + v['bell_cap'], rg[-1][0], ze + H + 250 + v['bell_cap'], "AJ", (0, 160))
+        labels.append((0, -1050, "AG = the same, front to back;  AK = top depth"))
         x_end = W / 2 + 900
+        top_y = ze + H + 600 + v['bell_cap']
+        Hcol = None
     else:
         Wd = v['width']
         Hc = v['h_centre']
@@ -1635,13 +1674,23 @@ def sizes_drawing(v):
         bf = v.get('island_roof') == 'butterfly'
         He = Hc + drop if bf else Hc - drop
         lines += [(-Wd / 2 - 600, 0, Wd / 2 + 600, 0, 'ground'),
-                  (-Wd / 2, He, 0, Hc if not bf else Hc, 'roof'), (0, Hc, Wd / 2, He, 'roof'),
-                  (0, 0, 0, Hc - bd, 'col'), (-60, Hc - bd, 60, Hc - bd, 'col'),
-                  (-Wd / 2, He, -Wd / 2, He - vh, 'val'), (Wd / 2, He, Wd / 2, He - vh, 'val')]
-        dim(-Wd / 2, -350, Wd / 2, -350, "A", (0, -160))
-        dim(-250, 0, -250, Hc, "B", (-160, 0))
-        dim(Wd / 2 + 150, He, Wd / 2 + 150, He - vh, "M", (130, 0))
+                  (-Wd / 2, He, 0, Hc, 'roof'), (0, Hc, Wd / 2, He, 'roof'),
+                  (-Wd / 2, He + rt, 0, Hc + rt, 'roof'), (0, Hc + rt, Wd / 2, He + rt, 'roof'),
+                  (-Wd / 2, He, -Wd / 2, He + rt, 'roof'), (Wd / 2, He, Wd / 2, He + rt, 'roof'),
+                  (-Wd / 2, He, -Wd / 2, He - vh, 'val'), (Wd / 2, He, Wd / 2, He - vh, 'val'),
+                  (-Wd / 4, (He + Hc) / 2 - bd, Wd / 4, (He + Hc) / 2 - bd, 'col')]
+        column(0, Hc - bd, br_dir=(-1, 1))
+        dim(-Wd / 2, -650, Wd / 2, -650, "C", (0, -160))
+        dim(-Wd / 2 - 250, 0, -Wd / 2 - 250, Hc, "G", (-160, 0))
+        dim(Wd / 2 + 150, He, Wd / 2 + 150, He - vh, "AO", (150, 0))
+        dim(Wd / 2 + 150, He, Wd / 2 + 150, He + rt, "V", (150, 60))
+        dim(cs / 2 + 120, Hc - bd, cs / 2 + 120, Hc, "T", (130, 0))
+        labels.append((Wd / 4, (He + Hc) / 2 + rt + 260, "H"))
+        if v.get('fit_width'):
+            labels.append((-Wd / 2, -1000, "D = set back from the platform edge"))
         x_end = Wd / 2 + 900
+        top_y = max(Hc, He) + 900
+        Hcol = He
     # three valance boards to one side, at the same scale
     b = v['board_w']
     pts, hole = board_bottom(v['valance'], b, vh)
@@ -1663,9 +1712,104 @@ def sizes_drawing(v):
                 lines.append((a[0], a[1], e[0], e[1], 'val'))
     lines += [(x0, top, x0 + 3 * b, top, 'val'), (x0, top, x0, top + pts[0][1], 'val'),
               (x0 + 3 * b, top, x0 + 3 * b, top + pts[-1][1], 'val')]
-    dim(x0, top + 150, x0 + b, top + 150, "L", (0, 140))
-    dim(x0 + 3 * b + 150, top, x0 + 3 * b + 150, top - vh, "M", (130, 0))
+    dim(x0, top + 150, x0 + b, top + 150, "AN", (0, 150))
+    dim(x0 + 3 * b + 150, top, x0 + 3 * b + 150, top - vh, "AO", (150, 0))
+    # ---- the front view, below: a few bays along the length (2)
+    if Hcol is not None:
+        J_, K_ = max(500.0, v['bay']), max(0.0, v['end_in'])
+        Ls = K_ + 2.0 * J_ + 0.6 * J_
+        if v['length'] > 0:
+            Ls = min(Ls, v['length'])
+        oy = -(top_y + 1600.0)                       # this view's ground line
+        Ht = Hcol
+        lines.append((-400, oy, Ls + 300, oy, 'ground'))
+        rect(0, oy + Ht, Ls, oy + Ht + rt, 'roof')                 # the roof edge
+        lines.append((0, oy + Ht - bd, Ls, oy + Ht - bd, 'col'))   # the beam
+        lines.append((0, oy + Ht - vh, Ls, oy + Ht - vh, 'val'))   # the valance's bottom
+        nb_ = max(1, int(round(v['board_w'])) and int(Ls / max(20.0, v['board_w'])))
+        for k_ in range(1, min(nb_, 400)):
+            xb_ = k_ * max(20.0, v['board_w'])
+            lines.append((xb_, oy + Ht, xb_, oy + Ht - vh * 0.25, 'joint'))
+        xs_ = []
+        x_ = K_
+        while x_ <= Ls - 1:
+            xs_.append(x_)
+            rect(x_ - cs / 2, oy, x_ + cs / 2, oy + Ht - vh, 'col')
+            x_ += J_
+        # a break line where the drawing stops short (the canopy goes on)
+        if v['length'] <= 0 or Ls < v['length'] - 1:
+            for k_ in range(4):
+                y_a, y_b = oy + (Ht + rt + 300) * k_ / 4.0, oy + (Ht + rt + 300) * (k_ + 1) / 4.0
+                lines.append((Ls + (120 if k_ % 2 else -120), y_a, Ls + (-120 if k_ % 2 else 120), y_b, 'joint'))
+        dim(0, oy - 650, Ls, oy - 650, "A", (0, -170))
+        if xs_:
+            dim(0, oy - 250, xs_[0], oy - 250, "K", (0, -150))
+        if len(xs_) > 1:
+            dim(xs_[0], oy - 250, xs_[1], oy - 250, "J", (0, -150))
+        if kind == 'ridge':
+            rw = max(500.0, v['rf_w'])
+            rh = rw / 2.0 * math.tan(math.radians(max(5.0, v['rf_pitch'])))
+            x_ = 0.0
+            while x_ + rw <= Ls + 1:
+                lines.append((x_, oy + Ht + rt, x_ + rw / 2, oy + Ht + rt + rh, 'roof'))
+                lines.append((x_ + rw / 2, oy + Ht + rt + rh, x_ + rw, oy + Ht + rt, 'roof'))
+                x_ += rw
+            dim(0, oy + Ht + rt + rh + 250, min(rw, Ls), oy + Ht + rt + rh + 250, "AA", (0, 160))
+            labels.append((rw * 0.25 - 150, oy + Ht + rt + rh * 0.5 + 120, "AB"))
+        elif v['roof'] in ('lead', 'glazed'):
+            sp_ = max(100.0, v['roll_sp'] if v['roof'] == 'lead' else v['bar_sp'])
+            wd_ = max(10.0, v['roll_d'] if v['roof'] == 'lead' else v['bar_w'])
+            x_ = sp_
+            first = None
+            while x_ < Ls - 1:
+                rect(x_ - wd_ / 2, oy + Ht + rt, x_ + wd_ / 2, oy + Ht + rt + wd_, 'roof')
+                first = x_ if first is None else first
+                x_ += sp_
+            if first is not None:
+                a_, b_ = ("W", "X") if v['roof'] == 'lead' else ("Z", "Y")
+                dim(first, oy + Ht + rt + wd_ + 250, first + sp_, oy + Ht + rt + wd_ + 250, a_, (0, 160))
+                dim(first - wd_ / 2, oy + Ht + rt + wd_ + 700, first + wd_ / 2, oy + Ht + rt + wd_ + 700, b_,
+                    (0, 160))
     return lines, labels
+
+
+KEY_LETTERS = [
+    ('A', "length (0 = the face)"), ('B', "depth out from the wall"), ('C', "width (island)"),
+    ('D', "set back from the platform edge"), ('E', "height at the wall"), ('F', "height at the front"),
+    ('G', "height at the centre / column height"), ('H', "roof pitch (island)"), ('J', "column spacing"),
+    ('K', "first column in from the end"), ('L', "columns back from the front"),
+    ('M', "platform above the face bottom"), ('N', "gap off the wall"), ('O', "column diameter"),
+    ('P', "post size (timber)"), ('Q', "pier size (brick)"), ('R', "bracket size"), ('S', "bracket thickness"),
+    ('T', "beam depth"), ('U', "beam width"), ('V', "roof thickness"), ('W', "lead rolls every"),
+    ('X', "lead roll size"), ('Y', "glazing bar width"), ('Z', "glazing bars every"), ('AA', "ridge spacing"),
+    ('AB', "ridge pitch"), ('AC', "flashing thickness"), ('AD', "flashing up the wall"),
+    ('AE', "flashing onto the roof"), ('AF', "bell: width at the eaves"), ('AG', "bell: depth at the eaves"),
+    ('AH', "bell: overhang"), ('AI', "bell: rise"), ('AJ', "bell: top width"), ('AK', "bell: top depth"),
+    ('AL', "bell: cap on top"), ('AM', "bell: fascia depth"), ('AN', "valance board width"),
+    ('AO', "valance depth"), ('AP', "valance board thickness"),
+]
+KEY_FIELD = {'A': 'length', 'B': 'depth', 'C': 'width', 'D': 'edge_back', 'E': 'h_back', 'F': 'h_front',
+             'G': 'h_centre', 'H': 'island_pitch', 'J': 'bay', 'K': 'end_in', 'L': 'col_set', 'M': 'z_off',
+             'N': 'wall_gap', 'O': 'col_d', 'P': 'post_w', 'Q': 'pier_w', 'R': 'bracket', 'S': 'bracket_t',
+             'T': 'beam_d', 'U': 'beam_w', 'V': 'roof_t', 'W': 'roll_sp', 'X': 'roll_d', 'Y': 'bar_w',
+             'Z': 'bar_sp', 'AA': 'rf_w', 'AB': 'rf_pitch', 'AC': 'flash_t', 'AD': 'flash_up',
+             'AE': 'flash_cover', 'AF': 'bell_w', 'AG': 'bell_d', 'AH': 'bell_over', 'AI': 'bell_h',
+             'AJ': 'bell_tw', 'AK': 'bell_td', 'AL': 'bell_cap', 'AM': 'bell_fascia', 'AN': 'board_w',
+             'AO': 'val_h', 'AP': 'val_t'}
+
+
+def key_legend_html(used):
+    """The letters under the key drawing; the ones the canopy you've picked doesn't use, in grey.
+    used: {setting: True/False} - the same as which boxes are switched on."""
+    rows = []
+    for letter, words in KEY_LETTERS:
+        on = used.get(KEY_FIELD.get(letter), True)
+        rows.append("<span style='color:%s'><b>%s</b>&nbsp;&nbsp;%s</span>" % (
+            "#202020" if on else "#a8a8a8", letter, words))
+    half = (len(rows) + 1) // 2
+    return ("<table width='100%%'><tr><td valign='top'>%s</td><td valign='top'>%s</td></tr></table>"
+            "<span style='color:gray'>Greyed letters aren't used by this canopy. N, S, U and AP are too thin "
+            "to draw.</span>" % ("<br>".join(rows[:half]), "<br>".join(rows[half:])))
 
 
 # --- Eddy's 3D plugins: hover help and remembered window places (begin) ---
@@ -1936,6 +2080,41 @@ class CanopyPreview(QWidget):
 # ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_station_canopies.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>Building a canopy</b><br>"
+             "Lean-to or ridge and furrow: select the wall face the canopy runs along. Island: select the "
+             "platform's top face. Bell-cast roof: select the face it sits on (a bay, kiosk or porch). Then "
+             "click Build. Sizes are real-world mm.<br><br>"
+             "<b>Pages</b><br>Canopy: the shape, heights and where the columns go. Columns: cast iron, Doric, "
+             "timber or brick, their brackets and the beams. Roof: plain, glazed or lead, the ridges and the "
+             "flashing. Valance: the boards along the edges. Bell roof: the bell-cast roof's own sizes. Every "
+             "size has a letter: the Key page shows what each one measures, drawn for the canopy you've "
+             "picked.<br><br>"
+             "<b>Presets</b><br>Pick one to fill everything in. Save updates the one you have open; Save as "
+             "makes a new one; the arrows move it up or down the list; Folder opens where they're kept.")
+
+
 class CanopyDialog(QDialog):
     def __init__(self, viewport, tool, cur):
         super().__init__(viewport)
@@ -1948,6 +2127,11 @@ class CanopyDialog(QDialog):
                        "face. Then Build. Sizes in real mm.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
+        # how to use it - only shows when Info is pressed
+        self.info_box = QLabel(INFO_TEXT)
+        self.info_box.setWordWrap(True)
+        self.info_box.setVisible(False)
+        lay.insertWidget(0, self.info_box)
         top = QFormLayout()
         self.cb_kind = QComboBox()
         for k, t in KINDS:
@@ -1957,29 +2141,32 @@ class CanopyDialog(QDialog):
                                 "from the wall.")
         _narrow(self.cb_kind, 14)
         top.addRow("Make", self.cb_kind)
-        self.cb_preset = QComboBox()
-        _narrow(self.cb_preset, 14)
-        self.cb_preset.setToolTip("Ready-made canopies. Pick one and the window is filled in; your own "
-                                  "presets are in the list too.")
-        prow = QHBoxLayout()
-        prow.addWidget(self.cb_preset, 1)
-        b_save = QPushButton("Save as...")
-        b_save.setToolTip("Saves everything in this window as your own preset.")
-        prow.addWidget(b_save)
-        top.addRow("Preset", prow)
         lay.addLayout(top)
 
         self.preview = CanopyPreview()
         self.preview.setToolTip("A short length of the canopy as it will be built. It changes as you change "
                                 "the settings.")
         self.views = QTabWidget()
-        self.views.addTab(self.preview, "3D view")
+        self.views.addTab(self.preview, "Preview")
         self.sizes = CanopyPreview()
         self.sizes.mode = 'sizes'
-        self.sizes.setToolTip("An end view with the sizes lettered, and three valance boards.")
-        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        self.sizes.setMinimumSize(320, 560)
+        self.sizes.setToolTip("An end view and a front view with the sizes lettered, and three valance boards.")
+        from PySide6.QtWidgets import QScrollArea
+        kw = QWidget()
+        kl = QVBoxLayout(kw)
+        kl.setContentsMargins(2, 2, 2, 2)
+        kl.addWidget(self.sizes, 1)
+        self.lbl_legend = QLabel()
+        self.lbl_legend.setWordWrap(True)
+        self.lbl_legend.setStyleSheet("font-size: 8pt;")
+        kl.addWidget(self.lbl_legend)
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(kw)
+        self.views.addTab(ks, "Key (A, B, C...)")
         self.views.setTabToolTip(0, "A short length of the canopy in 3D.")
-        self.views.setTabToolTip(1, "An end view with the sizes lettered: the letters match the settings.")
+        self.views.setTabToolTip(1, "What each lettered size is, drawn for the canopy you've picked.")
         side = QHBoxLayout()                # the picture on the left, the settings beside it
         lay.addLayout(side)
         side.addWidget(self.views, 1)
@@ -2026,7 +2213,7 @@ class CanopyDialog(QDialog):
                                               "falling to a gutter over the columns.")
         self.cb_fit = QCheckBox("Width from the platform (island)")
         self.cb_fit.setToolTip("Island: the canopy is as wide as the selected platform face, less the set back "
-                               "at each edge, instead of the width A.")
+                               "at each edge, instead of the width C.")
         pages["Canopy"].insertRow(3, self.cb_fit)
         self.cb_flip = QCheckBox("Build on the other side of the wall face")
         self.cb_flip.setToolTip("Lean-to and ridge and furrow: if the canopy comes out inside the building, tick "
@@ -2034,7 +2221,7 @@ class CanopyDialog(QDialog):
         pages["Canopy"].addRow(self.cb_flip)
         self.cb_fitwall = QCheckBox("Keep it under the top of the wall")
         self.cb_fitwall.setToolTip("Lean-to and ridge and furrow: if the canopy's roof would stand above the top of "
-                                   "the wall face, it's lowered (B and C) so its top meets the wall 25 mm below "
+                                   "the wall face, it's lowered (E and F) so its top meets the wall 25 mm below "
                                    "the top. Untick to build it at the heights you set.")
         pages["Canopy"].addRow(self.cb_fitwall)
         self.cb_col, _ = combo(pages["Columns"], 0, "Columns", COL_STYLES,
@@ -2067,7 +2254,7 @@ class CanopyDialog(QDialog):
         pages["Bell roof"].insertRow(0, self.cb_bfit)
         self.cb_bcols = QCheckBox("On four columns (a kiosk or porch)")
         self.cb_bcols.setToolTip("Bell roof: stands on a column at each corner (the Columns tab's style, with "
-                                 "brackets), its height set by \"B  Column height\" on the Canopy tab. Off: it sits straight on "
+                                 "brackets), its height set by \"G  Column height\" on the Canopy tab. Off: it sits straight on "
                                  "the face.")
         pages["Bell roof"].insertRow(1, self.cb_bcols)
         self.cb_bval = QCheckBox("Valance round the eaves")
@@ -2075,12 +2262,36 @@ class CanopyDialog(QDialog):
         pages["Bell roof"].insertRow(2, self.cb_bval)
         self.cb_flash = QCheckBox("Lead flashing against the wall (lean-to)")
         self.cb_flash.setToolTip("Lean-to: an L of lead where the roof meets the wall - up the wall and down over "
-                                 "the roof - its own group, its thickness (N) set so it will print.")
+                                 "the roof - its own group, its thickness (AC) set so it will print.")
         pages["Roof"].insertRow(1, self.cb_flash)
 
         self.lbl_report = QLabel()
         self.lbl_report.setWordWrap(True)
         lay.addWidget(self.lbl_report)
+        # ---- presets (2: the same row as the other plugins)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Preset:"))
+        self.cb_preset = QComboBox()
+        _narrow(self.cb_preset, 14)
+        prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
+        b_psave, b_save = QPushButton("Save"), QPushButton("Save as...")
+        b_pdel, b_pdir = QPushButton("Delete"), QPushButton("Folder")
+        self.btn_preset_save = b_psave
+        for b_ in (b_psave, b_save, b_pdel, b_pdir):
+            prow.addWidget(b_)
+        b_psave.clicked.connect(self.save_preset)
+        b_pdel.clicked.connect(self.delete_preset)
+        b_pdir.clicked.connect(self.open_folder)
+        lay.addLayout(prow)
         brow = QHBoxLayout()
         b_go = QPushButton("Build")
         b_go.setDefault(True)
@@ -2088,6 +2299,25 @@ class CanopyDialog(QDialog):
         b_close = QPushButton("Close")
         brow.addWidget(b_go)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(st.get('tab', 0)))
+                self.views.setCurrentIndex(int(st.get('left_tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.views.currentChanged.connect(lambda i: _ui_settings_save(left_tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         try:
@@ -2095,7 +2325,7 @@ class CanopyDialog(QDialog):
         except Exception:
             pass
         self.set_values(cur)
-        self.fill_presets()
+        self.fill_presets(select=st.get('last_preset'))
         self.cb_kind.currentIndexChanged.connect(self.changed)
         for s_ in self.w.values():
             s_.valueChanged.connect(self.redraw)
@@ -2113,15 +2343,53 @@ class CanopyDialog(QDialog):
         b_close.clicked.connect(self.close)
         self.changed()
 
-    def fill_presets(self):
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def builtin_names(self):
+        return [n for n, _v in PRESETS]
+
+    def preset_order(self):
+        names = [n for n, _v in load_presets()]
+        seen = []
+        for n in names:
+            if n not in seen:
+                seen.append(n)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in seen]
+        return order + [n for n in seen if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.fill_presets(select=name)
+
+    def fill_presets(self, select=None):
+        self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
-        self.cb_preset.addItem("(pick a preset)", None)
-        for name, vals in load_presets():
-            self.cb_preset.addItem(name, name)
+        self.cb_preset.addItem("-- Custom --", None)
+        built = self.builtin_names()
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in built else ""), name)
         self._presets = dict(load_presets())
+        for i in range(self.cb_preset.count()):
+            if select and self.cb_preset.itemData(i) == select:
+                self.cb_preset.setCurrentIndex(i)
+        self.cb_preset.blockSignals(False)
 
     def preset_picked(self, *_):
         name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)      # opens on this one next time
         if not name:
             return
         vals = dict(DEFAULTS)
@@ -2129,19 +2397,62 @@ class CanopyDialog(QDialog):
         self.set_values(vals)
         self.changed()
 
-    def save_as(self, *_):
+    def save_preset(self, *_):
+        """Save: updates the preset you have open, with no typing. A built-in one (or none picked)
+        asks for a name instead."""
+        name = self.cb_preset.currentData()
+        if name and name not in self.builtin_names():
+            save_preset(str(name), self.values())
+            self.fill_presets(select=name)
+            b = self.btn_preset_save
+            try:
+                from PySide6.QtCore import QTimer
+                b.setText("Saved")
+                QTimer.singleShot(1500, lambda: b.setText("Save"))
+            except Exception:
+                pass
+        else:
+            self.save_as(prefill=(name + " (my copy)") if name else "")
+
+    def save_as(self, *_, prefill=""):
         try:
-            from PySide6.QtWidgets import QInputDialog
-            name, ok = QInputDialog.getText(self, PLUGIN_NAME, "Name for this preset:")
+            from PySide6.QtWidgets import QInputDialog, QLineEdit
+            name, ok = QInputDialog.getText(self, PLUGIN_NAME, "Name for this preset:", QLineEdit.Normal,
+                                            prefill or "")
         except Exception:
             return
         if not ok or not str(name).strip():
             return
+        if str(name).strip() in self.builtin_names():
+            QMessageBox.warning(self, PLUGIN_NAME, "That name is used by a built-in preset.")
+            return
         safe = save_preset(str(name), self.values())
+        self.fill_presets(select=safe)
+        _ui_settings_save(last_preset=safe)
+
+    def delete_preset(self, *_):
+        name = self.cb_preset.currentData()
+        if not name or name in self.builtin_names():
+            QMessageBox.information(self, PLUGIN_NAME, "Pick one of your own presets to delete "
+                                    "(built-in presets can't be deleted).")
+            return
+        if QMessageBox.question(self, PLUGIN_NAME, "Delete preset '%s'?" % name) != QMessageBox.Yes:
+            return
+        try:
+            os.remove(os.path.join(PRESETS_DIR, name + ".json"))
+        except Exception as e:
+            QMessageBox.warning(self, PLUGIN_NAME, "Could not delete it:\n%s" % e)
+            return
         self.fill_presets()
-        for i in range(self.cb_preset.count()):
-            if self.cb_preset.itemData(i) == safe:
-                self.cb_preset.setCurrentIndex(i)
+
+    def open_folder(self, *_):
+        try:
+            os.makedirs(PRESETS_DIR, exist_ok=True)
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(PRESETS_DIR))
+        except Exception as e:
+            QMessageBox.information(self, PLUGIN_NAME, "Presets folder:\n%s\n\n(%s)" % (PRESETS_DIR, e))
 
     def set_values(self, cur):
         for k, s in self.w.items():
@@ -2200,11 +2511,11 @@ class CanopyDialog(QDialog):
         # the same box sets the columns' height on a bell roof: say so
         try:
             if bell:
-                self.labs['h_centre'].setText("B  Column height (bell)")
+                self.labs['h_centre'].setText("G   Column height (bell)")
                 tip = ("Bell roof on columns: how tall the columns are, platform to the underside of the "
                        "fascia. Tick 'On columns' on the Bell roof tab to use it.")
             else:
-                self.labs['h_centre'].setText("B  Height at centre (island)")
+                self.labs['h_centre'].setText("G   Height at centre (island)")
                 tip = "Island: the underside of the roof over the middle (the ridge, or the edges of a butterfly roof)."
             self.labs['h_centre'].setToolTip(tip)
             self.w['h_centre'].setToolTip(tip)
@@ -2213,6 +2524,12 @@ class CanopyDialog(QDialog):
         for k, ok in on.items():
             self.w[k].setEnabled(ok)
             self.labs[k].setEnabled(ok)
+        try:
+            used = {k: self.w[k].isEnabled() for k in self.w}
+            used.update({k: ok for k, ok in on.items()})
+            self.lbl_legend.setText(key_legend_html(used))
+        except Exception:
+            pass
         for wdg in (self.cb_bfit, self.cb_bcols, self.cb_bval):
             wdg.setEnabled(bell)
         self.tabs.setTabEnabled(4, bell)

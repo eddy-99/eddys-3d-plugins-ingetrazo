@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
-VERSION = "1.4"
+VERSION = "1.5"
 ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
 
 
@@ -620,7 +620,82 @@ def _turn_to_down(n):
             (az * ax * C - ay * s, az * ay * C + ax * s, cth + az * az * C))
 
 
+# ---- 1.5: work that doesn't change with the scale is done once and remembered, so changing the
+# scale with a big model (a brick building, thousands of bricks) doesn't bog the preview down.
+_TURN_CACHE = {}       # which way up each piece lies (the same at any scale)
+_EDGE_CACHE = {}       # which edges are fold lines in the preview (the same at any scale or place)
+_SIZE_CACHE = {}
+
+
+def _shape_key(tris, with_dir=True):
+    """A quick finger-print of a piece that stays the same when it's scaled up or down evenly or
+    moved (and, without with_dir, turned): its triangle count and the shapes of a spread of its
+    triangles. Two pieces with the same finger-print are the same shape, so what was worked out
+    for one is right for the other."""
+    import math
+    n = len(tris)
+    if not n:
+        return (0,)
+    step = max(1, n // 48)
+    bits = [n]
+    for i in list(range(0, n, step))[:60] + [n - 1]:
+        try:
+            a, b, c = tris[i]
+            ab = math.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 + (b[2] - a[2]) ** 2)
+            ac = math.sqrt((c[0] - a[0]) ** 2 + (c[1] - a[1]) ** 2 + (c[2] - a[2]) ** 2)
+            bc = math.sqrt((c[0] - b[0]) ** 2 + (c[1] - b[1]) ** 2 + (c[2] - b[2]) ** 2)
+            if ac < 1e-15 or bc < 1e-15:
+                bits.append(None)
+                continue
+            bits.append((round(ab / ac, 5), round(bc / ac, 5)))
+            if with_dir and ab > 1e-15:
+                bits.append((round((b[0] - a[0]) / ab, 4), round((b[1] - a[1]) / ab, 4),
+                             round((b[2] - a[2]) / ab, 4)))
+        except Exception:
+            bits.append(None)
+    return tuple(bits)
+
+
+def _remember(cache, key, value, most=600):
+    if len(cache) >= most:
+        cache.clear()
+    cache[key] = value
+    return value
+
+
 def lay_flat(tris):
+    """lay_flat_raw, remembered: the same piece at another scale turns the same way, at once."""
+    if len(tris) < 200:
+        return lay_flat_raw(tris)
+    key = _shape_key(tris, with_dir=True)
+    turn = _TURN_CACHE.get(key)
+    if turn is None:
+        turn = _remember(_TURN_CACHE, key, lay_flat_turn(tris))
+    return apply_flat_turn(tris, turn)
+
+
+def apply_flat_turn(tris, turn):
+    if not turn:
+        return tris
+    R, ang = turn
+    ca, sa = math.cos(ang), math.sin(ang)
+    out = []
+    for t in tris:
+        q = []
+        for p in t:
+            x = R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2]
+            y = R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2]
+            z = R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2]
+            q.append((x * ca - y * sa, x * sa + y * ca, z))
+        out.append(tuple(q))
+    return out
+
+
+def lay_flat_raw(tris):
+    return apply_flat_turn(tris, lay_flat_turn(tris))
+
+
+def lay_flat_turn(tris):
     """Turns a part to print: on its biggest flat face if that face really carries it (a sheet's
     flat back, a panel, a column's square cap), otherwise - a thin wavy tin sheet, say - on its
     thinnest side, so it lies flat rather than standing on an edge. Then spins it round so it
@@ -628,7 +703,7 @@ def lay_flat(tris):
     import math
     pts = list({p for t in tris for p in t})
     if len(pts) < 3:
-        return tris
+        return None
     sample = pts if len(pts) <= 6000 else pts[::max(1, len(pts) // 6000)]
     planes, dirs = {}, {}
     for a, b, c in tris:
@@ -647,7 +722,7 @@ def lay_flat(tris):
         f = dirs.setdefault(dk, [0.0, (nx, ny, nz)])
         f[0] += L / 2.0
     if not planes:
-        return tris
+        return None
 
     def frame(n):
         u = (0.0, -n[2], n[1]) if abs(n[0]) < 0.9 else (-n[2], 0.0, n[0])
@@ -716,9 +791,8 @@ def lay_flat(tris):
         return (R[0][0] * p[0] + R[0][1] * p[1] + R[0][2] * p[2],
                 R[1][0] * p[0] + R[1][1] * p[1] + R[1][2] * p[2],
                 R[2][0] * p[0] + R[2][1] * p[1] + R[2][2] * p[2])
-    out = [tuple(turn(p) for p in t) for t in tris]
     # spin about z for the smallest footprint (long side along x)
-    xy = list({(round(p[0], 3), round(p[1], 3)) for t in out for p in t})
+    xy = list({(round(q[0], 3), round(q[1], 3)) for q in (turn(p) for p in pts)})
     if len(xy) > 4000:
         xy = xy[::max(1, len(xy) // 4000)]
     best_a, best_area = 0.0, None
@@ -735,8 +809,7 @@ def lay_flat(tris):
     ys = [x * sa + y * ca for x, y in xy]
     if max(ys) - min(ys) > max(xs) - min(xs):
         best_a += math.pi / 2
-        ca, sa = math.cos(best_a), math.sin(best_a)
-    return [tuple((p[0] * ca - p[1] * sa, p[0] * sa + p[1] * ca, p[2]) for p in t) for t in out]
+    return (R, best_a)
 
 
 def mend_cracks(tris, tol=2e-4):
@@ -1364,6 +1437,49 @@ def _prep_part(tris, limit=200000):
     if mixed:
         out += [[(t[0], t[2], t[1]), (-n[0], -n[1], -n[2]), [fl[2], fl[1], fl[0]]] for t, n, fl in out]
     return out
+
+
+def fold_edges(tris, limit=200000):
+    """The edges _prep_part would draw as lines, as (triangle number, edge 0-2), remembered by
+    the piece's shape, so the same piece scaled, turned or moved doesn't have them worked out
+    again (1.5)."""
+    key = (_shape_key(tris, with_dir=False), limit)
+    got = _EDGE_CACHE.get(key)
+    if got is not None:
+        return got
+    import math
+    n = len(tris)
+    step = max(1, int(math.ceil(n / float(limit))))
+    normals, edges, directed = {}, {}, {}
+
+    def k(p):
+        return (round(p[0], 7), round(p[1], 7), round(p[2], 7))
+    for i in range(0, n, step):
+        a, b, c = tris[i]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        w = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        nn = (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+        L = math.sqrt(nn[0] ** 2 + nn[1] ** 2 + nn[2] ** 2)
+        if L < 1e-18:
+            continue
+        normals[i] = (nn[0] / L, nn[1] / L, nn[2] / L)
+        ks = (k(a), k(b), k(c))
+        for e in range(3):
+            p_, q_ = ks[e], ks[(e + 1) % 3]
+            edges.setdefault((p_, q_) if p_ <= q_ else (q_, p_), []).append((i, e))
+            directed[(p_, q_)] = directed.get((p_, q_), 0) + 1
+    mixed = any(directed.get((q_, p_), 0) != n_ for (p_, q_), n_ in directed.items())
+    out = []
+    for lst in edges.values():
+        if len(lst) != 2:
+            out.extend(lst)
+            continue
+        (i1, e1), (i2, e2) = lst
+        n1, n2 = normals[i1], normals[i2]
+        d = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2]
+        if (abs(d) if mixed else d) < 0.94:
+            out.append((i1, e1))
+    return _remember(_EDGE_CACHE, key, out, most=300)
 
 
 def _split_big(prepped, size):
@@ -4793,11 +4909,10 @@ class GLPreviewCanvas(_gl_base()):
                     if z > hi[2]: hi[2] = z
             if want_edges and tris:
                 try:
-                    for t, _n, fl in _prep_part(tris, GL_MAX_EDGE_TRIS):
-                        for e in range(3):
-                            if fl[e]:
-                                p_, q_ = t[e], t[(e + 1) % 3]
-                                edge.extend((p_[0], p_[1], p_[2], q_[0], q_[1], q_[2]))
+                    for ti, e in fold_edges(tris, GL_MAX_EDGE_TRIS):     # remembered (1.5)
+                        t = tris[ti]
+                        p_, q_ = t[e], t[(e + 1) % 3]
+                        edge.extend((p_[0], p_[1], p_[2], q_[0], q_[1], q_[2]))
                 except Exception:
                     pass
         if self.bed:
@@ -7245,7 +7360,10 @@ class StudioDialog(QDialog):
                 bits.append("\u2192 " + self.target_name(own_s.get(pc or "", "")).split(" - ")[0])
             notes.append(", ".join(bits))
         for r, (n, col, tr) in enumerate(parts):
-            s = tris_size(tr)
+            got = _SIZE_CACHE.get(id(tr))
+            if got is None or got[0] is not tr:
+                got = _remember(_SIZE_CACHE, id(tr), (tr, tris_size(tr)), most=400)
+            s = got[1]
             s = (s[0] * k * f[0], s[1] * k * f[1], s[2] * k * f[2])
             sizes[r] = fmt_size(s, u)
             pm = QPixmap(14, 14)

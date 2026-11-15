@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Fences & Gates"
-VERSION = "1"
+VERSION = "2"
 
 
 def _ed3d_organise(scene, group):
@@ -1863,7 +1863,7 @@ FIELDS = {
     'rails': ("Rails (or wires)", 1, 8, None, "", ""),
     'rail_h': ("E   Rail depth", 5.0, 500.0, 0, " mm", ""),
     'rail_t': ("F   Rail thickness", 5.0, 300.0, 0, " mm", ""),
-    'clear': ("Gap under the fence", 0.0, 500.0, 0, " mm", "How far the pales stop above the ground."),
+    'clear': ("M   Gap under the fence", 0.0, 500.0, 0, " mm", "How far the pales stop above the ground."),
     'pale_w': ("G   Pale width", 5.0, 500.0, 0, " mm", ""),
     'pale_gap': ("H   Gap between pales", 0.2, 1000.0, 1, " mm", "Never 0, so no faces touch."),
     'pale_t': ("J   Pale / board thickness", 1.0, 200.0, 1, " mm", ""),
@@ -1871,36 +1871,36 @@ FIELDS = {
     'board_w': ("K   Board width", 10.0, 1000.0, 0, " mm", "Close-boarded and panel fences."),
     'board_gap': ("L   Gap between boards", 0.2, 200.0, 1, " mm", "Close-boarded and panel fences. "
                                                                "Never 0, so no faces touch."),
-    'gravel_h': ("Gravel board", 0.0, 1000.0, 0, " mm", "Close-boarded: the board along the bottom "
+    'gravel_h': ("N   Gravel board", 0.0, 1000.0, 0, " mm", "Close-boarded: the board along the bottom "
                                                         "(0 = none)."),
-    'wire_d': ("Wire thickness", 1.0, 100.0, 1, " mm", "Post and wire. Real wire is about 4 mm; "
+    'wire_d': ("O   Wire thickness", 1.0, 100.0, 1, " mm", "Post and wire. Real wire is about 4 mm; "
                                                        "for printing use your nozzle (32 = 0.4 mm at 1:80)."),
-    'bar_w': ("Railing bar size", 2.0, 200.0, 1, " mm", ""),
-    'bar_gap': ("Gap between railing bars", 5.0, 1000.0, 0, " mm", ""),
-    'wall_h': ("Dwarf wall height", 0.0, 3000.0, 0, " mm", "Railings stand on it (0 = no wall)."),
-    'wall_t': ("Dwarf wall thickness", 50.0, 1000.0, 0, " mm", ""),
-    'coping_h': ("Coping height", 0.0, 500.0, 0, " mm", ""),
-    'coping_over': ("Coping overhang", 0.0, 300.0, 0, " mm", ""),
+    'bar_w': ("P   Railing bar size", 2.0, 200.0, 1, " mm", ""),
+    'bar_gap': ("Q   Gap between railing bars", 5.0, 1000.0, 0, " mm", ""),
+    'wall_h': ("R   Dwarf wall height", 0.0, 3000.0, 0, " mm", "Railings stand on it (0 = no wall)."),
+    'wall_t': ("S   Dwarf wall thickness", 50.0, 1000.0, 0, " mm", ""),
+    'coping_h': ("T   Coping height", 0.0, 500.0, 0, " mm", ""),
+    'coping_over': ("U   Coping overhang", 0.0, 300.0, 0, " mm", ""),
     'gate': ("Gate", ""),
     'gate_edge': ("Gate in run (edge) number", 1, 99, None, "", "Which run gets the gate, counting the "
                                                                 "edges of the face in order."),
     'gate_pos': ("Gate position along it", 0.0, 100.0, 0, " %", "50 = in the middle."),
-    'gate_w': ("Gateway width", 300.0, 20000.0, 0, " mm", "Between the gate posts."),
-    'gate_h': ("Gate height (0 = fence height)", 0.0, 5000.0, 0, " mm", ""),
-    'gate_post': ("Gate post size", 10.0, 1000.0, 0, " mm", ""),
-    'gate_stile': ("Field gate stiles", 20.0, 500.0, 0, " mm", ""),
-    'gate_clear': ("Gap under the gate", 0.0, 500.0, 0, " mm", ""),
+    'gate_w': ("V   Gateway width", 300.0, 20000.0, 0, " mm", "Between the gate posts."),
+    'gate_h': ("W   Gate height (0 = fence height)", 0.0, 5000.0, 0, " mm", ""),
+    'gate_post': ("X   Gate post size", 10.0, 1000.0, 0, " mm", ""),
+    'gate_stile': ("Y   Field gate stiles", 20.0, 500.0, 0, " mm", ""),
+    'gate_clear': ("Z   Gap under the gate", 0.0, 500.0, 0, " mm", ""),
     'gate_double': ("A pair of gates", ""),
     'gate_open': ("Gate open by", 0.0, 120.0, 0, " deg", "Not when printing flat."),
     'missing': ("Missing pales / boards", 0.0, 90.0, 1, " %", ""),
     'broken': ("Broken pales (snapped off, jagged)", 0.0, 90.0, 1, " %", ""),
     'skew_pct': ("Skew pales (hanging off one nail)", 0.0, 60.0, 1, " %",
                  "The pales beside them are cut back clear, so nothing overlaps."),
-    'skew_ang': ("Skew angle (up to)", 0.0, 45.0, 1, " deg", ""),
-    'rot_h': ("Rotted bottoms (how far up)", 0.0, 2000.0, 0, " mm", "Ragged, rotted-away bottoms."),
+    'skew_ang': ("AD  Skew angle (up to)", 0.0, 45.0, 1, " deg", ""),
+    'rot_h': ("AA  Rotted bottoms (how far up)", 0.0, 2000.0, 0, " mm", "Ragged, rotted-away bottoms."),
     'holes': ("Jagged holes (per square metre)", 0.0, 50.0, 1, "", "Close-boarded and panel fences."),
-    'hole_size': ("Hole size", 5.0, 2000.0, 0, " mm", ""),
-    'height_var': ("Uneven heights (up to)", 0.0, 500.0, 0, " mm", ""),
+    'hole_size': ("AB  Hole size", 5.0, 2000.0, 0, " mm", ""),
+    'height_var': ("AC  Uneven heights (up to)", 0.0, 500.0, 0, " mm", ""),
     'seed': ("Random pattern", 1, 9999, None, "", "Change this for a different random pattern."),
     'edges': ("Round a flat face, fence", "Which edges of a flat (ground) face get fenced."),
     'flip': ("Fence faces the other way", "Turns the front of the fence round (for a flat face: "
@@ -2008,6 +2008,40 @@ def fence_sizes_drawing(v):
         else:
             w_p = (wb if flat else F / 2 - 1, F / 2 + J)
         rect(w_p[0], base + clear, w_p[1], top, PALE, 'C')
+    # close-boarded: the gravel board along the bottom of the bay
+    gv = max(0.0, v.get('gravel_h', 0.0)) if t == 'close' else 0.0
+    if gv > 0:
+        rect(xa, base, xb, base + gv, RAIL)
+    # the gate, beside the fence (2): its posts, the gateway and the gate in it
+    gdims = []
+    if v.get('gate', 'none') != 'none':
+        X = max(10.0, v['gate_post'])
+        Vw = max(300.0, v['gate_w'])
+        Wh = v['gate_h'] if v['gate_h'] > 0 else A
+        Zc = max(0.0, v['gate_clear'])
+        Ys = max(20.0, v['gate_stile']) if (v['gate'] == 'field' or t in ('wire', 'post_rail')) else max(40.0, E)
+        gx0 = B + C / 2 + max(400.0, 0.25 * B)
+        gtop = max(base + Wh, base + Zc + Wh) + Dab
+        rect(gx0, base, gx0 + X, gtop, POST)
+        rect(gx0 + X + Vw, base, gx0 + 2 * X + Vw, gtop, POST)
+        leaves = 2 if v.get('gate_double') else 1
+        lw = (Vw - 30.0 * leaves) / leaves
+        for k_ in range(leaves):
+            lx0 = gx0 + X + 15.0 + k_ * (lw + 30.0)
+            ly0, ly1 = base + Zc, base + Zc + Wh
+            rect(lx0, ly0, lx0 + Ys, ly1, RAIL)                 # stiles
+            rect(lx0 + lw - Ys, ly0, lx0 + lw, ly1, RAIL)
+            rect(lx0 + Ys, ly0, lx0 + lw - Ys, ly0 + E, RAIL)  # top and bottom rails
+            rect(lx0 + Ys, ly1 - E, lx0 + lw - Ys, ly1, RAIL)
+            front.append(('poly', [(lx0 + Ys, ly0 + E), (lx0 + Ys + E, ly0 + E), (lx0 + lw - Ys, ly1 - E),
+                                   (lx0 + lw - Ys - E, ly1 - E)], PALE))          # the brace
+        lx0 = gx0 + X + 15.0
+        gdims += [('V', 'F', (gx0 + X, base), (gx0 + X + Vw, base), (0, -1), 16),
+                  ('X', 'F', (gx0, gtop), (gx0 + X, gtop), (0, 1), 10),
+                  ('W', 'F', (gx0 + 2 * X + Vw, base + Zc), (gx0 + 2 * X + Vw, base + Zc + Wh), (1, 0), 12),
+                  ('Y', 'F', (lx0, base + Zc + Wh * 0.55), (lx0 + Ys, base + Zc + Wh * 0.55), (0, 1), 0)]
+        if Zc > 0:
+            gdims.append(('Z', 'F', (lx0 + Ys + 10, base), (lx0 + Ys + 10, base + Zc), (1, 0), 4))
     # the size marks
     dims.append(('A', 'F', (xa - C / 2 - C, base + clear), (xa - C / 2 - C, top), (-1, 0), 14))
     dims.append(('B', 'F', (0.0, 0.0), (B, 0.0), (0, -1), 16))
@@ -2026,7 +2060,70 @@ def fence_sizes_drawing(v):
         dims.append((l2, 'F', (first + pw, ymid - A * 0.18), (p2, ymid - A * 0.18), (0, -1), 0))
         dims.append(('J', 'C', (w_p[0] if flat else F / 2, top - A * 0.05),
                      (w_p[1], top - A * 0.05), (0, 1), 10))
+    if pw and first is not None and t == 'railings':
+        p2 = first + pw + gap
+        ymid = base + clear + (A - clear) * 0.42
+        dims.append(('P', 'F', (p2, ymid), (p2 + pw, ymid), (0, 1), 0))
+        dims.append(('Q', 'F', (first + pw, ymid - A * 0.18), (p2, ymid - A * 0.18), (0, -1), 0))
+    if pw and first is not None and clear > 0:
+        dims.append(('M', 'F', (first + pw + gap * 0.5, base), (first + pw + gap * 0.5, base + clear), (1, 0), 0))
+    if gv > 0:
+        dims.append(('N', 'F', (xb - pw, base), (xb - pw, base + gv), (1, 0), 0))
+    if t == 'wire' and rails:
+        y = rails[-1]
+        wd = v['wire_d']
+        dims.append(('O', 'C', (w_rail[0], y + wd / 2), (w_rail[0] + wd, y + wd / 2), (0, 1), 10))
+    if t == 'railings' and v['wall_h'] > 0:
+        dims.append(('R', 'F', (B + C + 20.0, 0.0), (B + C + 20.0, v['wall_h']), (1, 0), 14))
+        wt = max(C + 20.0, v['wall_t'])
+        w0 = -C / 2 if flat else -wt / 2
+        dims.append(('S', 'C', (w0, 0.0), (w0 + wt, 0.0), (0, -1), 14))
+        if v['coping_h'] > 0:
+            co = v['coping_over']
+            dims.append(('T', 'C', (w0 + wt + co, v['wall_h']), (w0 + wt + co, base), (1, 0), 10))
+            if co > 0:
+                dims.append(('U', 'C', (w0 + wt, base), (w0 + wt + co, base), (0, 1), 10))
+    dims += gdims
     return {'front': front, 'cut': cut, 'dims': dims, 'xc': B * 0.5 + (pw / 2 if pw else 0)}
+
+
+# which lettered sizes a fence type uses (2) - the key greys out the rest
+KEY_LETTERS = [
+    ('A', "height", None), ('B', "posts no further apart than", None), ('C', "post size", None),
+    ('D', "posts above the fence", 'not_railings'), ('E', "rail depth", None), ('F', "rail thickness", None),
+    ('G', "pale width", ('picket', 'palisade')), ('H', "gap between pales", ('picket', 'palisade')),
+    ('J', "pale / board thickness", ('picket', 'palisade', 'close', 'panel')),
+    ('K', "board width", ('close', 'panel')), ('L', "gap between boards", ('close', 'panel')),
+    ('M', "gap under the fence", None), ('N', "gravel board", ('close',)), ('O', "wire thickness", ('wire',)),
+    ('P', "railing bar size", ('railings',)), ('Q', "gap between railing bars", ('railings',)),
+    ('R', "dwarf wall height", ('railings',)), ('S', "dwarf wall thickness", ('railings',)),
+    ('T', "coping height", ('railings',)), ('U', "coping overhang", ('railings',)),
+    ('V', "gateway width", 'gate'), ('W', "gate height", 'gate'), ('X', "gate post size", 'gate'),
+    ('Y', "field gate stiles", 'gate'), ('Z', "gap under the gate", 'gate'),
+    ('AA', "rotted bottoms (Weathering)", None), ('AB', "hole size (Weathering)", ('close', 'panel')),
+    ('AC', "uneven heights (Weathering)", None), ('AD', "skew angle (Weathering)", None),
+]
+
+
+def key_legend_html(v):
+    """The list of letters under the key drawing, the ones this fence doesn't use in grey."""
+    t, g = v.get('type'), v.get('gate', 'none') != 'none'
+    rows = []
+    for letter, words, used in KEY_LETTERS:
+        if used is None:
+            on = True
+        elif used == 'gate':
+            on = g
+        elif used == 'not_railings':
+            on = t != 'railings'
+        else:
+            on = t in used
+        rows.append("<span style='color:%s'><b>%s</b>&nbsp;&nbsp;%s</span>" % (
+            "#202020" if on else "#a8a8a8", letter, words))
+    half = (len(rows) + 1) // 2
+    return ("<table width='100%%'><tr><td valign='top'>%s</td><td valign='top'>%s</td></tr></table>"
+            "<span style='color:gray'>Greyed letters aren't used by this fence. The Weathering sizes are "
+            "random, so they aren't drawn.</span>" % ("<br>".join(rows[:half]), "<br>".join(rows[half:])))
 
 
 class FenceSizes(QWidget):
@@ -2132,6 +2229,43 @@ class FenceSizes(QWidget):
         p.end()
 
 
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_fences_gates.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>Adding a fence</b><br>"
+             "Select an upright face and the fence fills it; a flat face on the ground and the fence runs round "
+             "its edges; or select edges and it runs along them. Then click 'Add fence'. Sizes are real-world "
+             "mm.<br><br>"
+             "<b>Pages</b><br>Fence: the kind of fence and its sizes. Gate: a gate in one of the runs. "
+             "Weathering: missing, broken, skew and rotted pales. Wire, railings: post and wire, and iron "
+             "railings on a dwarf wall. Placing: which edges, which way it faces and printing flat. "
+             "Every size has a letter: the Key page shows what each one measures, drawn for the fence "
+             "you've picked.<br><br>"
+             "<b>Printing</b><br>'Flat back for 3D printing' (Placing page) puts every part back to the back of "
+             "the posts, so the fence prints lying down.<br><br>"
+             "<b>Presets</b><br>Pick one to fill everything in. Save updates the one you have open; Save as "
+             "makes a new one; the arrows move it up or down the list; Folder opens where they're kept.")
+
+
 class FenceDialog(QDialog):
     def __init__(self, cur, viewport, tool):
         super().__init__(viewport)
@@ -2142,6 +2276,11 @@ class FenceDialog(QDialog):
         self.user_presets = load_presets()
         self._busy = False
         lay = QVBoxLayout(self)
+        # how to use it - only shows when Info is pressed
+        self.info_box = QLabel(INFO_TEXT)
+        self.info_box.setWordWrap(True)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
         self.lbl = QLabel("Select an upright face (the fence fills it), a flat face on the ground (the "
                           "fence runs round it) or edges, then click 'Add fence'. Sizes are real-world mm.")
         self.lbl.setWordWrap(True)
@@ -2153,15 +2292,26 @@ class FenceDialog(QDialog):
         lay.addWidget(self.lbl_report)
         row = QHBoxLayout()
         lay.addLayout(row)
-        from PySide6.QtWidgets import QTabWidget
+        from PySide6.QtWidgets import QTabWidget, QScrollArea
         self.preview = FencePreview()
         self.sizes = FenceSizes()
         self.views = QTabWidget()
-        self.views.addTab(self.preview, "3D view")
-        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        self.views.addTab(self.preview, "Preview")
+        kw = QWidget()
+        kl = QVBoxLayout(kw)
+        kl.setContentsMargins(2, 2, 2, 2)
+        kl.addWidget(self.sizes, 1)
+        self.lbl_legend = QLabel()
+        self.lbl_legend.setWordWrap(True)
+        self.lbl_legend.setStyleSheet("font-size: 8pt;")
+        kl.addWidget(self.lbl_legend)
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(kw)
+        self.views.addTab(ks, "Key (A, B, C...)")
         self.views.setTabToolTip(0, "A 3D look at the fence you'll get.")
-        self.views.setTabToolTip(1, "A front view and a cut through the fence, showing what each lettered "
-                                    "size (A, B, C ...) measures.")
+        self.views.setTabToolTip(1, "A front view and a cut through the fence (and the gate, if there is one), "
+                                    "showing what each lettered size measures.")
         row.addWidget(self.views, 1)
         self.tabs = QTabWidget()
         row.addWidget(self.tabs, 1)
@@ -2204,6 +2354,15 @@ class FenceDialog(QDialog):
         prow.addWidget(QLabel("Preset:"))
         self.cb_preset = QComboBox()
         prow.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            prow.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
         b_save = QPushButton("Save")
         b_save.setToolTip("Updates the preset you have open (no typing). For a new preset, use Save as.")
         b_saveas = QPushButton("Save as...")
@@ -2219,6 +2378,25 @@ class FenceDialog(QDialog):
         b_close = QPushButton("Close")
         brow.addWidget(self.b_add)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(st.get('tab', 0)))
+                self.views.setCurrentIndex(int(st.get('left_tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.views.currentChanged.connect(lambda i: _ui_settings_save(left_tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         self.cb_preset.currentIndexChanged.connect(self.apply_preset)
@@ -2228,8 +2406,32 @@ class FenceDialog(QDialog):
         b_dir.clicked.connect(self.open_folder)
         self.b_add.clicked.connect(lambda: self.tool.add_from_dialog(self))
         b_close.clicked.connect(self.close)
-        self.refresh_presets()
+        self.refresh_presets(select=st.get('last_preset'))
         self.set_values(cur)
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def preset_order(self):
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.refresh_presets(select=name)
 
     def values(self):
         v = {}
@@ -2295,6 +2497,7 @@ class FenceDialog(QDialog):
         self.preview.show_fence(v)
         try:
             self.sizes.show_fence(v)
+            self.lbl_legend.setText(key_legend_html(v))
         except Exception:
             pass
 
@@ -2308,11 +2511,8 @@ class FenceDialog(QDialog):
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem("-- Custom --", None)
-        for name in BUILTIN_PRESETS:
-            self.cb_preset.addItem(name + "  (built-in)", name)
-        for name in sorted(self.user_presets):
-            if name not in BUILTIN_PRESETS:
-                self.cb_preset.addItem(name, name)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
         for i in range(self.cb_preset.count()):
             if select and self.cb_preset.itemData(i) == select:
                 self.cb_preset.setCurrentIndex(i)
@@ -2320,6 +2520,7 @@ class FenceDialog(QDialog):
 
     def apply_preset(self, *_):
         name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)      # opens on this one next time
         if name and name in BUILTIN_PRESETS:
             self.set_values(dict(DEFAULTS, **BUILTIN_PRESETS[name]))
         elif name and name in self.user_presets:

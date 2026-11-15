@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget, QInputDialog)
 
 PLUGIN_NAME = "3D Wrap"
-VERSION = "14"
+VERSION = "15"
 SCALE = 0.001
 Z = (0.0, 0.0, 1.0)
 
@@ -2291,7 +2291,52 @@ EDDY_TIPS_END = None
 # each size has a letter, shown next to its box and on the 'Sizes' drawing
 LETTERS = {'bottom': 'A', 'top': 'B', 'height': 'C', 'raise_': 'D', 'lay_h': 'E',
            'brick_l': 'F', 'brick_h': 'G', 'brick_d': 'H', 'joint': 'J', 'bevel': 'K',
-           'cant_course': 'L', 'cant_corner': 'M'}
+           'cant_course': 'L', 'cant_corner': 'M', 'start': 'N', 'ignore': 'O', 'detail': 'P',
+           'flat_max': 'Q'}
+KEY_WORDS = [('A', "bottom size"), ('B', "top size"), ('C', "height"), ('D', "start up"), ('E', "go up to"),
+             ('F', "brick length"), ('G', "brick height"), ('H', "brick depth"), ('J', "mortar joint"),
+             ('K', "bevel on the brick edges"), ('L', "cant course size"), ('M', "cant corners"),
+             ('N', "turn round by (degrees)"), ('O', "ignore rims under (a solid you've drawn)"),
+             ('P', "bend every (your own pattern)"), ('Q', "keep flat up to (your own pattern)")]
+KEY_LEGEND = ("<table width='100%%'><tr><td valign='top'>%s</td><td valign='top'>%s</td></tr></table>"
+              "<span style='color:gray'>N to Q aren't drawn: N turns the courses round the chimney, O, P and Q "
+              "are for a solid you've drawn and your own pattern.</span>" % (
+                  "<br>".join("<b>%s</b>&nbsp;&nbsp;%s" % kw for kw in KEY_WORDS[:8]),
+                  "<br>".join("<b>%s</b>&nbsp;&nbsp;%s" % kw for kw in KEY_WORDS[8:])))
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_wrap.json")
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+INFO_TEXT = ("<b>Wrapping bricks (or a pattern) round</b><br>"
+             "1. Put on: New bricks, laid course by course like a real chimney, or My own pattern - select a flat "
+             "group you've made and click 'Use as pattern'.<br>"
+             "2. Target: a round, square or octagonal chimney made to size, or select a solid you've drawn "
+             "(a chimney, a curved wall...) and click 'Use as target'.<br>"
+             "3. Click Wrap. Sizes are real-world mm.<br><br>"
+             "<b>Pages</b><br>Chimney: the chimney's size and where the bricks go up it. Bricks: brick size, "
+             "mortar, headers, corners and cant bricks. Pattern: how your own pattern is fitted and bent round. "
+             "Every size has a letter: the Key page shows what each one measures.<br><br>"
+             "<b>Presets</b><br>Pick one to fill everything in (a 'bricks only' one changes just the Bricks page). "
+             "Save updates the one you have open; Save as makes a new one; the arrows move it up or down the "
+             "list; Folder opens where they're kept; 'Set as default' fills it in each time Wrap opens.")
 CLOSEUP_COURSES = 5
 
 
@@ -2665,6 +2710,11 @@ class WrapDialog(QDialog):
         self.pattern = None
         self.target = None
         lay = QVBoxLayout(self)
+        # how to use it - only shows when Info is pressed
+        self.info_box = QLabel(INFO_TEXT)
+        self.info_box.setWordWrap(True)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
         intro = QLabel("Pick what goes on and the target, then click Wrap. Sizes in real mm.")
         intro.setWordWrap(True)
         intro.setToolTip("1. Choose what goes on: new bricks laid course by course, or a flat pattern you've "
@@ -2677,8 +2727,18 @@ class WrapDialog(QDialog):
         self.cb_preset.setToolTip("Your saved setups. Pick one and the window is filled in. A 'Bricks only' "
                                   "preset changes just the Bricks tab. The one marked (default) is filled in "
                                   "each time 3D Wrap opens.")
-        top.addRow("Preset", self.cb_preset)
         brow_p = QHBoxLayout()
+        brow_p.addWidget(QLabel("Preset:"))
+        brow_p.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            brow_p.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
         self.b_psave = QPushButton("Save")
         self.b_psave.setToolTip("Updates the preset you have open with what's in the window now (no typing).")
         self.b_psaveas = QPushButton("Save as...")
@@ -2689,9 +2749,11 @@ class WrapDialog(QDialog):
         self.b_pdef = QPushButton("Set as default")
         self.b_pdef.setToolTip("3D Wrap opens with the preset you have open filled in. Click it on "
                                "'(no preset)' to go back to the built-in settings.")
-        for b_ in (self.b_psave, self.b_psaveas, self.b_pdel, self.b_pdef):
+        self.b_pdir = QPushButton("Folder")
+        self.b_pdir.setToolTip("Opens the folder your presets are saved in.")
+        self.b_pdir.clicked.connect(self.open_folder)
+        for b_ in (self.b_psave, self.b_psaveas, self.b_pdel, self.b_pdir, self.b_pdef):
             brow_p.addWidget(b_)
-        top.addRow(brow_p)
         self.cb_source = QComboBox()
         self.cb_source.addItem("New bricks", 'bricks')
         self.cb_source.addItem("My own pattern", 'pattern')
@@ -2739,8 +2801,23 @@ class WrapDialog(QDialog):
         self.views = QTabWidget()
         self.closeup = CloseupView()
         self.sizes = SizesView()
-        self.views.addTab(self.closeup, "Close-up")
-        self.views.addTab(self.sizes, "Sizes (A, B, C ...)")
+        self.sizes.setMinimumSize(300, 400)
+        self.views.addTab(self.closeup, "Preview")
+        from PySide6.QtWidgets import QScrollArea
+        kw = QWidget()
+        kl = QVBoxLayout(kw)
+        kl.setContentsMargins(2, 2, 2, 2)
+        kl.addWidget(self.sizes, 1)
+        lg = QLabel(KEY_LEGEND)
+        lg.setWordWrap(True)
+        lg.setStyleSheet("font-size: 8pt;")
+        kl.addWidget(lg)
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(kw)
+        self.views.addTab(ks, "Key (A, B, C...)")
+        self.views.setTabToolTip(0, "A close-up of a few courses as they'd be laid.")
+        self.views.setTabToolTip(1, "What each lettered size is.")
         row.addWidget(self.views, 1)
         row.addWidget(tabs, 1)
         lay.addLayout(row)
@@ -2911,6 +2988,7 @@ class WrapDialog(QDialog):
         self.lbl_report = QLabel()
         self.lbl_report.setWordWrap(True)
         lay.addWidget(self.lbl_report)
+        lay.addLayout(brow_p)              # the presets, along the bottom like the other plugins
         brow = QHBoxLayout()
         b_go = QPushButton("Wrap")
         b_go.setDefault(True)
@@ -2918,6 +2996,17 @@ class WrapDialog(QDialog):
         b_close = QPushButton("Close")
         brow.addWidget(b_go)
         brow.addStretch(1)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        st = _ui_settings()
+        self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         try:
@@ -2955,6 +3044,16 @@ class WrapDialog(QDialog):
         self.b_pdel.clicked.connect(self.preset_delete)
         self.b_pdef.clicked.connect(self.preset_default)
         self.changed()
+        if self.cb_lasttab.isChecked():
+            try:
+                i_ = int(st.get('tab', 0))
+                if self.tabs.isTabEnabled(i_):
+                    self.tabs.setCurrentIndex(i_)
+                self.views.setCurrentIndex(int(st.get('left_tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.views.currentChanged.connect(lambda i: _ui_settings_save(left_tab=int(i)))
         self.redraw()
         last = WrapTool._last_target
         if last is not None and _in_scene(getattr(viewport, 'scene', None), last):
@@ -3016,13 +3115,47 @@ class WrapDialog(QDialog):
         except Exception as e:
             print("%s: preview (%s)" % (PLUGIN_NAME, e))
 
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def open_folder(self, *_):
+        try:
+            os.makedirs(PRESETS_DIR, exist_ok=True)
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(PRESETS_DIR))
+        except Exception as e:
+            QMessageBox.information(self, PLUGIN_NAME, "Presets folder:\n%s\n\n(%s)" % (PRESETS_DIR, e))
+
+    def preset_order(self):
+        names = [n for n, _d in load_presets()]
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.fill_presets(name)
+
     # --- presets ---
     def fill_presets(self, pick=None):
         dflt = default_preset()
         self.cb_preset.blockSignals(True)
         self.cb_preset.clear()
         self.cb_preset.addItem("(no preset)", None)
-        for name, d in load_presets():
+        got = dict(load_presets())
+        for name, d in [(n, got[n]) for n in self.preset_order()]:
             label = name + ("  [bricks only]" if d.get('_bricks_only') else "")
             if name == dflt:
                 label += "  (default)"

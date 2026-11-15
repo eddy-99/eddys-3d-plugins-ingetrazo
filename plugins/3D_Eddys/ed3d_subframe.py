@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.32"
+VERSION = "1.34"
 
 
 def _ed3d_organise(scene, group):
@@ -2886,6 +2886,13 @@ def _wall_thickness(fi, all_faces):
     return best
 
 
+def _bar_w_guess(a):
+    try:
+        return float(getattr(a, 'w', 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
 def _wall_top(a, ready):
     """How high the walls running across the ends of wall a go, in a's terms (None if none)."""
     Oa = a.tw((0.0, 0.0, 0.0))
@@ -2904,6 +2911,12 @@ def _wall_top(a, ready):
         # roof slab at the ridge (that used to count, and stopped the gable being cut at the eaves,
         # so the gable end trusses were cut away by the gable's own frame) or a floor's edge
         if min(hs) > y0 + 0.25 * (y1 - y0) or max(hs) - min(hs) < 0.3 * (y1 - y0):
+            continue
+        # 1.34: a real side wall runs away from the gable, along the building. The narrow end of the
+        # gable wall itself (as thick as the wall) is upright too, and its top rises with the gable over
+        # the wall's thickness - counting it stood the trusses up off the real side walls
+        ds = [v_dot(v_sub(q, Oa), a.N) / SCALE for q in pts]
+        if max(ds) - min(ds) < max(700.0, 3.0 * _bar_w_guess(a)):
             continue
         if min(abs(xm - x0) for xm in (min(xs), max(xs))) > 700.0 and \
                 min(abs(xm - x1) for xm in (min(xs), max(xs))) > 700.0:
@@ -2972,6 +2985,15 @@ def find_gables(ready, p):
         # (only something low, like an opening's side, was found across the end) the trusses
         # would sink down into the walls - so they stand on the gable's eaves line instead
         ye_wall = _wall_top(a, ready)
+        # 1.33: say what the trusses stand on, so a gap under them can be tracked down
+        if ye_wall is None:
+            p.setdefault('_truss_seat', []).append("side walls not found - stood on the gable's eaves line")
+        elif ye_wall < ye - max(3.0 * p['w'], 0.25 * (y1 - ye)):
+            p.setdefault('_truss_seat', []).append(
+                "side walls found %.0f mm below the gable's eaves - too far, so stood on the eaves line" % (ye - ye_wall))
+        else:
+            p.setdefault('_truss_seat', []).append(
+                "on the side walls' top, %.0f mm below the gable's eaves" % max(0.0, ye - ye_wall))
         if ye_wall is None or ye_wall < ye - max(3.0 * p['w'], 0.25 * (y1 - ye)):
             ye_wall = ye
         out.append(dict(a=a, b=b, tri=tri, ye_wall=ye_wall, D=D, size=(x1 - x0, y1 - y0), ye=ye))
@@ -5508,6 +5530,8 @@ class SubframeTool(Tool):
                 if p.get('_roof_drawn'):
                     msg += (" Your roof sits on the walls, so move it up %.0f mm to sit on the trusses."
                             % p['_truss_raised'])
+            if p.get('_truss_seat'):
+                msg += " Trusses stand: " + "; ".join(dict.fromkeys(p['_truss_seat'])) + "."
         nb = sum(len(b) for t, b in panels if t == "Boards")
         if nb:
             fh_, bt_, off_, bw_, fnh_, fnd_, fnw_ = board_sizes(p)

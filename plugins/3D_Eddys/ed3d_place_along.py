@@ -44,11 +44,12 @@ from tools.base import Tool
 from PySide6.QtGui import QVector3D, QMatrix4x4
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QCheckBox, QGroupBox,
-    QComboBox, QDoubleSpinBox, QSpinBox, QRadioButton, QButtonGroup
+    QComboBox, QDoubleSpinBox, QSpinBox, QRadioButton, QButtonGroup, QWidget, QTabWidget, QScrollArea,
+    QMessageBox, QInputDialog
 )
 
 PLUGIN_NAME = "3D Place Along Line"
-VERSION = "3"
+VERSION = "4"
 MM = 1000.0                       # IngeTrazo works in metres; the window shows mm
 EXT_TAG = "eddy_place_along"      # on a row this plugin made: the line and settings, to edit it again
 EXT_KEY = "eddy_parts"            # tags a part from the Find & Replace parts library
@@ -1785,6 +1786,323 @@ def make_line_tool(dlg):
     return _LineTool()
 
 
+# ---------------------------------------------------------------------------
+# 4: the standard window - a preview and a key on the left, pages on the right, presets
+# ---------------------------------------------------------------------------
+UI_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_place_along.json")
+PRESET_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Place Along Line")
+PRESET_KEYS = ('part', 'mode', 'count', 'pitch', 'on_clicks', 'on_corners', 'corner_deg', 'smooth', 'closed',
+               'axis', 'turn', 'sink', 'flip', 'nogap', 'inset', 'offset', 'tilt', 'other', 'stagger')
+BUILTIN_PRESETS = {
+    "Rivet row, 50 mm apart": dict(mode='pitch', pitch=50.0, on_clicks=True, on_corners=True, corner_deg=40.0,
+                                   turn=0.0, sink=0.0, nogap=True, offset=0.0, tilt=0.0, other=False,
+                                   stagger=False, flip=False),
+    "Staggered double row (lap joint)": dict(mode='pitch', pitch=60.0, on_clicks=True, on_corners=False,
+                                             turn=0.0, sink=0.0, nogap=True, offset=25.0, tilt=0.0, other=False,
+                                             stagger=True, flip=False),
+    "Ring of 24 round a boiler band": dict(mode='count', count=24, on_clicks=False, on_corners=False,
+                                           closed=True, turn=0.0, sink=0.0, nogap=True, offset=0.0, tilt=0.0,
+                                           other=False, stagger=False, flip=False),
+    "Round a cab window, 10 mm in": dict(mode='pitch', pitch=40.0, on_clicks=False, on_corners=True,
+                                         corner_deg=40.0, inset=10.0, turn=0.0, sink=0.0, nogap=True,
+                                         offset=0.0, tilt=0.0, other=False, stagger=False, flip=False),
+}
+
+
+def _ui_settings():
+    try:
+        with open(UI_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ui_settings_save(**kw):
+    d = _ui_settings()
+    d.update(kw)
+    try:
+        with open(UI_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+    except Exception:
+        pass
+
+
+def _safe_name(name):
+    return "".join(ch for ch in name if ch not in '\\/:*?"<>|').strip() or "My row"
+
+
+def load_presets():
+    out = {}
+    try:
+        for fn in sorted(os.listdir(PRESET_DIR)):
+            if fn.lower().endswith(".json"):
+                try:
+                    with open(os.path.join(PRESET_DIR, fn), "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    if isinstance(d, dict):
+                        out[d.get('name') or fn[:-5]] = d
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+def save_preset_file(name, values):
+    os.makedirs(PRESET_DIR, exist_ok=True)
+    d = {'name': name}
+    d.update({k: values[k] for k in PRESET_KEYS if k in values})
+    with open(os.path.join(PRESET_DIR, _safe_name(name) + ".json"), "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
+
+
+INFO_TEXT = ("<b>Putting a row of parts along a line</b><br>"
+             "1. Part page: pick the part - from the parts library (rivets, bolts, markers and your own), or "
+             "select a component in the model and click 'Pick part from selection'.<br>"
+             "2. Line page: select what the line goes over (a boiler, a cab side), then Draw line and click "
+             "points on it, or Wrap round and click once to ring it. Or select lines you've drawn and click "
+             "'Use selected line', or a face and click 'Round selected face'.<br>"
+             "3. Spacing page: how many, or the pitch, and parts on your clicks and corners.<br>"
+             "4. How it sits page: turn, sink in, off the line, tilt, staggered.<br>"
+             "Then click Place. The row is one group (one Undo); select it and click 'Edit selected row' to "
+             "change it. Sizes are real-world mm.<br><br>"
+             "<b>Preview and Key</b><br>The Preview shows the row as it's set up now; the Key shows what each "
+             "lettered setting measures.<br><br>"
+             "<b>Presets</b><br>Pick one to fill in the spacing and how it sits (and the part). Save updates the "
+             "one you have open; Save as makes a new one; the arrows move it up or down the list; Folder opens "
+             "where they're kept.")
+
+
+class RowPreview(QWidget):
+    """Preview: the row as it's set up now, from above (and a bolt head turned by E). Key: what
+    each lettered setting measures."""
+
+    def __init__(self, key=False, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.v = {}
+        self.caption = ""
+        try:
+            self.setMinimumSize(250, 360 if key else 260)
+        except Exception:
+            pass
+
+    def show_row(self, v, caption=""):
+        self.v = dict(v)
+        self.caption = caption
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def paintEvent(self, _ev):
+        from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(250, 250, 246))
+        try:
+            if self.key:
+                self._paint_key(p, QColor, QPen, QFont, QPolygonF, QPointF, QRectF, Qt)
+            else:
+                self._paint_preview(p, QColor, QPen, QFont, QPolygonF, QPointF, QRectF, Qt)
+        finally:
+            p.end()
+
+    @staticmethod
+    def _head(p, QPolygonF, QPointF, x, y, r, turn_deg, col, QPen, sides=6):
+        pts = []
+        for k in range(sides):
+            a = math.radians(turn_deg + 90.0 + k * 360.0 / sides)
+            pts.append(QPointF(x + r * math.cos(a), y - r * math.sin(a)))
+        p.setPen(QPen(col.darker(160), 0.8))
+        p.setBrush(col)
+        p.drawPolygon(QPolygonF(pts))
+
+    def _paint_preview(self, p, QColor, QPen, QFont, QPolygonF, QPointF, QRectF, Qt):
+        v = self.v
+        k = min(float(self.width()) / 360.0, self.height() / 300.0)
+        p.scale(k, k)
+        f = QFont()
+        f.setPointSizeF(8.5)
+        p.setFont(f)
+        surf, part, line = QColor(205, 205, 198), QColor(150, 110, 70), QColor(40, 120, 200)
+        p.setPen(QPen(surf.darker(130), 0.8))
+        p.setBrush(surf)
+        p.drawRect(QRectF(15, 40, 330, 150))
+        # the line: straight with one corner, or a loop
+        closed = bool(v.get('closed'))
+        if closed:
+            pts = [(180 + 120 * math.cos(a), 115 - 55 * math.sin(a)) for a in
+                   [2 * math.pi * i / 120 for i in range(121)]]
+        else:
+            pts = [(30, 150), (200, 150), (320, 70)]
+        p.setPen(QPen(line, 1.4, Qt.DashLine))
+        p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in pts]))
+        # stations along it
+        segs, total = [], 0.0
+        for a, b in zip(pts, pts[1:]):
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            segs.append((a, b, L))
+            total += L
+        n = int(v.get('count', 10)) if v.get('mode', 'count') == 'count' else             max(1, int(round(total / max(4.0, min(60.0, v.get('pitch', 50.0) * 0.4)))))
+        n = max(1, min(n, 60))
+        stations = [total * i / (n if closed else n + 1) for i in range(n if closed else n + 2)]
+
+        def at(sv):
+            for a, b, L in segs:
+                if sv <= L + 1e-9:
+                    t = sv / L if L else 0.0
+                    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t), \
+                           ((b[0] - a[0]) / (L or 1), (b[1] - a[1]) / (L or 1))
+                sv -= L
+            a, b, L = segs[-1]
+            return b, ((b[0] - a[0]) / (L or 1), (b[1] - a[1]) / (L or 1))
+        off = max(-60.0, min(60.0, v.get('offset', 0.0) * 0.5))
+        tilt = v.get('tilt', 0.0)
+        for i, sv in enumerate(stations):
+            (x, y), (tx, ty) = at(sv)
+            side = -1.0 if v.get('other') else 1.0
+            if v.get('stagger') and i % 2:
+                side = -side
+            nx, ny = ty, -tx                    # to the left going along
+            o = off * side
+            cx, cy = x + nx * o, y + ny * o
+            r = 6.0
+            # a tilted part leans: drawn squashed toward the side it leans to
+            lean = math.sin(math.radians(tilt)) * side * 4.0
+            self._head(p, QPolygonF, QPointF, cx + nx * lean, cy + ny * lean, r, v.get('turn', 0.0), part, QPen)
+        p.setPen(QColor(50, 50, 50))
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        f2.setBold(True)
+        p.setFont(f2)
+        p.drawText(QRectF(10, 4, 340, 30), Qt.AlignLeft | Qt.AlignVCenter,
+                   "The row from above (as set up now)")
+        p.setFont(f)
+        words = []
+        words.append(("%d in all" if closed else "%d between the ends") % int(v.get('count', 10))
+                     if v.get('mode', 'count') == 'count' else "%s mm apart (pitch)" % _fmt(v.get('pitch', 50.0) / 1000.0))
+        if v.get('on_corners'):
+            words.append("one on every corner")
+        if abs(v.get('offset', 0.0)) > 1e-6:
+            words.append("%s mm off the line%s" % (_fmt(abs(v['offset']) / 1000.0), ", staggered" if v.get('stagger') else ""))
+        elif v.get('stagger'):
+            words.append("staggered")
+        if abs(tilt) > 1e-6:
+            words.append("tilted %g\u00b0" % tilt)
+        if abs(v.get('turn', 0.0)) > 1e-6:
+            words.append("turned %g\u00b0" % v['turn'])
+        p.drawText(QRectF(10, 200, 340, 40), Qt.AlignLeft | Qt.TextWordWrap, ", ".join(words) + ".")
+        if self.caption:
+            p.setPen(QColor(30, 110, 50))
+            p.drawText(QRectF(10, 240, 340, 56), Qt.AlignLeft | Qt.TextWordWrap, self.caption)
+
+    def _paint_key(self, p, QColor, QPen, QFont, QPolygonF, QPointF, QRectF, Qt):
+        k = min(float(self.width()) / 360.0, self.height() / 520.0)
+        p.scale(k, k)
+        red = QColor(200, 40, 40)
+        surf, part, line = QColor(205, 205, 198), QColor(150, 110, 70), QColor(40, 120, 200)
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(9.5)
+
+        def dim(x1, y1, x2, y2, letter, tx, ty):
+            p.setPen(QPen(red, 1.1))
+            p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            ang = math.atan2(y2 - y1, x2 - x1)
+            for (x, y, a) in ((x1, y1, ang), (x2, y2, ang + math.pi)):
+                for s_ in (0.45, -0.45):
+                    p.drawLine(QPointF(x, y), QPointF(x + 6 * math.cos(a + s_), y + 6 * math.sin(a + s_)))
+            p.setFont(f)
+            p.setPen(red)
+            p.drawText(QRectF(tx - 12, ty - 9, 24, 18), Qt.AlignCenter, letter)
+
+        def title(x, y, t):
+            p.setPen(QColor(60, 60, 60))
+            p.setFont(f)
+            p.drawText(QRectF(x, y, 340, 18), Qt.AlignLeft, t)
+
+        # ---- round a face, from above: inset A, pitch B, off the line C, a corner G
+        title(10, 4, "Round a face, from above")
+        p.setPen(QPen(surf.darker(130), 0.8))
+        p.setBrush(surf)
+        p.drawRect(QRectF(20, 30, 320, 150))
+        X0, Y0, X1, Y1 = 50.0, 60.0, 310.0, 150.0
+        p.setPen(QPen(line, 1.4, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(X0, Y0, X1 - X0, Y1 - Y0))
+        pitch = 40.0
+        x = X0
+        i = 0
+        while x <= X1 + 1e-6:
+            off = 9.0 if i % 2 else -9.0
+            self._head(p, QPolygonF, QPointF, x, Y1 + off, 5.5, 0.0, part, QPen)
+            x += pitch
+            i += 1
+        for yy in (Y0 + 30, Y0 + 60):
+            self._head(p, QPolygonF, QPointF, X0, yy, 5.5, 0.0, part, QPen)
+        self._head(p, QPolygonF, QPointF, X0, Y0, 5.5, 0.0, part, QPen)
+        dim(20, 100, X0, 100, "A", 35, 88)
+        dim(X0 + pitch, Y1 + 30, X0 + 2 * pitch, Y1 + 30, "B", X0 + 1.5 * pitch, Y1 + 42)
+        dim(X0 + 3 * pitch + 12, Y1, X0 + 3 * pitch + 12, Y1 + 9, "C", X0 + 3 * pitch + 26, Y1 + 4)
+        p.setPen(QPen(red, 1.0))
+        p.drawArc(QRectF(X1 - 22, Y0 - 22, 44, 44), 180 * 16, 90 * 16)
+        p.setFont(f)
+        p.drawText(QRectF(X1 - 40, Y0 + 6, 24, 18), Qt.AlignCenter, "G")
+
+        # ---- side on, cut through a boiler: sink in D, tilt F
+        title(10, 214, "A part on a boiler, cut through")
+        cx, cy, R = 120.0, 405.0, 140.0
+        p.setPen(QPen(surf.darker(130), 0.8))
+        p.setBrush(surf)
+        arc = [QPointF(cx + R * math.cos(math.radians(a)), cy - R * math.sin(math.radians(a)))
+               for a in range(40, 141, 4)]
+        p.drawPolygon(QPolygonF(arc + [QPointF(cx - R * 0.8, cy), QPointF(cx + R * 0.8, cy)]))
+        # an upright rivet, let down into the curve
+        top = cy - R
+        p.setPen(QPen(part.darker(160), 0.8))
+        p.setBrush(part)
+        p.drawPolygon(QPolygonF([QPointF(cx - 18, top + 4), QPointF(cx + 18, top + 4), QPointF(cx + 14, top - 12),
+                                 QPointF(cx - 14, top - 12)]))
+        dim(cx + 26, top - 1, cx + 26, top + 4, "D", cx + 40, top + 2)
+        # a tilted one, further round
+        a0 = math.radians(60.0)
+        px, py = cx + R * math.cos(a0), cy - R * math.sin(a0)
+        ux, uy = math.cos(a0), -math.sin(a0)          # out of the surface
+        lean = math.radians(20.0)
+        tx_, ty_ = ux * math.cos(lean) + uy * math.sin(lean), -ux * math.sin(lean) + uy * math.cos(lean)
+        wx, wy = -ty_, tx_
+        h_, w_ = 18.0, 14.0
+        p.drawPolygon(QPolygonF([QPointF(px + wx * w_, py + wy * w_), QPointF(px - wx * w_, py - wy * w_),
+                                 QPointF(px - wx * w_ * 0.8 + tx_ * h_, py - wy * w_ * 0.8 + ty_ * h_),
+                                 QPointF(px + wx * w_ * 0.8 + tx_ * h_, py + wy * w_ * 0.8 + ty_ * h_)]))
+        p.setPen(QPen(QColor(120, 120, 120), 0.8, Qt.DashLine))
+        p.drawLine(QPointF(px, py), QPointF(px + ux * 50, py + uy * 50))
+        p.drawLine(QPointF(px, py), QPointF(px + tx_ * 50, py + ty_ * 50))
+        p.setFont(f)
+        p.setPen(red)
+        p.drawText(QRectF(px + ux * 52 + 2, py + uy * 52 - 14, 24, 18), Qt.AlignCenter, "F")
+
+        # ---- a bolt head from above, turned
+        title(240, 214, "Turned")
+        self._head(p, QPolygonF, QPointF, 290, 300, 26, 0.0, QColor(215, 205, 190), QPen)
+        self._head(p, QPolygonF, QPointF, 290, 300, 26, 20.0, part, QPen)
+        p.setPen(red)
+        p.drawText(QRectF(312, 256, 24, 18), Qt.AlignCenter, "E")
+
+        f2 = QFont()
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        notes = ["A  inset from the edge (Line page)", "B  pitch - the gap between centres",
+                 "C  off the line (each side when staggered)", "D  sink in a bit more",
+                 "E  turn about its own up axis", "F  tilt about the line", "G  a corner: turning more than"]
+        for i_, t_ in enumerate(notes):
+            p.drawText(QRectF(10, 422 + i_ * 13.5, 340, 13), Qt.AlignLeft | Qt.AlignVCenter, t_)
+
+
 class PlaceAlongDialog(QDialog):
     # remembered while IngeTrazo is open
     state = dict(part=None, mode="count", count=10, pitch=50.0, on_clicks=True, on_corners=True,
@@ -1818,11 +2136,39 @@ class PlaceAlongDialog(QDialog):
         self.frames = []
         self._part, self._box = None, None
         lay = QVBoxLayout(self)
+        # how to use it - only shows when Info is pressed
+        self.info_box = QLabel(INFO_TEXT)
+        self.info_box.setWordWrap(True)
+        self.info_box.setVisible(False)
+        lay.addWidget(self.info_box)
 
         intro = QLabel("Put rivets, bolts or any part along a line over a surface - a boiler, a cab side, "
                        "round a chimney. Every part stands square on the surface.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
+        # 4: the preview and the key on the left, the pages on the right
+        row_ = QHBoxLayout()
+        lay.addLayout(row_)
+        self.left = QTabWidget()
+        self.preview = RowPreview()
+        self.left.addTab(self.preview, "Preview")
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(RowPreview(key=True))
+        self.left.addTab(ks, "Key (A, B, C...)")
+        self.left.setTabToolTip(0, "The row from above, as it's set up now.")
+        self.left.setTabToolTip(1, "What each lettered setting measures.")
+        self.left.setMaximumWidth(380)
+        row_.addWidget(self.left, 2)
+        self.tabs = QTabWidget()
+        row_.addWidget(self.tabs, 3)
+
+        def page_with(box, tip):
+            pg = QWidget()
+            pl = QVBoxLayout(pg)
+            pl.addWidget(box)
+            pl.addStretch(1)
+            return pg
 
         # 1. the part
         box1 = QGroupBox("1. The part - what gets placed (a rivet, a bolt)")
@@ -1846,7 +2192,7 @@ class PlaceAlongDialog(QDialog):
         self.lbl_part.setWordWrap(True)
         self.lbl_part.setStyleSheet("color: gray;")
         f1.addRow(self.lbl_part)
-        lay.addWidget(box1)
+        self.tabs.addTab(page_with(box1, ""), "Part")
 
         # 2. the line
         box2 = QGroupBox("2. The line - where it goes (select the boiler, a face or a line first)")
@@ -1861,7 +2207,7 @@ class PlaceAlongDialog(QDialog):
         r2d = QHBoxLayout()
         self.b_face = QPushButton("Round selected face")
         r2d.addWidget(self.b_face)
-        r2d.addWidget(QLabel("Inset from edge:"))
+        r2d.addWidget(QLabel("A   Inset from edge:"))
         self.sp_inset = QDoubleSpinBox()
         self.sp_inset.setRange(-10000.0, 100000.0)
         self.sp_inset.setDecimals(1)
@@ -1892,14 +2238,14 @@ class PlaceAlongDialog(QDialog):
         self.lbl_line = QLabel("No line yet. Select the object the line goes over, then Draw line or Wrap round.")
         self.lbl_line.setWordWrap(True)
         v2.addWidget(self.lbl_line)
-        lay.addWidget(box2)
+        self.tabs.addTab(page_with(box2, ""), "Line")
 
         # 3. spacing
         box3 = QGroupBox("3. Spacing")
         f3 = QFormLayout(box3)
         mrow = QHBoxLayout()
         self.rb_count = QRadioButton("How many")
-        self.rb_pitch = QRadioButton("Pitch")
+        self.rb_pitch = QRadioButton("B   Pitch")
         self._mode_group = QButtonGroup(self)
         self._mode_group.addButton(self.rb_count)
         self._mode_group.addButton(self.rb_pitch)
@@ -1927,7 +2273,7 @@ class PlaceAlongDialog(QDialog):
         crow = QHBoxLayout()
         self.cb_corners = QCheckBox("On every corner")
         crow.addWidget(self.cb_corners)
-        crow.addWidget(QLabel("turning more than"))
+        crow.addWidget(QLabel("G   turning more than"))
         self.sp_corner = QDoubleSpinBox()
         self.sp_corner.setRange(5.0, 170.0)
         self.sp_corner.setDecimals(0)
@@ -1938,7 +2284,7 @@ class PlaceAlongDialog(QDialog):
         self.lbl_result = QLabel("-")
         self.lbl_result.setWordWrap(True)
         f3.addRow(self.lbl_result)
-        lay.addWidget(box3)
+        self.tabs.addTab(page_with(box3, ""), "Spacing")
 
         # 4. how it sits
         box4 = QGroupBox("4. How it sits")
@@ -1947,35 +2293,67 @@ class PlaceAlongDialog(QDialog):
         self.sp_turn.setRange(-360.0, 360.0)
         self.sp_turn.setDecimals(1)
         self.sp_turn.setSuffix("°")
-        f4.addRow("Turn:", self.sp_turn)
+        f4.addRow("E   Turn:", self.sp_turn)
         self.cb_nogap = QCheckBox("Sink in until there's no gap under it")
         f4.addRow(self.cb_nogap)
         self.sp_sink = QDoubleSpinBox()
         self.sp_sink.setRange(0.0, 1000.0)
         self.sp_sink.setDecimals(2)
         self.sp_sink.setSuffix(" mm")
-        f4.addRow("Sink in a bit more:", self.sp_sink)
+        f4.addRow("D   Sink in a bit more:", self.sp_sink)
         self.sp_offset = QDoubleSpinBox()
         self.sp_offset.setRange(-100000.0, 100000.0)
         self.sp_offset.setDecimals(1)
         self.sp_offset.setSuffix(" mm")
-        f4.addRow("Off the line:", self.sp_offset)
+        f4.addRow("C   Off the line:", self.sp_offset)
         self.sp_tilt = QDoubleSpinBox()
         self.sp_tilt.setRange(-180.0, 180.0)
         self.sp_tilt.setDecimals(1)
         self.sp_tilt.setSuffix("\u00b0")
-        f4.addRow("Tilt about the line:", self.sp_tilt)
+        f4.addRow("F   Tilt about the line:", self.sp_tilt)
         self.cb_other = QCheckBox("Other side of the line")
         self.cb_stagger = QCheckBox("Every other one on the other side (staggered)")
         f4.addRow(self.cb_other)
         f4.addRow(self.cb_stagger)
         self.cb_flip = QCheckBox("Stand on the back of the surface (inside)")
         f4.addRow(self.cb_flip)
-        lay.addWidget(box4)
+        self.tabs.addTab(page_with(box4, ""), "How it sits")
+        self.tabs.setTabToolTip(0, "What gets placed: a part from the library or one from the model.")
+        self.tabs.setTabToolTip(1, "Where it goes: draw a line, wrap round, your own line or round a face.")
+        self.tabs.setTabToolTip(2, "How many, or how far apart, and parts on your clicks and corners.")
+        self.tabs.setTabToolTip(3, "Turn, sink in, off the line, tilt and staggered rows.")
 
         self.lbl_report = QLabel()
         self.lbl_report.setWordWrap(True)
         lay.addWidget(self.lbl_report)
+        # ---- presets
+        self.user_presets = load_presets()
+        prow_ = QHBoxLayout()
+        prow_.addWidget(QLabel("Preset:"))
+        self.cb_preset = QComboBox()
+        _no_wheel(self.cb_preset)
+        prow_.addWidget(self.cb_preset, 1)
+        b_up = QPushButton("\u25b2")
+        b_up.setToolTip("Moves the preset you have open up the list, so you can put your presets in your own order.")
+        b_dn = QPushButton("\u25bc")
+        b_dn.setToolTip("Moves the preset you have open down the list.")
+        for b_ in (b_up, b_dn):
+            b_.setFixedWidth(28)
+            b_.setAutoDefault(False)
+            prow_.addWidget(b_)
+        b_up.clicked.connect(lambda: self.move_preset(-1))
+        b_dn.clicked.connect(lambda: self.move_preset(1))
+        b_psave, b_psaveas = QPushButton("Save"), QPushButton("Save as...")
+        b_pdel, b_pdir = QPushButton("Delete"), QPushButton("Folder")
+        self.btn_preset_save = b_psave
+        for b_ in (b_psave, b_psaveas, b_pdel, b_pdir):
+            b_.setAutoDefault(False)
+            prow_.addWidget(b_)
+        b_psave.clicked.connect(self.save_preset)
+        b_psaveas.clicked.connect(lambda: self.save_preset_as())
+        b_pdel.clicked.connect(self.delete_preset)
+        b_pdir.clicked.connect(self.open_folder)
+        lay.addLayout(prow_)
         brow = QHBoxLayout()
         self.b_edit = QPushButton("Edit selected row")
         brow.addWidget(self.b_edit)
@@ -1984,6 +2362,26 @@ class PlaceAlongDialog(QDialog):
         self.b_place.setDefault(False)
         self.b_place.setAutoDefault(False)
         brow.addWidget(self.b_place)
+        self.b_info = QPushButton("Info")
+        self.b_info.setCheckable(True)
+        self.b_info.setAutoDefault(False)
+        self.b_info.setToolTip("Shows how to use it.")
+        self.b_info.toggled.connect(self.toggle_info)
+        brow.addWidget(self.b_info)
+        self.cb_lasttab = QCheckBox("Open at the last page used")
+        self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
+        ust = _ui_settings()
+        self.cb_lasttab.setChecked(bool(ust.get('remember_tab', True)))
+        if self.cb_lasttab.isChecked():
+            try:
+                self.tabs.setCurrentIndex(int(ust.get('tab', 0)))
+                self.left.setCurrentIndex(int(ust.get('left_tab', 0)))
+            except Exception:
+                pass
+        self.tabs.currentChanged.connect(lambda i: _ui_settings_save(tab=int(i)))
+        self.left.currentChanged.connect(lambda i: _ui_settings_save(left_tab=int(i)))
+        self.cb_lasttab.toggled.connect(lambda on: _ui_settings_save(remember_tab=bool(on)))
+        brow.addWidget(self.cb_lasttab)
         b_close = QPushButton("Close")
         b_close.clicked.connect(self.close)
         brow.addWidget(b_close)
@@ -1997,7 +2395,16 @@ class PlaceAlongDialog(QDialog):
             pass
 
         # settings as last left
-        s = self.state
+        self.apply_settings(self.state)
+        self.fill_parts(self.state.get('part'))
+        self.rb_lib.setChecked(True)
+        self.refresh_presets(select=ust.get('last_preset'))
+        self.cb_preset.currentIndexChanged.connect(self.apply_preset)
+        self._connect()
+
+    def apply_settings(self, s):
+        """Puts settings (as kept in state, or a preset) into the window."""
+        s = dict(self.state, **s)
         self.cb_smooth.setChecked(s['smooth'])
         self.cb_closed.setChecked(s['closed'])
         self.cb_axis.setCurrentIndex(s['axis'])
@@ -2016,9 +2423,8 @@ class PlaceAlongDialog(QDialog):
         self.sp_tilt.setValue(s.get('tilt', 0.0))
         self.cb_other.setChecked(s.get('other', False))
         self.cb_stagger.setChecked(s.get('stagger', False))
-        self.fill_parts(s.get('part'))
-        self.rb_lib.setChecked(True)
 
+    def _connect(self):
         self.b_use.clicked.connect(self.use_selected)
         self.b_draw.clicked.connect(lambda: self.start("line"))
         self.b_wrap.clicked.connect(lambda: self.start("wrap"))
@@ -2042,6 +2448,149 @@ class PlaceAlongDialog(QDialog):
             w.valueChanged.connect(self.settings_changed)
         self.part_changed()
         self.update_buttons()
+
+    # -------------------------------------------------------------- 4: preview, info, presets
+    def _preview_soon(self):
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._update_preview)
+        except Exception:
+            self._update_preview()
+
+    def _update_preview(self):
+        try:
+            v = dict(self.state)
+            v['closed'] = self.line_closed() if (self.lines or self.chains) else self.cb_closed.isChecked()
+            cap = ""
+            try:
+                cap = self.lbl_result.text().replace("<b>", "").replace("</b>", "")
+                cap = "" if cap.strip() in ("-", "") else "Your line: " + cap
+            except Exception:
+                cap = ""
+            self.preview.show_row(v, cap)
+        except Exception as e:
+            print("%s preview: %s" % (PLUGIN_NAME, e))
+
+    def toggle_info(self, on):
+        self.info_box.setVisible(bool(on))
+        try:
+            self.adjustSize()
+        except Exception:
+            pass
+
+    def preset_values(self):
+        v = dict(self.state)
+        v.update(smooth=self.cb_smooth.isChecked(), closed=self.cb_closed.isChecked(),
+                 axis=self.cb_axis.currentIndex(), inset=self.sp_inset.value())
+        if self.rb_model.isChecked():
+            v.pop('part', None)              # a part from the model can't go in a preset
+        return v
+
+    def preset_order(self):
+        names = list(BUILTIN_PRESETS) + sorted(n for n in self.user_presets if n not in BUILTIN_PRESETS)
+        order = [n for n in _ui_settings().get('preset_order', []) if n in names]
+        return order + [n for n in names if n not in order]
+
+    def move_preset(self, step):
+        name = self.cb_preset.currentData()
+        if not name:
+            return
+        order = self.preset_order()
+        i = order.index(name)
+        j = i + step
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            _ui_settings_save(preset_order=order)
+            self.refresh_presets(select=name)
+
+    def refresh_presets(self, select=None):
+        self.cb_preset.blockSignals(True)
+        self.cb_preset.clear()
+        self.cb_preset.addItem("-- Custom --", None)
+        for name in self.preset_order():
+            self.cb_preset.addItem(name + ("  (built-in)" if name in BUILTIN_PRESETS else ""), name)
+        for i in range(self.cb_preset.count()):
+            if select and self.cb_preset.itemData(i) == select:
+                self.cb_preset.setCurrentIndex(i)
+        self.cb_preset.blockSignals(False)
+
+    def apply_preset(self, *_):
+        name = self.cb_preset.currentData()
+        _ui_settings_save(last_preset=name or None)
+        d = BUILTIN_PRESETS.get(name) if name in BUILTIN_PRESETS else self.user_presets.get(name) if name else None
+        if not d:
+            return
+        self.apply_settings(d)
+        if d.get('part'):
+            self.fill_parts(d['part'])
+            self.rb_lib.setChecked(True)
+            self.part_changed()
+        self.shape_changed()
+        self.settings_changed()
+
+    def save_preset(self):
+        name = self.cb_preset.currentData()
+        if name and name in self.user_presets and name not in BUILTIN_PRESETS:
+            if self.save_preset_as(quiet_name=name):
+                b = self.btn_preset_save
+                try:
+                    from PySide6.QtCore import QTimer
+                    b.setText("Saved")
+                    QTimer.singleShot(1500, lambda: b.setText("Save"))
+                except Exception:
+                    pass
+        else:
+            self.save_preset_as(prefill=(name + " (my copy)") if name else "")
+
+    def save_preset_as(self, prefill="", quiet_name=None):
+        if quiet_name:
+            name, ok = quiet_name, True
+        else:
+            from PySide6.QtWidgets import QLineEdit
+            name, ok = QInputDialog.getText(self, "Save preset", "Preset name:", QLineEdit.Normal, prefill)
+        name = (name or "").strip()
+        if not ok or not name:
+            return False
+        if name in BUILTIN_PRESETS:
+            QMessageBox.warning(self, PLUGIN_NAME, "That name is used by a built-in preset.")
+            return False
+        if not quiet_name and name in self.user_presets and QMessageBox.question(
+                self, PLUGIN_NAME, "Preset '%s' already exists. Overwrite it?" % name) != QMessageBox.Yes:
+            return False
+        try:
+            save_preset_file(name, self.preset_values())
+        except Exception as e:
+            QMessageBox.warning(self, PLUGIN_NAME, "Could not save the preset:\n%s" % e)
+            return False
+        self.user_presets = load_presets()
+        self.refresh_presets(select=name)
+        _ui_settings_save(last_preset=name)
+        return True
+
+    def delete_preset(self):
+        name = self.cb_preset.currentData()
+        if not name or name not in self.user_presets or name in BUILTIN_PRESETS:
+            QMessageBox.information(self, PLUGIN_NAME, "Pick one of your own presets to delete "
+                                    "(built-in presets can't be deleted).")
+            return
+        if QMessageBox.question(self, PLUGIN_NAME, "Delete preset '%s'?" % name) != QMessageBox.Yes:
+            return
+        try:
+            os.remove(os.path.join(PRESET_DIR, _safe_name(name) + ".json"))
+        except Exception as e:
+            QMessageBox.warning(self, PLUGIN_NAME, "Could not delete it:\n%s" % e)
+            return
+        self.user_presets = load_presets()
+        self.refresh_presets()
+
+    def open_folder(self):
+        try:
+            os.makedirs(PRESET_DIR, exist_ok=True)
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(PRESET_DIR))
+        except Exception as e:
+            QMessageBox.information(self, PLUGIN_NAME, "Presets folder:\n%s\n\n(%s)" % (PRESET_DIR, e))
 
     # -------------------------------------------------------------- the part
     def fill_parts(self, want=None):
@@ -2427,6 +2976,7 @@ class PlaceAlongDialog(QDialog):
                  stagger=self.cb_stagger.isChecked(),
                  nogap=self.cb_nogap.isChecked())
         closed = self.line_closed()
+        self._preview_soon()
         self.rb_count.setText("How many in all" if closed else "How many between the ends")
         note = "Round the loop, the first one on the point you clicked." if closed else "Plus one on each end."
         if self.kind in ("edges", "face") and len(self.chains) > 1:
