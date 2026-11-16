@@ -19,7 +19,8 @@
                 height you set, doors up from the bottom of the wall (or a step up off it).
                 Square, segmental-arch or round tops.
   Tape measure  Click the corner or edge of a wall, move along it, type how far and press Enter:
-                the window or door goes in there (a pop-up asks its size, filled in for you).
+                the window or door goes in there (a pop-up asks its size as soon as you click the
+                edge, and the preview shows that shape while you measure).
   Drawn shapes  Draw a shape on a wall with IngeTrazo's rectangle, circle or line tools,
                 select it and it's cut right through the wall - any shape you like.
 
@@ -46,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Openings"
-VERSION = "1.2"
+VERSION = "1.3"
 
 
 def _ed3d_organise(scene, group):
@@ -1409,8 +1410,9 @@ EDDY_TIPS.update({
     'What goes in': "A window or a door - its size comes from the Windows or Doors page (or the pop-up).",
     'Measure to': "What the distance you type is measured to: the near side of the opening (like a real tape "
                   "from the corner to the edge of the window), or its middle.",
-    'Ask for the size each time (pop-up)': "Ticked, a pop-up asks window or door and its size before each cut, "
-                                           "filled in from the Windows and Doors pages - press Enter to cut it. "
+    'Ask for the size each time (pop-up)': "Ticked, a pop-up asks window or door and its size as soon as you click the "
+                                           "edge (filled in from the Windows and Doors pages) and the preview shows "
+                                           "that shape - then measure and press Enter to cut it. "
                                            "Not ticked, it's cut straight away with those sizes.",
     'Distance': "If typing in the model doesn't work for you: after clicking the corner, type the distance here "
                 "and press Enter.",
@@ -1821,10 +1823,10 @@ class OpeningsDialog(QDialog):
         ft = QFormLayout(pt_)
         self.tabs.addTab(pt_, "Tape measure")
         how_t = QLabel("1. Click 'Tape measure' (below).\n2. Click the corner or edge of the wall to measure "
-                       "from - it snaps to the corners.\n3. Move along the wall the way the opening goes, type the "
-                       "distance (mm) and press Enter - or just click.\n4. Say what goes in and its size in the "
-                       "pop-up (filled in from the Windows and Doors pages) and it's cut. Then click the next "
-                       "corner for another, or Esc to stop.")
+                       "from - it snaps to the corners.\n3. The pop-up comes up straight away: say what goes in and "
+                       "its size - the preview then shows that shape.\n4. Move along the wall the way the opening "
+                       "goes, type the distance (mm) and press Enter - or just click - and it's cut. Then click the "
+                       "next corner for another, or Esc to stop.")
         how_t.setWordWrap(True)
         ft.addRow(how_t)
         self.cb_tape_kind = QComboBox()
@@ -2601,6 +2603,14 @@ class TapeState:
                                      "corner or edge.", bad=True)
                 return
             self.p0, self.cands, self.typed = pt, cands, ""
+            v, _p = self.settings()
+            if v.get('tape_ask', True):
+                # ask the size now, so the preview follows what's set in the pop-up
+                if not ask_opening(self.dlg, v.get('tape_kind', 'window')):
+                    self.reset()
+                    self.dlg.show_report("Tape: cancelled - click the corner or edge of a wall to start again.")
+                    return
+            self.dlg.show_report("Tape: now move along the wall, type the distance and press Enter (or click).")
             return
         self.hover = pt
         self.commit()
@@ -2624,12 +2634,7 @@ class TapeState:
         d = self._dist()
         if d is None:
             return
-        v, p = self.settings()
-        if v.get('tape_ask', True):
-            if not ask_opening(self.dlg, v.get('tape_kind', 'window')):
-                self.typed = ""
-                return
-            v, p = self.settings()
+        _v, p = self.settings()          # the size was asked when the edge was clicked
         got = self.opening_at(d, self.hover, p)
         if got is None:
             self.dlg.show_report("That opening can't be made (check its sizes).", bad=True)
