@@ -50,8 +50,21 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
-VERSION = "1.5"
+VERSION = "1.11"
 ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
+
+
+PRINT_PIECE_KEY = "ed3d_print_piece"     # set by 3D Show / Hide: groups with the same name print as one piece
+
+
+def _print_tag(g):
+    """The print piece a group was joined into in Show / Hide's Groups tab ("" if none)."""
+    ext = getattr(g, 'ext', None)
+    if isinstance(ext, dict):
+        t = ext.get(PRINT_PIECE_KEY)
+        if isinstance(t, str) and t.strip():
+            return t.strip()
+    return ""
 
 
 def _one_piece(g):
@@ -551,7 +564,7 @@ def _piece_groups(e, depth):
 
     def walk(g, lvl):
         kids = _kids(g)
-        if (depth and lvl >= depth) or _one_piece(g):
+        if (depth and lvl >= depth) or _one_piece(g) or _print_tag(g):
             out.append((g, subtree(g, [])))
             return
         if faces_of(g):
@@ -579,6 +592,16 @@ def split_parts(entities, depth=0):
                 tris += _tris_of(_items(getattr(getattr(h, 'mesh', None), 'faces', None)), m)
             if not tris:
                 continue
+            tag = _print_tag(g)
+            if tag:
+                # joined in Show / Hide: every group with this name is one piece
+                for i_, (n_, t_) in enumerate(parts):
+                    if n_ == tag:
+                        parts[i_] = (n_, t_ + tris)
+                        break
+                else:
+                    parts.append((tag, tris))
+                continue
             nm = str(getattr(g, 'name', '') or "Part")
             names[nm] = names.get(nm, 0) + 1
             parts.append((nm if names[nm] == 1 else "%s (%d)" % (nm, names[nm]), tris))
@@ -591,15 +614,19 @@ def split_parts(entities, depth=0):
 
 def count_parts(entities, depth=0):
     """How many parts 'Each group as a separate part' would make (cheap: no triangles)."""
-    n, loose = 0, False
+    n, loose, tags = 0, False, set()
     for e in entities:
         if _is_face(e):
             loose = True
             continue
         for g, members in _piece_groups(e, depth):
             if any(_items(getattr(getattr(h, 'mesh', None), 'faces', None)) for h, _m in members):
-                n += 1
-    return n + (1 if loose else 0)
+                tag = _print_tag(g)
+                if tag:
+                    tags.add(tag)
+                else:
+                    n += 1
+    return n + len(tags) + (1 if loose else 0)
 
 
 def _turn_to_down(n):
@@ -1207,6 +1234,7 @@ def piece_leaves(entities, with_tris=True, tops_out=None):
     each part belongs to (-1: loose faces)."""
     out, seen = [], {}
     loose = []
+    tagged = {}                                     # print pieces joined in Show / Hide
     for ei, e in enumerate(entities):
         if _is_face(e):
             loose.append(e)
@@ -1219,6 +1247,20 @@ def piece_leaves(entities, with_tris=True, tops_out=None):
             nm = str(getattr(g, 'name', '') or "Group")
             here = path + [nm]
             faces = _items(getattr(getattr(g, 'mesh', None), 'faces', None))
+            tag = _print_tag(g)
+            if tag:
+                # joined in Show / Hide: one part, the same as every other group joined under this name
+                tris = []
+                for h, m in _placements(g):
+                    fs = _items(getattr(getattr(h, 'mesh', None), 'faces', None))
+                    if fs:
+                        tris += (_tris_of(fs, place.get(id(h), m)) if with_tris else [None])
+                if tris:
+                    if tag in tagged:
+                        tagged[tag][0].extend(tris)
+                    else:
+                        tagged[tag] = (tris, ei)
+                return
             whole = _one_piece(g)                   # everything inside it is one part
             if whole:
                 tris = []
@@ -1251,6 +1293,10 @@ def piece_leaves(entities, with_tris=True, tops_out=None):
                 for c in _kids(g):
                     walk(c, here, lvl + 1)
         walk(e, [], 0)
+    for tag, (tris, ei) in tagged.items():
+        out.append(("Print piece: " + tag, tag, "Joined in Show / Hide", tris))
+        if tops_out is not None:
+            tops_out.append(ei)
     if loose:
         tris = _tris_of(loose) if with_tris else [None]
         if tris:
@@ -2981,15 +3027,16 @@ class PiecesDialog(QDialog):
         self.targets = list(targets or []) or [("", "This printer")]
         # parts you've taken out of the print (still in your model): their keys
         self.skip = set(k for k in (plan or {}).get('skip', []) if k in known)
+        # parts already sent to the printer: left out of later prints until you print them again
+        self.printed = set(k for k in (plan or {}).get('printed', []) if k in known)
         self.by_printer = bool(self.slicer_of)
         self._state = {}
         self._undo, self._redo, self._restoring = [], [], False
         lay = QVBoxLayout(self)
-        tip = QLabel("Pick parts in the list or click them in the picture (Ctrl+click to pick more, Shift+click to un-pick), then "
-                     "put them in a piece. Each piece prints as one and has its own colour; grey parts print "
-                     "on their own.")
-        tip.setWordWrap(True)
-        lay.addWidget(tip)
+        self._lay = lay
+        # the four steps along the top (filled in at the end, once every button is made)
+        self.step_bar = QHBoxLayout()
+        lay.addLayout(self.step_bar)
         # several objects selected: work on them one at a time
         self.objects = list(objects or [])          # [(object number, name, [part numbers])]
         self.cur_obj, self.done_objs = None, set()
@@ -3093,7 +3140,10 @@ class PiecesDialog(QDialog):
         b_holes.clicked.connect(self.close_all_open)
         for w in (b_new, b_add, self.cb_piece, b_out, b_rest, b_holes):
             brow.addWidget(w)
-        lay.addLayout(brow)
+        self.more_box = QWidget()
+        more_lay = QVBoxLayout(self.more_box)
+        more_lay.setContentsMargins(0, 0, 0, 0)
+        more_lay.addLayout(brow)
         brow2 = flow_layout()
         b_kind = QPushButton("A piece for each group")
         b_kind.setToolTip("Quick start: one piece per group the parts are in - all the columns together, all "
@@ -3118,6 +3168,14 @@ class PiecesDialog(QDialog):
         b_showall = QPushButton("Show all")
         b_showall.setToolTip("Shows every part and piece again.")
         b_showall.clicked.connect(self.show_all)
+        b_only = QPushButton("\u2714 Print only picked")
+        b_only.setToolTip("Prints just the parts you've picked - or the piece picked in the pieces list - and "
+                          "nothing else (the rest stay in your model, marked 'not printed'). 'Print all again' "
+                          "puts the rest back.")
+        b_only.clicked.connect(self.print_only_picked)
+        b_all = QPushButton("Print all again")
+        b_all.setToolTip("Every part prints again (undoes 'Print only picked' and Delete).")
+        b_all.clicked.connect(self.print_all_again)
         b_ren = QPushButton("Rename piece...")
         b_ren.setToolTip("Gives the piece chosen above a name of your own (it's the name the slicer shows).")
         self.lbl = QLabel()
@@ -3182,7 +3240,7 @@ class PiecesDialog(QDialog):
                         "on the 3D print page.")
             na.setWordWrap(True)
             pbl.addWidget(na)
-        lay.addWidget(pbox)
+        self.pbox = pbox
         self.send_after = False
         b_ok = QPushButton("Done")
         b_ok.setDefault(True)
@@ -3207,16 +3265,11 @@ class PiecesDialog(QDialog):
                 sc.activated.connect(fn)
         except Exception:
             pass
-        for w in (self.b_undo, self.b_redo, b_kind, b_grp, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall):
+        for w in (b_kind, b_grp, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall, b_only, b_all):
             brow2.addWidget(w)
-        lay.addLayout(brow2)
+        more_lay.addLayout(brow2)
         self.lbl.setWordWrap(True)
-        lay.addWidget(self.lbl)
-        okrow = QHBoxLayout()
-        okrow.addStretch(1)
-        for w in (b_ok, b_go, b_cancel):
-            okrow.addWidget(w)
-        lay.addLayout(okrow)
+        self._build_steps(b_ok, b_go, b_cancel)
         b_new.clicked.connect(self.new_piece)
         b_add.clicked.connect(self.add_to)
         b_out.clicked.connect(self.take_out)
@@ -3257,9 +3310,303 @@ class PiecesDialog(QDialog):
             self.fill_objects()
             self.cb_obj.currentIndexChanged.connect(self.object_picked)
             self.cb_obj.setCurrentIndex(0)                # start with all of them (pick one to work on it alone)
+        _refresh0 = self.refresh
+
+        def _refresh(*a, **k):
+            try:
+                self._apply_mode()
+            except Exception as e:
+                print("%s: %s" % (PLUGIN_NAME, e))
+            r_ = _refresh0(*a, **k)
+            try:
+                self.update_steps()
+            except Exception as e:
+                print("%s: %s" % (PLUGIN_NAME, e))
+            return r_
+        self.refresh = _refresh
         self.refresh()
 
-    # ---- the plan
+    # ---- the steps: 1 Choose & join, 2 Printer, 3 Send
+    STEPS = ("1  Choose && join", "2  Printer", "3  Send")
+    MODES = (('joined', "Just my joined pieces", "Only the pieces you've joined go to the printer; every part on "
+              "its own stays at home (still in your model). Keeps up as you join more."),
+             ('all', "Everything", "Every part goes: your joined pieces, and every other part on its own."),
+             ('picked', "Only what I've picked", "Pick parts in the list or picture (or a piece in the pieces "
+              "list) first, then click this: just those go."))
+
+    def _build_steps(self, b_ok, b_go, b_cancel):
+        from PySide6.QtWidgets import QStackedWidget, QButtonGroup, QFrame
+
+        def big(text, tip, fn, col=(46, 125, 80)):
+            b_ = QPushButton(text)
+            b_.setStyleSheet("QPushButton{background:rgb(%d,%d,%d);color:white;font-weight:bold;font-size:11pt;"
+                             "padding:8px 16px;border-radius:5px}QPushButton:pressed{background:rgb(%d,%d,%d)}"
+                             % (col + tuple(int(c * 0.75) for c in col)))
+            b_.setToolTip(tip)
+            b_.clicked.connect(lambda *_a: fn())
+            return b_
+
+        def plain(text, tip, fn):
+            b_ = QPushButton(text)
+            b_.setToolTip(tip)
+            b_.clicked.connect(lambda *_a: fn())
+            return b_
+
+        def head(text):
+            l_ = QLabel(text)
+            l_.setWordWrap(True)
+            return l_
+        if not hasattr(self, 'send_mode'):
+            self.send_mode = 'picked' if self.skip else 'all'
+        # the step buttons along the top
+        grp = QButtonGroup(self)
+        grp.setExclusive(True)
+        self.step_btns = []
+        for i, t in enumerate(self.STEPS):
+            if i:
+                arr = QLabel("▶")
+                arr.setStyleSheet("color:#888")
+                self.step_bar.addWidget(arr)
+            b_ = QPushButton(t)
+            b_.setCheckable(True)
+            b_.setStyleSheet("QPushButton{padding:6px 14px;font-size:10pt}QPushButton:checked{font-weight:bold;"
+                             "background:#cfe3f7;border:2px solid #5b8fc7;border-radius:4px}")
+            try:
+                f_ = b_.font()
+                f_.setBold(True)
+                f_.setPointSizeF(max(f_.pointSizeF(), 10.0))
+                from PySide6.QtGui import QFontMetrics
+                b_.setMinimumWidth(QFontMetrics(f_).horizontalAdvance(t.replace("&&", "&")) + 40)
+            except Exception:
+                pass
+            grp.addButton(b_, i)
+            self.step_bar.addWidget(b_)
+            self.step_btns.append(b_)
+        self.step_bar.addStretch(1)
+        self.b_undo.setMaximumWidth(70)
+        self.b_redo.setMaximumWidth(70)
+        self.step_bar.addWidget(self.b_undo)
+        self.step_bar.addWidget(self.b_redo)
+        grp.idClicked.connect(self.go_step)
+        self.step_stack = QStackedWidget()
+        try:
+            self.step_stack.setFrameShape(getattr(QFrame, 'StyledPanel', None) or QFrame.Shape.StyledPanel)
+        except Exception:
+            pass
+        self.step_text = []
+        # 1 Choose & join
+        w1 = QWidget()
+        l1 = QVBoxLayout(w1)
+        l1.addWidget(head("<b>Join the parts that print together</b> - pick them in the list or the picture "
+                          "(Ctrl+click for more, Shift+click a range), then <b>Join into ONE piece</b>. Each piece "
+                          "prints as one, in its own colour. With nothing picked, it joins everything that's going."))
+        r1 = QHBoxLayout()
+        r1.addWidget(big("➕ Join into ONE piece", "The picked parts (or, with nothing picked, everything "
+                         "that's going) become one piece that prints as one.", self.join_one))
+        r1.addWidget(plain("Each on its own", "The picked parts (or, with nothing picked, all of them) print "
+                           "on their own again.", self.each_own))
+        r1.addWidget(plain("Pick whole group", "Picks every part in the same group as the parts you've picked.",
+                           self.pick_whole_group))
+        r1.addWidget(plain("A piece for each group", "One piece for each group the parts are in.", self.by_kind))
+        r1.addWidget(plain("Rename piece...", "A name of your own for the piece picked in the pieces list (the "
+                           "name the slicer shows).", self.rename))
+        r1.addStretch(1)
+        l1.addLayout(r1)
+        r1b = QHBoxLayout()
+        r1b.addWidget(QLabel("<b>What goes to the printer:</b>"))
+        self.mode_btns = {}
+        mgrp = QButtonGroup(self)
+        mgrp.setExclusive(True)
+        for key_, lab_, tip_ in self.MODES:
+            rb = QRadioButton(lab_)
+            rb.setToolTip(tip_)
+            rb.clicked.connect(lambda _c=False, k_=key_: self.set_mode(k_))
+            mgrp.addButton(rb)
+            r1b.addWidget(rb)
+            self.mode_btns[key_] = rb
+        self.b_unprint = plain("Print the printed ones again", "Parts you've marked as printed are left out of "
+                               "later prints - this puts them all back.", self.unmark_printed)
+        r1b.addWidget(self.b_unprint)
+        r1b.addStretch(1)
+        l1.addLayout(r1b)
+        self.step_text.append(head(""))
+        l1.addWidget(self.step_text[0])
+        # 2 Printer
+        w2 = QWidget()
+        l2 = QVBoxLayout(w2)
+        l2.addWidget(self.pbox)
+        self.step_text.append(head(""))
+        l2.addWidget(self.step_text[1])
+        # 3 Send
+        w3 = QWidget()
+        l3 = QVBoxLayout(w3)
+        self.step_text.append(head(""))
+        l3.addWidget(self.step_text[2])
+        r3 = QHBoxLayout()
+        self.b_only_joined4 = big("Just my joined pieces", "Leaves out every part on its own, so only the pieces "
+                                  "you joined go to the printer.", lambda: self.set_mode('joined'), col=(40, 110, 160))
+        r3.addWidget(self.b_only_joined4)
+        b_go.setText("➤ Send to the printer")
+        b_go.setStyleSheet("QPushButton{background:rgb(120,60,160);color:white;font-weight:bold;font-size:11pt;"
+                           "padding:8px 18px;border-radius:5px}")
+        b_ok.setText("Done (keep, don't send yet)")
+        r3.addWidget(b_go)
+        self.cb_mark = QCheckBox("Mark as printed when sent")
+        self.cb_mark.setChecked(True)
+        self.cb_mark.setToolTip("Ticked: what you send is marked 'printed', so next time it's left out "
+                                "automatically - you just carry on with the rest.")
+        r3.addWidget(self.cb_mark)
+        r3.addWidget(plain("Mark these as printed", "Marks everything that's going now as printed (without "
+                           "sending) - for things you printed another way.", self.mark_printed))
+        r3.addWidget(b_ok)
+        r3.addWidget(plain("Close holes in open pieces", "Any piece marked 'open' (it won't print as a solid) "
+                           "gets its holes closed when it's printed. Your model isn't changed.", self.close_all_open))
+        r3.addStretch(1)
+        l3.addLayout(r3)
+        for w_ in (w1, w2, w3):
+            self.step_stack.addWidget(w_)
+        self._lay.addWidget(self.step_stack)
+        self._lay.addWidget(self.lbl)
+        nav = QHBoxLayout()
+        self.b_more = QPushButton("More tools ▾")
+        self.b_more.setCheckable(True)
+        self.b_more.setToolTip("Every other tool: add to a piece, take out, hide, turn the picture, look from below...")
+        self.b_more.toggled.connect(self._show_more)
+        nav.addWidget(self.b_more)
+        nav.addStretch(1)
+        self.b_back = QPushButton("◀ Back")
+        self.b_back.clicked.connect(lambda: self.go_step(self.step_stack.currentIndex() - 1))
+        self.b_next = QPushButton("Next ▶")
+        self.b_next.setStyleSheet("QPushButton{font-weight:bold;padding:5px 16px}")
+        self.b_next.clicked.connect(lambda: self.go_step(self.step_stack.currentIndex() + 1))
+        nav.addWidget(self.b_back)
+        nav.addWidget(self.b_next)
+        nav.addWidget(b_cancel)
+        self._lay.addLayout(nav)
+        self.more_box.setVisible(False)
+        self._lay.addWidget(self.more_box)
+        self.go_step(0)
+
+    def _show_more(self, on):
+        self.more_box.setVisible(bool(on))
+        self.b_more.setText("More tools ▴" if on else "More tools ▾")
+
+    def go_step(self, i):
+        i = max(0, min(len(self.STEPS) - 1, int(i)))
+        self.step_stack.setCurrentIndex(i)
+        for k, b_ in enumerate(self.step_btns):
+            b_.setChecked(k == i)
+        self.b_back.setEnabled(i > 0)
+        self.b_next.setVisible(i < len(self.STEPS) - 1)
+        try:
+            self.update_steps()
+        except Exception:
+            pass
+
+    def _apply_mode(self):
+        """'Just my joined pieces' keeps up as you join: every part not in a piece stays at home."""
+        done = set(getattr(self, 'printed', ()))
+        if getattr(self, 'send_mode', None) == 'joined':
+            self.skip = set(self.leaves[i][0] for i in range(len(self.leaves))
+                            if self.keys.get(self.leaves[i][0]) not in self.pieces) | done
+        elif getattr(self, 'send_mode', None) == 'all':
+            self.skip = done
+
+    def set_mode(self, mode):
+        if mode == 'picked':
+            self.print_only_picked()        # sets the mode if anything's picked
+            if getattr(self, 'send_mode', None) != 'picked':
+                self.update_steps()          # nothing picked: the buttons go back to how they were
+            return
+        if mode == 'joined' and not any(self.keys.get(k) in self.pieces for k, _n, _kd, _t in self.leaves):
+            self.lbl.setText("No pieces joined yet - pick some parts and click 'Join into ONE piece' first.")
+            self.update_steps()
+            return
+        self.send_mode = mode
+        self.table.clearSelection()
+        self.refresh()
+
+    def print_only_joined(self):
+        self.set_mode('joined')
+
+    def _printed_rows(self):
+        return [i for i in range(len(self.leaves)) if self.leaves[i][0] not in self.skip]
+
+    def join_one(self):
+        rows = self.picked_rows() or self._printed_rows()
+        if not rows:
+            self.lbl.setText("Nothing to join - pick some parts first.")
+            return
+        name = self.name_new_piece(rows)
+        self.pieces.append(name)
+        for r in rows:
+            self.keys[self.leaves[r][0]] = name
+            if getattr(self, 'send_mode', None) == 'picked':
+                self.skip.discard(self.leaves[r][0])     # what you join, you mean to print
+        self.table.clearSelection()
+        self.refresh(name)
+        self.lbl.setText("✔ Joined %d part%s into one piece: '%s'. It prints as one."
+                         % (len(rows), "" if len(rows) == 1 else "s", name))
+
+    def each_own(self):
+        rows = self.picked_rows() or list(range(len(self.leaves)))
+        for r in rows:
+            self.keys.pop(self.leaves[r][0], None)
+        self.table.clearSelection()
+        self.refresh()
+        self.lbl.setText("%d part%s will print on %s own." % (len(rows), "" if len(rows) == 1 else "s",
+                                                           "its" if len(rows) == 1 else "their"))
+
+    def update_steps(self):
+        if not hasattr(self, 'step_text'):
+            return
+        rows = self._printed_rows()
+        n_all, n_pr = len(self.leaves), len(rows)
+        out_ = n_all - n_pr
+        mem, loose = {}, 0
+        for r in rows:
+            p_ = self.keys.get(self.leaves[r][0])
+            if p_ in self.pieces:
+                mem[p_] = mem.get(p_, 0) + 1
+            else:
+                loose += 1
+        bits = ["'%s' (%d part%s)" % (p_, c, "" if c == 1 else "s") for p_, c in mem.items()]
+        if loose:
+            bits.append("%d part%s on %s own" % (loose, "" if loose == 1 else "s", "its" if loose == 1 else "their"))
+        n_files = len(mem) + loose
+        for key_, rb in getattr(self, 'mode_btns', {}).items():
+            rb.blockSignals(True)
+            rb.setChecked(key_ == getattr(self, 'send_mode', 'all'))
+            rb.blockSignals(False)
+        n_done = len(getattr(self, 'printed', ()))
+        stay = (", %d part%s staying at home" % (out_, "" if out_ == 1 else "s")) if out_ else ""
+        if n_done:
+            stay += " (%d printed already)" % n_done
+        try:
+            self.b_unprint.setVisible(bool(n_done))
+        except Exception:
+            pass
+        self.step_text[0].setText("<b>%d piece%s will be sent%s:</b> %s" % (
+            n_files, "" if n_files == 1 else "s", stay, ", ".join(bits) or "nothing"))
+        try:
+            ps = self.printer_summary()
+        except Exception:
+            ps = ""
+        self.step_text[1].setText("Pick parts (or a piece in the pieces list), then click the printer they print "
+                                  "on. Anything without a printer prints on the first one.   %s" % ps)
+        warn = ""
+        if loose and mem:
+            warn = ("<br><span style='color:#b03a00'><b>The %d part%s on %s own will go to the printer too.</b> "
+                    "To send just your joined pieces, click <b>Just my joined pieces</b>.</span>"
+                    % (loose, "" if loose == 1 else "s", "its" if loose == 1 else "their"))
+        try:
+            self.b_only_joined4.setVisible(bool(loose and mem))
+        except Exception:
+            pass
+        self.step_text[2].setText("<b>Ready to send %d piece%s:</b> %s%s.%s"
+                                  % (n_files, "" if n_files == 1 else "s", ", ".join(bits) or "nothing",
+                                     ("   " + ps) if ps else "", warn))
+
     def colour_of(self, i):
         if self.leaves[i][0] in getattr(self, 'skip', ()):
             return (95, 95, 95)                  # left out of the print: dark grey
@@ -3445,8 +3792,12 @@ class PiecesDialog(QDialog):
 
     def rename(self, *_):
         from PySide6.QtWidgets import QInputDialog
-        old = self.cb_piece.currentData()
+        sel_ = [n_ for n_ in self.selected_pieces() if n_]
+        old = sel_[0] if sel_ else self.cb_piece.currentData()
+        if not old and len(self.pieces) == 1:
+            old = self.pieces[0]                   # only one piece: that's the one
         if not old:
+            self.lbl.setText("Click the piece to rename in the pieces list first.")
             return
         new, ok = QInputDialog.getText(self, PLUGIN_NAME, "A name for %s:" % old, text=old)
         new = str(new).strip() if ok else ""
@@ -3482,7 +3833,7 @@ class PiecesDialog(QDialog):
             got = self.slicer_of.get(p if p in self.pieces else "", "")
             on = ("\u2714 " + self.slicer_name(got)) if got else ""
             if key in self.skip:
-                on = "\u2716 not printed"
+                on = "\u2714 printed already" if key in getattr(self, 'printed', ()) else "\u2716 not printed"
             for c, txt in enumerate((name, kind, p or "(on its own)", on)):
                 it = QTableWidgetItem(("■ " + txt) if (c == 2 and p) or (c == 3 and txt) else txt)
                 if c == 0:
@@ -3800,7 +4151,8 @@ class PiecesDialog(QDialog):
 
     def plan(self):
         return {'pieces': list(self.pieces), 'keys': dict(self.keys), 'close': sorted(self.close),
-                'printer': dict(self.slicer_of), 'skip': sorted(self.skip)}
+                'printer': dict(self.slicer_of), 'skip': sorted(self.skip),
+                'printed': sorted(getattr(self, 'printed', set()))}
 
     # ---- undo and redo (Ctrl+Z, Ctrl+Y)
     def snapshot(self):
@@ -3829,6 +4181,8 @@ class PiecesDialog(QDialog):
     def restore(self, snap):
         pcs, keys, close, sl, hp, hparts, skip = snap
         self.pieces, self.keys, self.close, self.skip = list(pcs), dict(keys), set(close), set(skip)
+        if getattr(self, 'send_mode', None) != 'joined' or not self.skip:
+            self.send_mode = 'picked' if self.skip else 'all'
         self.slicer_of, self.hidden_pieces, self.hidden_parts = dict(sl), set(hp), set(hparts)
         self._restoring = True
         try:
@@ -4171,12 +4525,45 @@ class PiecesDialog(QDialog):
             self.skip |= set(keys)
         else:
             self.skip -= set(keys)
+        self.send_mode = 'picked' if self.skip else 'all'     # your own choice of what goes
         self.table.clearSelection()
         self.refresh()
         n = len(keys)
         self.lbl.setText(("\u2716 %d part%s won't be printed (still in your model) - right-click > 'Print picked "
                           "again', or Ctrl+Z, to put %s back." % (n, "" if n == 1 else "s", "it" if n == 1 else "them"))
                          if out else "%d part%s will be printed again." % (n, "" if n == 1 else "s"))
+
+    def print_only_picked(self, *_):
+        """Just the picked parts (or the parts of the pieces picked in the pieces list) print."""
+        keep = {self.leaves[r][0] for r in self.picked_rows()}
+        if not keep:
+            names = self.selected_pieces()
+            keep = {self.leaves[i][0] for i in range(len(self.leaves)) if self.piece_of(i) in names}
+        keep.discard("")
+        keep.discard(None)
+        if not keep:
+            self.lbl.setText("Pick what you want to print first: click your piece in the pieces list, or "
+                             "parts in the list or picture - then 'Print only picked'.")
+            return
+        every = [self.leaves[i][0] for i in range(len(self.leaves)) if self.leaves[i][0]]
+        self.skip = set(k for k in every if k not in keep)
+        self.send_mode = 'picked'
+        self.table.clearSelection()
+        self.refresh()
+        self.lbl.setText("\u2714 Only %d part%s will print - the other %d stay in your model, marked 'not printed'. "
+                         "'Print all again' (or Ctrl+Z) puts them back. Now press Done."
+                         % (len(keep), "" if len(keep) == 1 else "s", len(self.skip)))
+
+    def print_all_again(self, *_):
+        self.send_mode = 'all'
+        if not self.skip:
+            self.refresh()
+            self.lbl.setText("Everything prints.")
+            return
+        n = len(self.skip)
+        self.skip = set()
+        self.refresh()
+        self.lbl.setText("All %d left-out part%s will print again." % (n, "" if n == 1 else "s"))
 
     def delete_key(self, *_):
         """The Delete key: the picked parts (or pieces picked in the pieces list) aren't printed."""
@@ -4189,8 +4576,32 @@ class PiecesDialog(QDialog):
             self.leave_out([self.leaves[i][0] for i in range(len(self.leaves)) if self.piece_of(i) in names], True)
 
     def use_and_send(self, *_):
+        if getattr(self, 'cb_mark', None) is not None and self.cb_mark.isChecked():
+            self.mark_printed(quiet=True)
         self.send_after = True
         self.accept()
+
+    def mark_printed(self, quiet=False):
+        """Everything that's going to the printer now is marked 'printed': later prints leave it out."""
+        going = [self.leaves[i][0] for i in range(len(self.leaves)) if self.leaves[i][0] not in self.skip]
+        if not going:
+            if not quiet:
+                self.lbl.setText("Nothing's going to the printer, so nothing to mark.")
+            return
+        self.printed |= set(going)
+        self.refresh()
+        if not quiet:
+            self.lbl.setText("\u2714 %d part%s marked as printed - they're left out of later prints. 'Print the "
+                             "printed ones again' (step 1) brings them back." % (len(going), "" if len(going) == 1 else "s"))
+
+    def unmark_printed(self):
+        n = len(self.printed)
+        self.printed = set()
+        if getattr(self, 'send_mode', None) == 'picked':
+            self.skip = set()
+            self.send_mode = 'all'
+        self.refresh()
+        self.lbl.setText("%d printed part%s will print again." % (n, "" if n == 1 else "s"))
 
     def use_and_scale_next(self, *_):
         if len(self.objects) < 2 or getattr(self, 'on_scale_next', None) is None:

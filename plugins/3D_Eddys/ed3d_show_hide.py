@@ -12,8 +12,11 @@
 
 """
 3D Show / Hide - one small window, with a tab for each kind of thing you want out of the way
-while you work: the floors and plates of a Floor Plan building, and the roof, boards and loose
-trusses over a Subframe. Ticked = shown, untick to hide. Each click is one Ctrl+Z step, using
+while you work, in build order: the floors, plates and roof of a Floor Plan building (step 1),
+and the boards, roof panels and loose trusses of a Subframe (step 3). The last tab, 'All groups',
+lists every main group in the model (and the groups one level inside them): tick to show, and
+tick 'Print' and click 'Select to print' to select them in the model, so 3D Scale Studio
+(with 'Follow selection' ticked) takes just those groups. Ticked = shown, untick to hide. Each click is one Ctrl+Z step, using
 IngeTrazo's own Hide, so Edit > Unhide brings things back too.
 
 It's the window that Floor Plan's 'Show floors...' and Subframe's 'Show / hide...' buttons open
@@ -31,10 +34,11 @@ import json
 from tools.base import Tool
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-                               QCheckBox, QPushButton, QTabWidget, QMessageBox)
+                               QCheckBox, QPushButton, QTabWidget, QMessageBox, QTreeWidget,
+                               QTreeWidgetItem, QHeaderView)
 
 PLUGIN_NAME = "3D Show / Hide"
-VERSION = "1"             # shown in the window title, so you can tell which file is loaded
+VERSION = "2.15"             # shown in the window title, so you can tell which file is loaded
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_show_hide.json")
 
 
@@ -68,6 +72,32 @@ def _save(**kw):
         pass
 
 
+PRINT_PIECE_KEY = "ed3d_print_piece"     # read by 3D Scale Studio: groups with the same name print as one
+
+
+def _print_tag(g):
+    ext = getattr(g, 'ext', None)
+    if isinstance(ext, dict):
+        t = ext.get(PRINT_PIECE_KEY)
+        if isinstance(t, str):
+            return t.strip()
+    return ""
+
+
+def _set_print_tag(g, name):
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        try:
+            g.ext = {}
+            ext = g.ext
+        except Exception:
+            return
+    if name:
+        ext[PRINT_PIECE_KEY] = name
+    else:
+        ext.pop(PRINT_PIECE_KEY, None)
+
+
 def plugin_module(stem):
     """Another of the 3D plugins, as it's loaded (by the 3D_Eddys folder or on its own), or None."""
     for name, mod in list(sys.modules.items()):
@@ -88,8 +118,19 @@ def hide_things(viewport, ents, hidden, is_hidden=None):
         from core.history import HideCommand
         viewport.history.execute(HideCommand(ents, bool(hidden)))
     except Exception as e:
-        QMessageBox.warning(None, PLUGIN_NAME, "Couldn't %s them:\n%s" % ("hide" if hidden else "show", e))
-        return
+        print("%s: Hide didn't take (%s) - doing it by hand" % (PLUGIN_NAME, e))
+    # anything the Hide didn't reach (a group inside another, say): done by hand
+    for e in ents:
+        if is_hidden(e) != bool(hidden):
+            try:
+                e.hidden = bool(hidden)
+            except Exception:
+                pass
+    try:
+        sc = viewport.scene
+        sc.version += 1
+    except Exception:
+        pass
     try:
         viewport.notify_scene_changed()
     except Exception:
@@ -102,7 +143,7 @@ def hide_things(viewport, ents, hidden, is_hidden=None):
 class FloorsPage(QWidget):
     """Floor Plan: a tick for each storey's walls and one for its floor; the plates on their own."""
     key = 'floors'
-    title = "Floors"
+    title = "1 Floors"
     plugin = "ed3d_floor_plan"
 
     def __init__(self, win):
@@ -121,7 +162,7 @@ class FloorsPage(QWidget):
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setVerticalSpacing(1)
         lay.addWidget(self.grid_w)
-        b_fl = QPushButton("Hide floors && plates")
+        b_fl = QPushButton("Hide floors")
         b_fl.setToolTip("Hides every floor slab, floor panel and plate but keeps all the walls - the "
                         "inside walls too - so you can see every room from above.")
         b_fl.clicked.connect(self.hide_floors)
@@ -214,7 +255,7 @@ class RoofPage(QWidget):
     """Subframe: the roof, the fascia / barge / soffit boards and the loose trusses, so you can see
     the frame inside. The wall frames themselves are never touched."""
     key = 'roof'
-    title = "Roof && frame"
+    title = "3 Frame"
     plugin = "ed3d_subframe"
 
     def __init__(self, win):
@@ -244,6 +285,11 @@ class RoofPage(QWidget):
         tips = getattr(m, 'SHOW_HIDE_TIPS', {})
         for k, lab, _s in m.SHOW_HIDE:
             cb = QCheckBox(lab)
+            try:
+                from PySide6.QtWidgets import QSizePolicy
+                cb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)    # lets the window go narrow
+            except Exception:
+                pass
             cb.setToolTip(tips.get(k, ""))
             cb.clicked.connect(lambda _on=False, k=k: self.flip(k))
             self.box.addWidget(cb)
@@ -288,8 +334,492 @@ class RoofPage(QWidget):
         hide_things(self.win.viewport, [g for gs in m.show_hide_groups(sc).values() for g in gs], False)
 
 
-# the tabs, in order - add new pages here
-PAGES = [FloorsPage, RoofPage]
+class GroupsPage(QWidget):
+    """Every main group in the model, and the groups one level inside each: tick to show or
+    hide it; tick 'Print' and click 'Select to print' to select those groups in the model,
+    so Scale Studio (with 'Follow selection' ticked) takes just them - a whole storey, the
+    Subframe, the boards, the gutters... - without hunting through IngeTrazo's small group list."""
+    key = 'groups'
+    title = "Groups"
+    plugin = None
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self._sig = None
+        self._picked = set()          # ids of the groups ticked to print
+        self._items = {}              # id -> (group, tree item)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(3)
+        self.lbl = QLabel("Left tick: shown or hidden.  'Pick' tick: what the buttons work on.")
+        self.lbl.setToolTip("Tick 'Pick' on what you want to print, then 'Select to print': those groups are "
+                            "selected in the model, so Scale Studio (with 'Follow selection' ticked) has just them. "
+                            "Double-click a group to select just that one.")
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Shown  (untick to hide)", "Pick", "Prints as"])
+        try:
+            hi = self.tree.headerItem()
+            hi.setToolTip(0, "The tick by each name shows or hides that group in the model - it's not for picking. "
+                             "Untick to hide it; tick to show it again.")
+            hi.setToolTip(1, "Tick 'Pick' on the groups you want a button below to work on (join, separate, "
+                             "select to print...).")
+        except Exception:
+            pass
+        self.tree.setIndentation(14)
+        try:
+            from PySide6.QtWidgets import QAbstractItemView
+            try:
+                self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            except Exception:
+                self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        except Exception:
+            pass
+        try:
+            # drag the lines between the column headings to make any column wider or narrower
+            hd = self.tree.header()
+            for c_ in range(3):
+                hd.setSectionResizeMode(c_, QHeaderView.Interactive)
+            hd.setMinimumSectionSize(30)
+            hd.setStretchLastSection(True)
+            w_ = (_load().get('group_cols') or [170, 40])
+            self.tree.setColumnWidth(0, int(w_[0]))
+            self.tree.setColumnWidth(1, int(w_[1]))
+            hd.sectionResized.connect(lambda *_a: _save(group_cols=[self.tree.columnWidth(0),
+                                                                     self.tree.columnWidth(1)]))
+        except Exception:
+            pass
+        self.tree.setMinimumHeight(60)
+        self.tree.setMinimumWidth(80)
+        self.tree.itemChanged.connect(self._item_changed)
+        self.tree.itemDoubleClicked.connect(self._double)
+        self.tree.itemClicked.connect(self._clicked)
+        lay.addWidget(self.tree, 1)
+        row = QGridLayout()
+        row.setSpacing(2)
+        b_sel = QPushButton("Select to print")
+        b_sel.setToolTip("Selects every group ticked 'Pick' in the model (and nothing else), so Scale "
+                         "Studio - with 'Follow selection' ticked - sizes and prints just those.")
+        b_sel.clicked.connect(self.select_picked)
+        b_clr = QPushButton("Clear all Pick ticks")
+        b_clr.setToolTip("Unticks every 'Pick' box.")
+        b_clr.clicked.connect(self.clear_picks)
+        b_only = QPushButton("Show only these")
+        b_only.setToolTip("Hides every main group that has nothing ticked 'Pick' in it, so you see just "
+                          "what you're going to print. 'Show everything' brings the rest back.")
+        b_only.clicked.connect(self.show_only_picked)
+        row.addWidget(b_sel, 0, 0, 1, 2)
+        row.addWidget(b_clr, 1, 0)
+        row.addWidget(b_only, 1, 1)
+        b_join = QPushButton("Join as one print piece...")
+        b_join.setToolTip("Click the groups that print together (Ctrl+click for more - say a wall's ground "
+                          "and first floor), then this: give the piece a name, and Scale Studio prints them as "
+                          "one piece - no joining in 'Plan the pieces'. Saved with your model.")
+        b_join.clicked.connect(lambda *_a: self.join_piece(hide=False))
+        b_sep = QPushButton("Separate")
+        b_sep.setToolTip("The groups you've clicked print on their own again (their 'Prints as' is cleared).")
+        b_sep.clicked.connect(self.separate_piece)
+        b_jh = QPushButton("Join && hide...")
+        b_jh.setToolTip("Joins the clicked groups into one print piece (as 'Join as one print piece') and hides "
+                        "them, so what's left is easier to see and pick. Tick them to show them again.")
+        b_jh.clicked.connect(lambda *_a: self.join_piece(hide=True))
+        row.addWidget(b_join, 2, 0)
+        row.addWidget(b_jh, 2, 1)
+        row.addWidget(b_sep, 3, 0, 1, 2)
+        lay.addLayout(row)
+        self.lbl_n = QLabel()                 # how many are ticked 'Pick' (kept up to date)
+        lay.addWidget(self.lbl_n)
+        self.lbl2 = QLabel()                  # what you just did (stays until you do something else)
+        self.lbl2.setWordWrap(True)
+        lay.addWidget(self.lbl2)
+
+    # ---- the model's groups
+    def _tops(self):
+        sc = self.win.scene()
+        return [g for g in _items(getattr(sc, 'groups', None)) if g is not None] if sc is not None else []
+
+    @staticmethod
+    def _kids(g):
+        return [c for c in _items(getattr(g, 'children', None))
+                if c is not None and (getattr(c, 'children', None) is not None or getattr(c, 'mesh', None) is not None)]
+
+    @staticmethod
+    def _name(g):
+        return str(getattr(g, 'name', '') or 'Group')
+
+    def refresh(self):
+        tops = self._tops()
+        rows = self._rows(tops)
+        sig = tuple(path for path, _g, _par in rows)
+        if sig != self._sig:
+            self._sig = sig
+            self._rebuild(rows)
+        else:
+            # the same groups: keep the list (and what's clicked and opened), just catch up with them
+            for path, g, _par in rows:
+                if path in self._items:
+                    self._items[path] = (g, self._items[path][1])
+        self._sync()
+
+    def _rows(self, tops):
+        """[(path, group, parent path)] - each named by its place in the model (by names, which stay the
+        same while you work, so the list isn't rebuilt - and what you've clicked isn't lost - all the time)."""
+        out, seen = [], {}
+
+        def key(base):
+            seen[base] = seen.get(base, 0) + 1
+            return base if seen[base] == 1 else "%s#%d" % (base, seen[base])
+        for t in tops:
+            tp = key(self._name(t))
+            out.append((tp, t, None))
+            for c in self._kids(t):
+                out.append((key(tp + "/" + self._name(c)), c, tp))
+        return out
+
+    def _rebuild(self, rows):
+        open_, sel_ = set(), set()
+        for path, (_g, it) in self._items.items():
+            try:
+                if it.isExpanded():
+                    open_.add(path)
+                if it.isSelected():
+                    sel_.add(path)
+            except Exception:
+                pass
+        self.tree.blockSignals(True)
+        self.tree.clear()
+        self._items = {}
+        live = set()
+        for path, g, par in rows:
+            it = QTreeWidgetItem([self._name(g), "", ""])
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(0, Qt.Checked)
+            it.setCheckState(1, Qt.Unchecked)
+            it.setData(0, Qt.UserRole, path)
+            if par is None or par not in self._items:
+                self.tree.addTopLevelItem(it)
+            else:
+                self._items[par][1].addChild(it)
+            self._items[path] = (g, it)
+            live.add(path)
+        for path, (_g, it) in self._items.items():
+            if it.childCount():
+                it.setExpanded(path in open_)     # just the main groups, until you open one (its arrow)
+            if path in sel_:
+                it.setSelected(True)
+        self._picked &= live
+        self.tree.blockSignals(False)
+        if not rows:
+            self.lbl2.setText("No groups in the model yet.")
+
+    def _sync(self):
+        self.tree.blockSignals(True)
+        for gid, (g, it) in self._items.items():
+            it.setCheckState(0, Qt.Unchecked if getattr(g, 'hidden', False) else Qt.Checked)
+            it.setCheckState(1, Qt.Checked if gid in self._picked else Qt.Unchecked)
+            it.setText(2, _print_tag(g))
+        self.tree.blockSignals(False)
+        n = len(self._picked)
+        self.lbl_n.setText("%d group%s ticked 'Pick'." % (n, "" if n == 1 else "s") if n else
+                          "Nothing ticked 'Pick'.")
+
+    def _item_changed(self, it, col):
+        gid = it.data(0, Qt.UserRole)
+        g = self._items.get(gid, (None, None))[0]
+        if g is None:
+            return
+        if col == 0:
+            hide_things(self.win.viewport, [g], it.checkState(0) != Qt.Checked)
+            self.win.changed()
+        elif col == 1:
+            if it.checkState(1) == Qt.Checked:
+                self._picked.add(gid)
+            else:
+                self._picked.discard(gid)
+            self._sync()
+
+    def _select(self, gs):
+        """Selects the groups in the model (so they light up), whichever way this IngeTrazo does it.
+        Returns how it was done, or None."""
+        sc, vp = self.win.scene(), self.win.viewport
+        if sc is None:
+            return None
+        how = None
+        # IngeTrazo's own 'select these' first, if it has one
+        for owner in (sc, vp):
+            for fn in ('set_selection', 'select_only', 'select_entities', 'select'):
+                m = getattr(owner, fn, None)
+                if callable(m) and how is None:
+                    try:
+                        m(list(gs))
+                        how = fn
+                    except Exception:
+                        pass
+        if how is None:
+            sel = getattr(sc, 'selection', None)
+            try:
+                if hasattr(sel, 'clear') and hasattr(sel, 'add'):
+                    sel.clear()
+                    for g in gs:
+                        sel.add(g)
+                    how = 'selection.add'
+                elif hasattr(sel, 'clear') and hasattr(sel, 'append'):
+                    sel.clear()
+                    sel.extend(gs)
+                    how = 'selection list'
+                else:
+                    sc.selection = type(sel)(gs) if sel is not None else list(gs)
+                    how = 'selection set'
+            except Exception as e:
+                self.lbl2.setText("Couldn't select it: %s" % e)
+                return None
+        for owner in (sc, vp):
+            for fn in ('notify_selection_changed', 'selection_changed', 'notify_scene_changed'):
+                m = getattr(owner, fn, None)
+                if callable(m):
+                    try:
+                        m()
+                    except Exception:
+                        pass
+        for fn in ('update', 'repaint'):
+            m = getattr(vp, fn, None)
+            if callable(m):
+                try:
+                    m()
+                except Exception:
+                    pass
+        try:
+            sc.version += 1
+        except Exception:
+            pass
+        n_ = len(_items(getattr(sc, 'selection', None)))
+        print("%s: selected %d group(s) by %s; the selection now holds %d" % (PLUGIN_NAME, len(gs), how, n_))
+        return how
+
+    def _clicked(self, it, col):
+        # one click on a group lights it up in the model (it's selected there)
+        gid = it.data(0, Qt.UserRole)
+        g = self._items.get(gid, (None, None))[0]
+        if g is None:
+            return
+        if getattr(g, 'hidden', False):
+            self.lbl2.setText("'%s' is hidden - tick it to show it, then click it to light it up." % self._name(g))
+            return
+        gs = [x for x in self._clicked_groups() if not getattr(x, 'hidden', False)] or [g]
+        how = self._select(gs)
+        if how:
+            self.lbl2.setText("Lit up in the model: %s" % ", ".join(self._name(x) for x in gs[:4]) +
+                              (" and %d more" % (len(gs) - 4) if len(gs) > 4 else ""))
+
+    def _targets(self):
+        """What the join buttons work on: the groups ticked 'Pick' - or, with none ticked, what's selected
+        in the model (groups, or the groups the selected faces are in) - or the ones clicked in the list."""
+        return self._picked_groups() or self._model_groups() or self._clicked_groups()
+
+    def _model_groups(self):
+        """The groups selected in the model: a selected face counts as the group it's in."""
+        sc = self.win.scene()
+        sel = _items(getattr(sc, 'selection', None)) if sc is not None else []
+        if not sel:
+            return []
+        out, seen = [], set()
+
+        def add(g):
+            if g is not None and id(g) not in seen:
+                seen.add(id(g))
+                out.append(g)
+        faces = []
+        for e in sel:
+            if getattr(e, 'children', None) is not None or getattr(e, 'mesh', None) is not None:
+                add(e)                                  # a group
+            else:
+                faces.append(e)                         # a face (or an edge)
+        if faces:
+            # which group's mesh each face is in
+            owner = {}
+
+            def walk(g, depth=0):
+                m = getattr(g, 'mesh', None)
+                for f in _items(getattr(m, 'faces', None)):
+                    owner[id(f)] = g
+                for ed in _items(getattr(m, 'edges', None)):
+                    owner[id(ed)] = g
+                if depth < 20:
+                    for c in _items(getattr(g, 'children', None)):
+                        walk(c, depth + 1)
+            for t in _items(getattr(sc, 'groups', None)):
+                walk(t)
+            for f in faces:
+                add(owner.get(id(f)))
+        return out
+
+    def _clicked_groups(self):
+        out = []
+        for it in self.tree.selectedItems():
+            g = self._items.get(it.data(0, Qt.UserRole), (None, None))[0]
+            if g is not None:
+                out.append(g)
+        return out
+
+    def join_piece(self, hide=False):
+        try:
+            self._join_piece(bool(hide))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.lbl2.setText("Couldn't join them: %s" % e)
+
+    def _join_piece(self, hide=False):
+        """The clicked groups print as one piece (a name kept on each, saved with the model)."""
+        from PySide6.QtWidgets import QInputDialog
+        gs = self._targets()
+        if len(gs) < 1:
+            self.lbl2.setText("Tick 'Pick' on the groups that print together first - or select them in the model "
+                              "(Ctrl+click), then the button.")
+            return
+        have = sorted(set(t for t in (_print_tag(g) for g in self._all_groups()) if t))
+        first = _print_tag(gs[0]) or self._name(gs[0]).split(" - ")[-1]
+        name, ok = QInputDialog.getItem(self, PLUGIN_NAME, "A name for this print piece (pick one you've made "
+                                        "to add these to it):", [first] + [h for h in have if h != first], 0, True)
+        name = str(name or "").strip() if ok else ""
+        if not name:
+            return
+        for g in gs:
+            _set_print_tag(g, name)
+        self._picked = set()                   # done with those: the ticks clear for the next lot
+        self._touched()
+        n_ = sum(1 for g in self._all_groups() if _print_tag(g) == name)
+        msg = ("\u2714 '%s' prints as one piece (%d group%s). Scale Studio does the rest - no joining "
+               "needed in 'Plan the pieces'." % (name, n_, "" if n_ == 1 else "s"))
+        if hide:
+            try:
+                sc = self.win.scene()
+                sc.selection.clear()               # nothing selected, so hidden things aren't lit up
+            except Exception:
+                pass
+            hide_things(self.win.viewport, gs, True)
+            still = [g for g in gs if not getattr(g, 'hidden', False)]
+            self.tree.clearSelection()
+            self.win.changed()
+            msg += (" Hidden - tick them to show them again." if not still else
+                    " (%d couldn't be hidden.)" % len(still))
+        self.lbl2.setText(msg)
+
+    def separate_piece(self):
+        gs = [g for g in self._targets() if _print_tag(g)]
+        if not gs:
+            self.lbl2.setText("Tick 'Pick' on the joined groups to separate (their 'Prints as' shows a name).")
+            return
+        for g in gs:
+            _set_print_tag(g, "")
+        self._picked = set()
+        self._touched()
+        self.lbl2.setText("%d group%s will print on %s own again." % (len(gs), "" if len(gs) == 1 else "s",
+                                                                     "its" if len(gs) == 1 else "their"))
+
+    def _all_groups(self):
+        return [g for g, _it in self._items.values()]
+
+    def _touched(self):
+        # the model has changed (so it's saved), and the list shows the new names
+        sc = self.win.scene()
+        for fn in ('mark_modified', 'set_modified', 'mark_dirty'):
+            m = getattr(sc, fn, None)
+            if callable(m):
+                try:
+                    m()
+                    break
+                except Exception:
+                    pass
+        try:
+            sc.modified = True
+        except Exception:
+            pass
+        try:
+            sc.version += 1
+        except Exception:
+            pass
+        try:
+            self.win.viewport.notify_scene_changed()
+        except Exception:
+            pass
+        self._sync()
+
+    def _double(self, it, col):
+        # double-click a group: it's the only one ticked to print, and it's selected at once
+        gid = it.data(0, Qt.UserRole)
+        if gid in self._items:
+            self._picked = {gid}
+            self._sync()
+            self.select_picked()
+
+    def _picked_groups(self):
+        return [self._items[i][0] for i in self._picked if i in self._items]
+
+    def select_picked(self):
+        sc = self.win.scene()
+        gs = self._picked_groups()
+        if sc is None:
+            return
+        if not gs:
+            self.lbl2.setText("Tick 'Pick' on the groups you want first (or double-click one).")
+            return
+        hid = [g for g in gs if getattr(g, 'hidden', False)]
+        if hid:
+            hide_things(self.win.viewport, hid, False)       # can't print what you can't see
+        if not self._select(gs):
+            return
+        names = ", ".join(self._name(g) for g in gs[:4]) + (" and %d more" % (len(gs) - 4) if len(gs) > 4 else "")
+        self.lbl2.setText("\u2714 Selected: %s. Scale Studio (with 'Follow selection' ticked) now has just "
+                          "these." % names)
+
+    def clear_picks(self):
+        self._picked = set()
+        self._sync()
+
+    def show_only_picked(self):
+        gs = self._picked_groups()
+        if not gs:
+            self.lbl2.setText("Tick 'Pick' on the groups you want first.")
+            return
+        keep = set(self._picked)
+        rows = self._rows(self._tops())
+        kids_of = {}
+        for path, g, par in rows:
+            if par is not None:
+                kids_of.setdefault(par, []).append((path, g))
+        hide, show = [], []
+        for path, t, par in rows:
+            if par is not None:
+                continue
+            kids = kids_of.get(path, [])
+            if path in keep:
+                show.append(t)
+                continue
+            if any(cp in keep for cp, _c in kids):
+                show.append(t)                     # its picked groups stay; the rest of it goes
+                for cp, c in kids:
+                    (show if cp in keep else hide).append(c)
+            else:
+                hide.append(t)
+        hide_things(self.win.viewport, show, False)
+        hide_things(self.win.viewport, hide, True)
+        self.win.changed()
+
+    def show_all(self):
+        every = [g for g, _it in self._items.values()]
+        hide_things(self.win.viewport, every, False)
+
+
+TAB_TIPS = {'floors': "Step 1, Floor Plan: each storey's walls and floor, the plates and the roof.",
+            'roof': "Step 3, Subframe: the roof panels, the fascia, barge and soffit boards, and loose trusses.",
+            'groups': "Every main group in the model: show or hide it, and pick what to print."}
+
+# the tabs, in order (the build order) - add new pages here
+PAGES = [FloorsPage, RoofPage, GroupsPage]
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +838,7 @@ class ShowHideWindow(QDialog):
         except Exception:
             pass
         self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setMinimumSize(100, 100)          # drag it as small as you like
         self.viewport = viewport
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -318,10 +849,25 @@ class ShowHideWindow(QDialog):
         for cls in PAGES:
             pg = cls(self)
             self.pages.append(pg)
-            self.tabs.addTab(pg, cls.title)
+            # each page scrolls, so the window can be dragged as small as you like
+            from PySide6.QtWidgets import QScrollArea, QFrame
+            sa = QScrollArea()
+            sa.setWidgetResizable(True)
+            try:
+                sa.setFrameShape(getattr(QFrame, 'NoFrame', None) or QFrame.Shape.NoFrame)
+            except Exception:
+                pass
+            sa.setWidget(pg)
+            self.tabs.addTab(sa, cls.title)
+            self.tabs.setTabToolTip(self.tabs.count() - 1, TAB_TIPS.get(cls.key, ""))
+        try:
+            self.tabs.setUsesScrollButtons(True)
+        except Exception:
+            pass
+        lay.setContentsMargins(4, 4, 4, 4)
         lay.addWidget(self.tabs)
         row = QHBoxLayout()
-        b_all = QPushButton("Show everything")
+        b_all = QPushButton("Show all")
         b_all.setToolTip("Shows everything on every tab again.")
         b_all.clicked.connect(self.show_all)
         b_close = QPushButton("Close")
@@ -363,7 +909,8 @@ class ShowHideWindow(QDialog):
 
     def refresh(self):
         self._ver = getattr(self.scene(), 'version', None)
-        pg = self.tabs.currentWidget()
+        i_ = self.tabs.currentIndex()
+        pg = self.pages[i_] if 0 <= i_ < len(self.pages) else None
         if pg is not None:
             try:
                 pg.refresh()
@@ -393,6 +940,12 @@ class ShowHideWindow(QDialog):
             pass
         if ShowHideWindow._open is self:
             ShowHideWindow._open = None
+        try:
+            main_up = _main_window() is not None and _main_window().isVisible()
+        except Exception:
+            main_up = False
+        if main_up and not _WATCH.get('quitting'):
+            _remember_open(False)             # you closed it: this model opens without it next time
         super().closeEvent(ev)
 
 
@@ -422,9 +975,125 @@ def open_show_hide(viewport, tab=None):
     ShowHideWindow._open = w
     if tab:
         w.go_to(tab)
-    eddy_window(w, PLUGIN_NAME, None, place=True)      # opens where you left it
+    mk = _model_key()
+    if mk and (PLUGIN_NAME + " | " + mk) not in _eddy_places() and PLUGIN_NAME in _eddy_places():
+        # first time with this model: start where it was last time with any model
+        try:
+            d = _eddy_places()
+            d[PLUGIN_NAME + " | " + mk] = d[PLUGIN_NAME]
+            with open(EDDY_PLACES_FILE, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=1)
+        except Exception:
+            pass
+    # opens where you left it with this model (each model remembers its own place)
+    eddy_window(w, PLUGIN_NAME + (" | " + mk if mk else ""), None, place=True)
     w.show()
+    _remember_open(True)
     return w
+
+
+# ---------------------------------------------------------------------------
+# Each model remembers whether Show / hide was open (and where): open that model again and the
+# window comes back by itself, in the same place.
+# ---------------------------------------------------------------------------
+def _main_window():
+    from PySide6.QtWidgets import QApplication, QMainWindow
+    app = QApplication.instance()
+    if app is None:
+        return None
+    wins = [w for w in app.topLevelWidgets() if isinstance(w, QMainWindow)]
+    shown = [w for w in wins if w.isVisible()]
+    return (shown or wins or [None])[0]
+
+
+def _find_viewport(win):
+    for attr in ('viewport', '_viewport', 'view'):
+        vp = getattr(win, attr, None)
+        if vp is not None and getattr(vp, 'scene', None) is not None:
+            return vp
+    from PySide6.QtWidgets import QWidget
+    for w in win.findChildren(QWidget):
+        if getattr(w, 'scene', None) is not None and getattr(w, 'history', None) is not None:
+            return w
+    return None
+
+
+def _model_key():
+    """The model that's open, from IngeTrazo's window title (its file name), or None."""
+    win = _main_window()
+    if win is None:
+        return None
+    t = str(win.windowTitle() or "").replace("[*]", "").strip().lstrip("*").rstrip("*").strip()
+    for sep in (" \u2014 ", " - ", " | "):
+        parts = [x.strip() for x in t.split(sep) if x.strip()]
+        if len(parts) > 1:
+            named = [x for x in parts if "." in x or "/" in x or "\\" in x]
+            t = named[0] if named else parts[0] if "ingetrazo" not in parts[0].lower() else parts[-1]
+            break
+    t = t.strip().lstrip("*").rstrip("*").strip()
+    if not t or t.lower() in ("ingetrazo", "untitled", "new model", "untitled model"):
+        return None
+    return t
+
+
+def _remember_open(is_open):
+    mk = _model_key()
+    if not mk:
+        return
+    d = _load().get('models') or {}
+    d[mk] = bool(is_open)
+    _save(models=d)
+
+
+_WATCH = {'key': None, 'timer': None}
+
+
+def _watch():
+    try:
+        mk = _model_key()
+        if mk == _WATCH['key']:
+            return
+        _WATCH['key'] = mk
+        if not mk or not (_load().get('models') or {}).get(mk):
+            return
+        w = ShowHideWindow._open
+        if w is not None and w.isVisible():
+            return
+        win = _main_window()
+        vp = _find_viewport(win) if win is not None else None
+        if vp is not None:
+            open_show_hide(vp)
+    except Exception as e:
+        print("%s: %s" % (PLUGIN_NAME, e))
+
+
+def _start_watch(tries=0):
+    try:
+        from PySide6.QtCore import QTimer
+        win = _main_window()
+        if win is None or not win.isVisible():
+            if tries < 240:
+                QTimer.singleShot(500, lambda: _start_watch(tries + 1))
+            return
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().aboutToQuit.connect(lambda: _WATCH.__setitem__('quitting', True))
+        except Exception:
+            pass
+        if _WATCH['timer'] is None:
+            t = QTimer(win)
+            t.timeout.connect(_watch)
+            t.start(1500)
+            _WATCH['timer'] = t
+    except Exception as e:
+        print("%s: couldn't watch for models opening (%s)" % (PLUGIN_NAME, e))
+
+
+try:
+    from PySide6.QtCore import QTimer as _QT
+    _QT.singleShot(1000, _start_watch)
+except Exception:
+    pass
 
 
 # --- Eddy's 3D plugins: hover help and remembered window places (begin) ---

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Chimneys"
-VERSION = "4"
+VERSION = "5"
 
 
 def _ed3d_organise(scene, group):
@@ -1583,6 +1583,9 @@ PRESETS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Pres
 # tiles and sheets, and Subframe's bars
 GROUP_SKIP = ("Chimney", "Industrial chimney", "Roof vent", "Doig", "Weather vane", "Roof - ", "Sheeting - ",
               "Subframe", "Roof truss", "Glazing frames", "Fascia and barge boards")
+# Floor Plan's gable ends (and walls with their gable on) sit under the roof: their sloping
+# tops follow the underside of the roof, so they're never the roof itself
+GROUP_SKIP_IN = (" - Gable on ", " with gable")
 
 
 class WorldFace:
@@ -1649,6 +1652,8 @@ def faces_in_groups(groups):
 
         def walk(g, lvl):
             nm = str(getattr(g, 'name', '') or '')
+            if any(w in nm for w in GROUP_SKIP_IN):
+                return
             if nm.startswith(GROUP_SKIP):
                 skipped.append(nm)
                 return

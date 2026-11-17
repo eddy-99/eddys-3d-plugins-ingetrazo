@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.34"
+VERSION = "1.48"
 
 
 def _ed3d_organise(scene, group):
@@ -84,13 +84,14 @@ DEFAULTS = dict(
     corners=True, side='auto', line_pos='centre',
     floor_levels='', floor_t=0.0, ledge_h=0.0, ledge_out=0.0, floor_fit=0.0, floor_panels=False,
     boards=False, fascia_h=0.0, board_t=0.0, board_off=0.0, barge_w=0.0, finial_h=0.0, finial_drop=0.0,
-    finial_w=0.0, soffits=False, roof_panels=False, roof_t=0.0, roof_over=0.0)
+    finial_w=0.0, soffits=False, roof_panels=False, roof_t=0.0, roof_over=0.0,
+    tabs=True, supports='tabs', tab_len=0.0, tab_spacing=0.0, storey_join=1)
 SIZE_KEYS = ('width', 'depth', 'spacing', 'rafter_spacing', 'lintel', 'rebate', 'glaze_w', 'glaze_t', 'glaze_setin',
              'glaze_inset',
              'min_piece', 'gap', 'lift', 'truss_spacing', 'truss_overhang',
              'floor_t', 'ledge_h', 'ledge_out', 'floor_fit',
              'fascia_h', 'board_t', 'board_off', 'barge_w', 'finial_h', 'finial_drop', 'finial_w',
-             'roof_t', 'roof_over')
+             'roof_t', 'roof_over', 'tab_len', 'tab_spacing')
 
 # ready-made sizes for a printed frame (real-world mm: / the scale = printed mm)
 BUILTIN_PRESETS = {
@@ -124,7 +125,7 @@ COLOURS = {'bottom': (150, 104, 64), 'top': (150, 104, 64), 'rake': (165, 112, 6
            'end': (120, 82, 50), 'glaze': (165, 200, 230), 'jamb': (200, 120, 40), 'lintel': (215, 150, 50),
            'sill': (215, 150, 50), 'stud': (190, 160, 110), 'rail': (170, 140, 95),
            'brace': (120, 140, 90), 'line': (190, 160, 110), 'truss': (165, 112, 66),
-           'ledge': (110, 85, 60), 'floor': (205, 185, 150), 'fascia': (235, 235, 228),
+           'ledge': (110, 85, 60), 'tab': (110, 85, 60), 'floor': (205, 185, 150), 'fascia': (235, 235, 228),
            'barge': (235, 235, 228), 'finial': (235, 235, 228), 'soffit': (235, 235, 228),
            'roof': (120, 120, 125)}
 
@@ -143,6 +144,12 @@ def frame_params(v):
     p['_levels'] = parse_levels(p.get('floor_levels', ''))
     p['ledge_h'] = max(p['ledge_h'] if p['ledge_h'] > 0 else p['w'], 0.6 * p['w'])
     p['ledge_out'] = p['ledge_out'] if p['ledge_out'] > 0 else p['w']
+    p['tab_len'] = p['tab_len'] if p['tab_len'] > 0 else 3.0 * p['w']
+    p['tab_spacing'] = p['tab_spacing'] if p['tab_spacing'] > 0 else 1200.0
+    p['storey_join'] = max(1, int(p.get('storey_join') or 1))
+    if p.get('supports') not in ('tabs', 'ledge', 'none'):
+        p['supports'] = 'tabs' if p.get('tabs', True) else 'ledge'
+    p['tabs'] = p['supports'] == 'tabs'
     return p
 
 
@@ -168,9 +175,14 @@ def parse_levels(text):
 def ledge_bands(p):
     """[(ledge bottom, ledge top, name, floor top)] in mm above the bottom of the walls."""
     out = []
-    for k, lv in enumerate(p.get('_levels', [])):
-        top = lv - p.get('floor_t', 0.0)
-        out.append((top - p['ledge_h'], top, "Floor %d ledge" % (k + 1), lv))
+    lt = p.get('_level_t') or {}
+    lk = p.get('_level_kind') or {}
+    count = {}
+    for lv in p.get('_levels', []):
+        top = lv - lt.get(lv, p.get('floor_t', 0.0))
+        kd = lk.get(lv, "Floor")
+        count[kd] = count.get(kd, 0) + 1
+        out.append((top - p['ledge_h'], top, "%s %d ledge" % (kd, count[kd]), lv))
     return out
 
 
@@ -1093,6 +1105,8 @@ def lay_frame(outline, holes, p, kind='wall', extra=(), ledges=(), ledge_extra=(
         n_ex = len(placed)
         placed.extend(b for b in ledge_extra if b)
         for ya, yb, lname in ledges:
+            if p.get('tabs', True):
+                continue                  # short tabs, glued on the face of the frame: added at the end
             put(_box(x0 - 1.0, ya, x1 + 1.0, yb), lname, 'ledge')
         del placed[n_ex:n_ex + len([b for b in ledge_extra if b])]
 
@@ -1285,6 +1299,18 @@ def lay_frame(outline, holes, p, kind='wall', extra=(), ledges=(), ledge_extra=(
             for j, c in enumerate(comps):
                 out.append(("%s (%d)" % (name, j + 1), typ, c))
     out += glazing
+    if kind == 'wall' and ledges and p.get('tabs', True):
+        # short tabs on the inside face of the frame, spaced along the wall (one near each end), for
+        # a floor to drop onto. They stand out past the frame (see solids_for) and leave the frame
+        # whole - each tab is a little block to glue on.
+        tl = min(p['tab_len'], max(w, x1 - x0 - 4.0 * w))
+        span_ = (x1 - x0) - 4.0 * w - tl
+        for ya, yb, lname in ledges:
+            n_t = (max(2, int(math.ceil(span_ / max(p['tab_spacing'], tl) - 1e-9)) + 1)) if span_ > 0 else 1
+            for k_ in range(n_t):
+                xc = x0 + 2.0 * w + tl / 2.0 + (span_ * k_ / (n_t - 1) if n_t > 1 else max(0.0, span_) / 2.0)
+                out.append(("%s tab %d" % (lname.replace(" ledge", ""), k_ + 1), 'tab',
+                            [_box(xc - tl / 2.0, ya, xc + tl / 2.0, yb)]))
     return out
 
 
@@ -1302,9 +1328,12 @@ def solids_for(bars, z0, z1, glaze_t=None, ledge_out=0.0):
     out = []
     for name, typ, pcs in bars:
         top = (z0 + glaze_t) if (typ == 'glaze' and glaze_t) else z1
+        bot = z0
         if typ == 'ledge':
             top = z1 + ledge_out
-        so = merged_slab(pcs, lambda x, y: z0, lambda x, y, top=top: top)
+        if typ == 'tab':
+            bot, top = z1, z1 + ledge_out          # on the face of the frame, standing out past it
+        so = merged_slab(pcs, lambda x, y, bot=bot: bot, lambda x, y, top=top: top)
         if so is not None:
             out.append((name, typ, so))
     return out
@@ -1773,7 +1802,36 @@ def swap_meshes_command(swaps):
 # parts of a building that never get a frame: the base plate (plinth), the top plate, the floors
 # and the inside (dividing) walls - from Floor Plan, or any group you name the same way
 _NO_FRAME = ("base plate", "top plate", "inside wall", "divider", "dividing wall", "floor slab", "floor panel",
-             "ledge")
+             "ledge", "ceiling", " tab ")
+
+
+def _floor_plan_supports(groups):
+    """True if Floor Plan has made its own tabs or ledges for the floors (its Storeys page) - then
+    Subframe leaves the floors to it and just frames the walls."""
+    def walk(e, depth):
+        nm = str(getattr(e, 'name', '') or '')
+        if " - " in nm and (" tab " in nm or " ledge " in nm):
+            return True
+        if depth < 12:
+            for c in _items(getattr(e, 'children', None)):
+                if walk(c, depth + 1):
+                    return True
+        return False
+    return any(walk(g, 0) for g in groups)
+
+
+def _has_floor_plan_roof(groups):
+    """True if Floor Plan's own roof (its 'Roof slope' pieces) is in what's picked: the roof is
+    there already, so no roof panels are made to go on top of it."""
+    def walk(e, depth):
+        if str(getattr(e, 'name', '') or '').startswith("Roof slope"):
+            return True
+        if depth < 12:
+            for c in _items(getattr(e, 'children', None)):
+                if walk(c, depth + 1):
+                    return True
+        return False
+    return any(walk(g, 0) for g in groups)
 
 
 def _no_frame(g):
@@ -1812,8 +1870,23 @@ def _framable_faces(g):
         for e, _m in places:
             if _no_frame(e):
                 mark(e)
-        if not skip_ids:
+        # Floor Plan's roof slopes: their upright edges - where two slopes meet along a hip, and at the
+        # eaves - aren't walls, so they're left out. The top and underside stay, so the frame goes
+        # under the underside (not inside the roof, under its top).
+        roof_ids = set(id(e) for e, _m in places if str(getattr(e, 'name', '') or '').startswith("Roof slope"))
+        if not skip_ids and not roof_ids:
             return faces
+
+        def up_z(pts):
+            nz, ln = 0.0, 0.0
+            nx = ny = 0.0
+            for i_ in range(len(pts)):
+                a_, b_ = pts[i_], pts[(i_ + 1) % len(pts)]
+                nx += (a_[1] - b_[1]) * (a_[2] + b_[2])
+                ny += (a_[2] - b_[2]) * (a_[0] + b_[0])
+                nz += (a_[0] - b_[0]) * (a_[1] + b_[1])
+            ln = math.sqrt(nx * nx + ny * ny + nz * nz)
+            return nz / ln if ln > 0 else 0.0
 
         def key(pts):
             # the face's corners, to 0.02 mm - not just its middle: a dividing wall's end face has
@@ -1822,7 +1895,8 @@ def _framable_faces(g):
             return frozenset(tuple(round(x / 2e-5) for x in q) for q in pts)
         skip = set()
         for e, m in places:
-            if id(e) not in skip_ids:
+            full_, roof_ = id(e) in skip_ids, id(e) in roof_ids
+            if not (full_ or roof_):
                 continue
             for f in _items(getattr(getattr(e, 'mesh', None), 'faces', None)):
                 pts = []
@@ -1839,6 +1913,9 @@ def _framable_faces(g):
                             pass
                     pts.append(q)
                 if len(pts) >= 3:
+                    if roof_ and not full_ and abs(up_z(pts)) > 0.05:
+                        continue                # the top and underside of a roof slope: the frame goes
+                                                # under the underside, as for any thick roof
                     skip.add(key(pts))
         out = []
         for f in faces:
@@ -1876,6 +1953,93 @@ def _join(A, B, tol):
     return None
 
 
+def _zrange(f):
+    zs_ = [f.tw((x_, y_, 0.0))[2] for x_, y_ in f.outline]
+    return min(zs_), max(zs_)
+
+
+def _across_break(a, b, p):
+    """Do faces a and b meet at one of the storey breaks (one storey's walls on top of the other's)?"""
+    za0, za1 = _zrange(a)
+    zb0, zb1 = _zrange(b)
+    tz = max(1e-6, 0.25 * p['w'] * SCALE)
+    for z in p['_breaks']:
+        if (abs(za1 - z) < tz and abs(zb0 - z) < tz) or (abs(zb1 - z) < tz and abs(za0 - z) < tz):
+            return True
+    return False
+
+
+def _floor_plan_storeys(groups):
+    """Floor Plan's storeys and drop-in floor panels in what's picked: ([(name, z bottom, z top)] lowest
+    first, [(z bottom, z top)] of each floor panel) - in the world, from the pieces' names."""
+    labels = ["Ground floor", "First floor", "Second floor", "Third floor", "Fourth floor", "Fifth floor"]
+    st, panels = {}, []
+
+    def label_of(nm):
+        for lb in labels:
+            if nm.startswith(lb + " - "):
+                return lb
+        if nm.startswith("Floor ") and nm[6:].split(" ")[0].isdigit() and " - " in nm:
+            return nm.split(" - ")[0]
+        return None
+
+    def zr(g):
+        zs_ = [q[2] for f in _world_faces(g) for q in (_pos(x) for x in _items(getattr(f, 'vertices', None)))
+               if q is not None]
+        return (min(zs_), max(zs_)) if zs_ else None
+
+    def walk(e, depth):
+        nm = str(getattr(e, 'name', '') or '')
+        lb = label_of(nm)
+        if lb and " - Wall " in nm:
+            r = zr(e)
+            if r:
+                a, b = st.get(lb, (r[0], r[1]))
+                st[lb] = (min(a, r[0]), max(b, r[1]))
+            return
+        if lb and (nm.endswith(" - Floor panel") or nm.endswith(" - Ceiling")):
+            r = zr(e)
+            if r:
+                panels.append((r[0], r[1], "Ceiling" if nm.endswith(" - Ceiling") else "Floor"))
+            return
+        if depth < 12:
+            for c in _items(getattr(e, 'children', None)):
+                walk(c, depth + 1)
+    for g in groups:
+        walk(g, 0)
+    return sorted(((lb, a, b) for lb, (a, b) in st.items()), key=lambda x: x[1]), sorted(panels)
+
+
+def _floor_plan_setup(groups, p):
+    """Floor Plan's building in what's picked: a frame for each storey (or each few, joined), and the
+    tabs or ledges for its floors and ceilings - found by themselves."""
+    try:
+        storeys, fpanels = _floor_plan_storeys(groups)
+    except Exception as e:
+        storeys, fpanels = [], []
+        print("%s: Floor Plan's storeys not read: %s" % (PLUGIN_NAME, e))
+    if len(storeys) > 1:
+        # a frame for each storey (or for each few storeys joined, to fit the print bed)
+        nj = p['storey_join']
+        p['_breaks'] = [storeys[k + 1][1] for k in range(len(storeys) - 1) if (k + 1) % nj == 0]
+        p['_storeys'] = len(storeys)
+    p['_fp_supports'] = _floor_plan_supports(groups)
+    if storeys and not p.get('_levels') and not p['_fp_supports']:
+        # Floor Plan's drop-in floors: tabs under each one above the ground floor
+        wb = storeys[0][1]
+        ups = [(a, b, kd) for a, b, kd in fpanels if a > wb + 0.25 * (storeys[0][2] - wb)]
+        if ups:
+            # each floor (above the ground) and each ceiling, with its own thickness
+            lt, lk = {}, {}
+            for a, b, kd in ups:
+                lt[round((b - wb) / SCALE, 3)] = (b - a) / SCALE
+                lk[round((b - wb) / SCALE, 3)] = kd
+            p['_levels'] = sorted(lt)
+            p['_level_t'] = lt
+            p['_level_kind'] = lk
+            p['_auto_levels'] = True
+
+
 def _merge_coplanar(ready, p):
     tol = max(1e-3 * p['w'], 1e-4)
     merged = True
@@ -1894,6 +2058,8 @@ def _merge_coplanar(ready, p):
                     continue
                 if abs(v_dot(v_sub(b.tw((0.0, 0.0, 0.0)), O), a.N)) / SCALE > tol:
                     continue
+                if p.get('_breaks') and _across_break(a, b, p):
+                    continue               # a storey of Floor Plan's below or above: a frame of its own
                 bo = clean([to_a(b.tw((x, y, 0.0))) for x, y in b.outline])
                 if not bo:
                     continue
@@ -2149,7 +2315,12 @@ def find_floor(every, walls, centre=None):
     # a floor panel dropped in on a base plate: the base is a little bigger, but the frame stands
     # on the floor - so of the big ones (at least half the biggest), the highest
     big = max(c[0] for c in cands)
-    a_, best_z, best = max((c for c in cands if c[0] >= 0.5 * big), key=lambda c: (c[1], c[0]))
+    bigs = [c for c in cands if c[0] >= 0.5 * big]
+    # only the bottom storey's floor: with drop-in floors the next floor up is a big level face low
+    # down in the walls too, and standing the frame on that would leave the ground floor unframed
+    z_low = min(c[1] for c in bigs)
+    bigs = [c for c in bigs if c[1] <= z_low + 0.1 * (zt - zb)]
+    a_, best_z, best = max(bigs, key=lambda c: (c[1], c[0]))
     return best, best_z
 
 
@@ -2313,6 +2484,10 @@ def frame_panels(chosen, v, p):
             # mustn't make a real wall stop short at the corner, or both walls stop short there
             bx_ = bbox(f.outline)
             return min(bx_[1] - bx_[0], bx_[3] - bx_[2]) >= 2.2 * p['w']
+
+        def zrange(f):
+            zs_ = [f.tw((x_, y_, 0.0))[2] for x_, y_ in f.outline]
+            return min(zs_), max(zs_)
         for i, a in enumerate(ready):
             if a.kind != 'wall' or not framable(a):
                 continue
@@ -2322,6 +2497,12 @@ def frame_panels(chosen, v, p):
                 for ea, (pa, ta) in enumerate(a.ends):
                     for eb, (pb, tb) in enumerate(b.ends):
                         if math.hypot(pa[0] - pb[0], pa[1] - pb[1]) > tol:
+                            continue
+                        # only a wall standing beside this one counts - not the wall of the floor
+                        # above or below it, at the same corner on the plan
+                        za0, za1 = zrange(a)
+                        zb0, zb1 = zrange(b)
+                        if zb0 >= za1 - 2.0 * p['w'] * SCALE or zb1 <= za0 + 2.0 * p['w'] * SCALE:
                             continue
                         if v_dot(b.N, ta) > 0.2 and v_dot(a.N, tb) > 0.2:
                             # how high the other wall goes, in this wall's terms: above it there's
@@ -2334,7 +2515,11 @@ def frame_panels(chosen, v, p):
                             a.inset[ea] = max(a.inset[ea], depth + lift + p.get('gap', 0.0))
                             a.inset_top[ea] = max(a.inset_top[ea], hb)
     gables = []
-    if p.get('trusses') and p.get('truss_spacing', 0.0) > p['w']:
+    if p.get('trusses') and p.get('truss_spacing', 0.0) > p['w'] and p.get('_fp_roof'):
+        # Floor Plan's roof is on already, sitting on the walls: trusses would have to stand above it,
+        # so its slopes get rafters and purlins of their own underneath instead (any shape of roof)
+        p['_trusses_skipped'] = True
+    if p.get('trusses') and p.get('truss_spacing', 0.0) > p['w'] and not p.get('_fp_roof'):
         # with trusses, each gable wall's own frame stops at the eaves (a top plate along the top
         # of the wall) and a gable end truss stands on it
         gables = find_gables(ready, p)
@@ -2362,7 +2547,7 @@ def frame_panels(chosen, v, p):
     order = {'wall': 0, 'flat': 1, 'roof': 2}
     ready.sort(key=lambda fi: order.get(fi.kind, 3))
     # floors: the bottom of the walls is where the floor levels are measured from
-    bands = ledge_bands(p) if p.get('_levels') else []
+    bands = ledge_bands(p) if p.get('_levels') and p.get('supports', 'tabs') != 'none' else []
     lo_ = p['ledge_out']
     walls_ = [fi for fi in ready if fi.kind == 'wall']
     if walls_:
@@ -2427,12 +2612,12 @@ def frame_panels(chosen, v, p):
             problems.append("%s: %s" % (title, e))
             continue
         for _n, _t, pcs in bars:
-            top_ = p.get('glaze_t', 0.0) if _t == 'glaze' else (depth + lo_ if _t == 'ledge' else depth)
+            top_ = p.get('glaze_t', 0.0) if _t == 'glaze' else (depth + lo_ if _t in ('ledge', 'tab') else depth)
             for pc in pcs:
                 done.append(_prism(fi.tw, pc, lift, lift + top_))
                 if fi.kind == 'wall':
                     p.setdefault('_wall_bars', []).append(done[-1])
-            if _t == 'ledge':
+            if _t in ('ledge', 'tab'):
                 p['_ledges_made'] += 1
         sols = solids_for(bars, lift, lift + depth, p.get('glaze_t', 0.0), lo_)
         if sols:
@@ -2460,7 +2645,19 @@ def frame_panels(chosen, v, p):
             # the trusses standing loose in the middle: a group of their own, apart from the frame
             panels.append(("Roof trusses", tr))
         problems += tprob
-    if p.get('boards') or p.get('roof_panels') or p.get('soffits'):
+    if (p.get('boards') or p.get('soffits')) and p.get('_fp_roof') and p.get('_fp_roof_groups'):
+        # Floor Plan's roof is on: the boards follow its own eaves, verges and overhangs
+        try:
+            bd, bprob = fp_roof_boards(p['_fp_roof_groups'], p, want_fascia=bool(p.get('boards')),
+                                       want_soffit=bool(p.get('soffits')))
+        except Exception as e:
+            bd, bprob = [], ["Boards: couldn't make them for Floor Plan's roof (%s)" % e]
+        if bd:
+            panels.append(("Boards", bd))
+        problems += bprob
+        if p.get('roof_panels'):
+            problems.append("Roof panels: not made - the building has its roof on already (from Floor Plan).")
+    elif p.get('boards') or p.get('roof_panels') or p.get('soffits'):
         gb = gables or find_gables(ready if not gables else ready, p)
         if gb:
             bd, bprob = roof_boards(gb, p)
@@ -2468,6 +2665,12 @@ def frame_panels(chosen, v, p):
                 bd = [b_ for b_ in bd if b_[1] not in ('fascia', 'barge')]
             rf = [b_ for b_ in bd if b_[1] == 'roof']
             bd = [b_ for b_ in bd if b_[1] != 'roof']
+            if p.get('_fp_roof') and (rf or bd):
+                # Floor Plan's roof is on already: no second roof on top of it, and the fascia and barge
+                # boards (worked out from the gable walls) wouldn't match its overhangs
+                rf, bd, bprob = [], [], []
+                problems.append("Roof panels and boards: not made - the building has its roof on already "
+                                "(from Floor Plan).")
             if bd:
                 panels.append(("Boards", bd))
             if rf:
@@ -2475,6 +2678,9 @@ def frame_panels(chosen, v, p):
             problems += bprob
         else:
             problems.append("Boards: no pair of gable walls facing each other in the selection")
+    if p.get('_trusses_skipped'):
+        problems.append("Roof trusses: not made - the building has its roof on already (from Floor Plan), so "
+                        "its slopes are framed underneath with rafters and purlins instead.")
     if bands and p.get('floor_panels') and walls_ and base_z is not None:
         fl, fprob = floor_panels(walls_, p, base_z)
         if fl:
@@ -2870,6 +3076,425 @@ def roof_boards(gables, p):
                 so = merged_slab([sec], lambda x, y, z=z_in: z, lambda x, y, z=zb_in: z) if sec else None
                 if so is not None:
                     out.append(("Roof panel %s (%d)" % (side, k + 1), 'roof', mapw(so)))
+    return out, problems
+
+
+# ---------------------------------------------------------------------------
+# Fascia, barge and soffit boards for a roof made by Floor Plan: they follow its own eaves,
+# verges and overhangs (any shape it makes - gable, hipped, lean-to, flat), worked out from the
+# roof slopes themselves rather than from the gable walls.
+# ---------------------------------------------------------------------------
+def _fp_roof_groups(groups):
+    """Floor Plan's roof slopes in what's picked: [group]."""
+    out = []
+
+    def walk(e, depth):
+        if str(getattr(e, 'name', '') or '').startswith("Roof slope"):
+            out.append(e)
+            return
+        if depth < 12:
+            for c in _items(getattr(e, 'children', None)):
+                walk(c, depth + 1)
+    for g in groups:
+        walk(g, 0)
+    return out
+
+
+def _zplane_of(pts):
+    """z = f(x, y) for a face that isn't upright: (f, unit normal)."""
+    n = v_norm(_newell(pts))
+    if abs(n[2]) < 1e-6:
+        return None, n
+    x0, y0, z0 = pts[0]
+
+    def f(x, y, n=n):
+        return z0 - (n[0] * (x - x0) + n[1] * (y - y0)) / n[2]
+    return f, n
+
+
+def _drop_inline(pts, tol):
+    """A face's corners, less any in a straight line between its neighbours (in 3D)."""
+    out = list(pts)
+    k = 0
+    while len(out) > 3 and k < len(out):
+        a, b, c = out[k - 1], out[k], out[(k + 1) % len(out)]
+        ab, bc = v_sub(b, a), v_sub(c, b)
+        if v_len(v_cross(ab, bc)) <= tol * max(1e-12, v_len(ab) + v_len(bc)) and v_dot(ab, bc) > 0:
+            del out[k]
+        else:
+            k += 1
+    return out
+
+
+def _slope_info(g):
+    """A roof slope's top face corners and its top and underside planes (world, metres)."""
+    infos = [FaceInfo(f) for f in _world_faces(g)]
+    infos = [fi for fi in infos if fi.ok]
+    ups = [fi for fi in infos if v_norm(fi.n)[2] > 0.05]
+    downs = [fi for fi in infos if v_norm(fi.n)[2] < -0.05]
+    if not ups or not downs:
+        return None
+    def area(fi):
+        P = fi.pts
+        c = (0.0, 0.0, 0.0)
+        for i in range(len(P)):
+            c = v_add(c, v_cross(P[i], P[(i + 1) % len(P)]))
+        return v_len(c)
+    top = max(ups, key=area)
+    bot = max(downs, key=area)
+    ft, _nt = _zplane_of(top.pts)
+    fb, _nb = _zplane_of(bot.pts)
+    if ft is None or fb is None:
+        return None
+    pts = _drop_inline(top.pts, 1e-6)
+    # anticlockwise seen from above, so 'inside' is on the left of each edge
+    a2 = 0.5 * sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1]
+                   for i in range(len(pts)))
+    if a2 < 0:
+        pts = pts[::-1]
+    return {'name': str(getattr(g, 'name', '') or 'Roof slope'), 'pts': pts, 'top': ft, 'under': fb}
+
+
+def _shared(a, b, others, tol):
+    """Is the edge a-b (on plan) along an edge of another slope (a ridge, hip or valley)?"""
+    ux, uy = b[0] - a[0], b[1] - a[1]
+    L = math.hypot(ux, uy)
+    if L < 1e-12:
+        return True
+    ux, uy = ux / L, uy / L
+    for c, d in others:
+        # both ends of the other edge on this line...
+        if any(abs((q[0] - a[0]) * uy - (q[1] - a[1]) * ux) > tol for q in (c, d)):
+            continue
+        s0 = (c[0] - a[0]) * ux + (c[1] - a[1]) * uy
+        s1 = (d[0] - a[0]) * ux + (d[1] - a[1]) * uy
+        # ...and overlapping it (by more than half)
+        if min(max(s0, s1), L) - max(min(s0, s1), 0.0) > 0.5 * L:
+            return True
+    return False
+
+
+def _wall_behind(A, u, n_out, L, z_need, faces, min_d):
+    """How far in (mm) the outside of the wall under an eaves is, from the eaves edge (A, along
+    u, plan-length L metres): the nearest big upright face facing out the same way, under the
+    edge and reaching up to z_need. None if there isn't one."""
+    best = None
+    for fi in faces or ():
+        if not getattr(fi, 'ok', False):
+            continue
+        n = v_norm(fi.n)
+        if abs(n[2]) > 0.05 or n[0] * n_out[0] + n[1] * n_out[1] < 0.98:
+            continue
+        if max(q[2] for q in fi.pts) < z_need:
+            continue
+        ss = [(q[0] - A[0]) * u[0] + (q[1] - A[1]) * u[1] for q in fi.pts]
+        if min(max(ss), L) - max(min(ss), 0.0) < 0.3 * L:
+            continue                        # not under this eaves (or a brick, a little face)
+        d = ((A[0] - fi.c[0]) * n_out[0] + (A[1] - fi.c[1]) * n_out[1]) / SCALE
+        if d > min_d and (best is None or d < best):
+            best = d
+    return best
+
+
+SHALLOW = math.tan(math.radians(10.0))   # a roof edge flatter than this gets a fascia, not a barge board
+
+
+def fp_roof_boards(roof_groups, p, want_fascia=True, want_soffit=True):
+    """Fascia boards along every eaves of Floor Plan's roof (with the soffit joined on, back to
+    the wall), and barge boards up every verge (both sides of a gable end in one piece, with a
+    finial at the peak). They follow the roof's own overhangs. Each is a piece of its own, to
+    print flat. Returns ([(name, type, solid)], problems)."""
+    fh, bt, _off, bw, fnh, fnd, fnw = board_sizes(p)
+    out, problems = [], []
+    slopes = [s for s in (_slope_info(g) for g in roof_groups) if s]
+    if not slopes:
+        return out, ["Boards: couldn't read Floor Plan's roof slopes."]
+    tol = 1e-4                                     # metres
+    edges = []                                     # (slope index, a, b) round each top face
+    for k, s in enumerate(slopes):
+        P = s['pts']
+        for i in range(len(P)):
+            edges.append((k, P[i], P[(i + 1) % len(P)]))
+    outer = []
+    for k, a, b in edges:
+        others = [(c, d) for kk, c, d in edges if kk != k]
+        if not _shared(a, b, others, tol):
+            outer.append((k, a, b))
+    if not outer:
+        return out, ["Boards: the roof has no outside edges to put boards on."]
+
+    def plan_u(a, b):
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        return ((b[0] - a[0]) / L, (b[1] - a[1]) / L), L
+
+    def is_level(a, b):
+        return abs(a[2] - b[2]) <= 1e-6 + 1e-4 * math.hypot(b[0] - a[0], b[1] - a[1])
+    eaves = [(k, a, b) for k, a, b in outer if is_level(a, b)]
+    verges = [(k, a, b) for k, a, b in outer if not is_level(a, b)]
+    outer = eaves + verges                 # the same edge objects in all three lists
+
+    def near(q, r):
+        return math.hypot(q[0] - r[0], q[1] - r[1]) <= 1e-3      # on plan (heights may differ)
+
+    # a hipped corner where the end slope is steeper (or shallower) than the sides: the two eaves
+    # are at different heights, joined by a little sloping edge. That's no verge: the two fascias
+    # run on to where their lines cross and are mitred there, like any other hipped corner.
+    changed = True
+    while changed:
+        changed = False
+        for v_ in list(verges):
+            k, a, b = v_
+            ea = [e for e in eaves if near(e[1], a) or near(e[2], a)]
+            eb = [e for e in eaves if near(e[1], b) or near(e[2], b)]
+            if len(ea) != 1 or len(eb) != 1 or ea[0] is eb[0]:
+                continue
+            e1, e2 = ea[0], eb[0]
+            u1, L1 = plan_u(e1[1], e1[2])
+            u2, L2 = plan_u(e2[1], e2[2])
+            cr = u1[0] * u2[1] - u1[1] * u2[0]
+            if abs(cr) < 0.1 or math.hypot(b[0] - a[0], b[1] - a[1]) > 0.5 * min(L1, L2):
+                continue                     # parallel eaves (a lean-to's sides): a real verge
+            # where the two eaves lines cross, on plan
+            P1, P2 = e1[1], e2[1]
+            t = ((P2[0] - P1[0]) * u2[1] - (P2[1] - P1[1]) * u2[0]) / cr
+            X = (P1[0] + u1[0] * t, P1[1] + u1[1] * t)
+
+            def moved(e, V):
+                k_, A_, B_ = e
+                if near(A_, V):
+                    return (k_, (X[0], X[1], A_[2]), B_)
+                return (k_, A_, (X[0], X[1], B_[2]))
+            n1, n2 = moved(e1, a), moved(e2, b)
+            eaves = [n1 if e is e1 else n2 if e is e2 else e for e in eaves]
+            verges.remove(v_)
+            outer = eaves + verges
+            changed = True
+            break
+
+    def end_plane(V, u, n_in, nxt):
+        """The upright plane a fascia ends on at corner V: mitred with another eaves meeting it
+        there, or along the verge (the barge board covers the end). Its normal m on plan."""
+        if nxt is None:
+            return u
+        k2, a2, b2 = nxt
+        u2, _ = plan_u(a2, b2)
+        if nxt in eaves:
+            n2 = (-u2[1], u2[0])                        # into the roof, for that eaves
+            bis = (n_in[0] + n2[0], n_in[1] + n2[1])
+            m = (-bis[1], bis[0])
+        else:
+            m = (-u2[1], u2[0])                         # the verge's own line
+        Lm = math.hypot(*m)
+        if Lm < 1e-9:
+            return u
+        m = (m[0] / Lm, m[1] / Lm)
+        if m[0] * u[0] + m[1] * u[1] < 0:
+            m = (-m[0], -m[1])
+        if m[0] * u[0] + m[1] * u[1] < 0.2:
+            return u                                     # too shallow a cut: end it square
+        return m
+
+    def other_at(V, me):
+        for e in outer:
+            if e is me:
+                continue
+            if near(e[1], V) or near(e[2], V):
+                return e
+        return None
+
+    # the fascias that meet at hipped corners keep one level bottom all the way round (when the
+    # slopes have different pitches their eaves are at different heights), so the mitres meet
+    grp = {id(e): i for i, e in enumerate(eaves)}
+
+    def find(i):
+        while grp_p[i] != i:
+            grp_p[i] = grp_p[grp_p[i]]
+            i = grp_p[i]
+        return i
+    grp_p = list(range(len(eaves)))
+    for e in eaves:
+        for V in (e[1], e[2]):
+            o_ = other_at(V, e)
+            if o_ is not None and id(o_) in grp:
+                grp_p[find(grp[id(e)])] = find(grp[id(o_)])
+    level = {}
+    for e in eaves:
+        zb_ = slopes[e[0]]['under'](e[1][0], e[1][1]) - fh * SCALE
+        r_ = find(grp[id(e)])
+        level[r_] = min(level.get(r_, zb_), zb_)
+
+    # ---- fascia boards (with the soffit joined on), one along each eaves
+    nf = 0
+    corners = {}            # each eaves corner: (how far in the soffit goes (mm), the fascia's bottom (m))
+
+    def ckey(V):
+        return (round(V[0], 3), round(V[1], 3))
+    for e in eaves:
+        if not (want_fascia or want_soffit):
+            break
+        k, A, B = e
+        s = slopes[k]
+        u, L = plan_u(A, B)
+        n_in = (-u[1], u[0])                             # into the roof (the slope is on the left)
+        n_out = (-n_in[0], -n_in[1])
+
+        def yu(d, A=A, n_in=n_in, s=s):                  # the underside, mm above A, d mm in
+            return (s['under'](A[0] + n_in[0] * d * SCALE, A[1] + n_in[1] * d * SCALE) - A[2]) / SCALE
+        y0 = yu(0.0)
+        yb = (level[find(grp[id(e)])] - A[2]) / SCALE     # the fascia's bottom (level round the corners)
+        polys = []
+        f0 = bt if want_fascia else 0.0
+        if want_fascia:
+            polys.append([(0.0, yb), (bt, yb), (bt, yu(bt)), (0.0, y0)])
+        nm = "Fascia board"
+        if want_soffit:
+            o = _wall_behind(A, u, n_out, L, A[2] + (yb + bt) * SCALE, p.get('_all_faces'), f0 + 1.0)
+            if o is not None and o > f0 + 1.0:
+                if yb + bt < yu(o) - 0.5:
+                    polys.append([(f0, yb), (o, yb), (o, yb + bt), (f0, yb + bt)])
+                    nm = "Fascia and soffit" if want_fascia else "Soffit board"
+                else:
+                    problems.append("Soffit under %s: no room under the roof for it there." % s['name'])
+            elif o is None:
+                problems.append("Soffit under %s: couldn't find the wall under that eaves." % s['name'])
+        polys = [q for q in (clean(q_) for q_ in polys) if q]
+        if not polys or (not want_fascia and len(polys) < 1):
+            continue
+        reach_ = max(bbox(q)[1] for q in polys)
+        for V in (A, B):
+            o_, z_ = corners.get(ckey(V), (0.0, None))
+            zb_w = A[2] + yb * SCALE
+            corners[ckey(V)] = (max(o_, reach_), zb_w if z_ is None else min(z_, zb_w))
+        m0 = end_plane(A, u, n_in, other_at(A, e))
+        m1 = end_plane(B, u, n_in, other_at(B, e))
+        Bm = ((B[0] - A[0]) / SCALE, (B[1] - A[1]) / SCALE)
+
+        def s_at(d, V, m):                               # where the end plane is, d mm in
+            return ((V[0] - n_in[0] * d) * m[0] + (V[1] - n_in[1] * d) * m[1]) / (u[0] * m[0] + u[1] * m[1])
+        so = merged_slab(polys, lambda x, y, m0=m0: s_at(x, (0.0, 0.0), m0),
+                         lambda x, y, m1=m1, Bm=Bm: s_at(x, Bm, m1))
+        if so is None:
+            continue
+        nf += 1
+
+        def tw(q, A=A, u=u, n_in=n_in):
+            d, y, sv = q
+            return (A[0] + (n_in[0] * d + u[0] * sv) * SCALE, A[1] + (n_in[1] * d + u[1] * sv) * SCALE,
+                    A[2] + y * SCALE)
+        out.append(("%s - %s (%d)" % (nm, s['name'], nf), 'fascia' if want_fascia else 'soffit', so.mapped(tw)))
+
+    # ---- barge boards: the verges in one upright line (both sides of a gable end) are one piece
+    if want_fascia:
+        lines = []
+        for e in verges:
+            k, a, b = e
+            u, L = plan_u(a, b)
+            n_out = (u[1], -u[0])                        # away from the roof (it's on the left)
+            off = a[0] * n_out[0] + a[1] * n_out[1]
+            for ln in lines:
+                if (ln['n'][0] * n_out[0] + ln['n'][1] * n_out[1] > 0.999 and abs(ln['off'] - off) < 1e-3):
+                    ln['e'].append(e)
+                    break
+            else:
+                lines.append({'n': n_out, 'off': off, 'e': [e]})
+        nb = 0
+        for ln in lines:
+            n_out = ln['n']
+            w = (-n_out[1], n_out[0])
+            k0, a0, b0 = ln['e'][0]
+            O = a0 if a0[2] <= b0[2] else b0
+            pcs, apexes, boxes, side_soffits = [], [], [], []
+            for k, a, b in ln['e']:
+                s = slopes[k]
+                xa = ((a[0] - O[0]) * w[0] + (a[1] - O[1]) * w[1]) / SCALE
+                xb = ((b[0] - O[0]) * w[0] + (b[1] - O[1]) * w[1]) / SCALE
+                ya, yb_ = (a[2] - O[2]) / SCALE, (b[2] - O[2]) / SCALE
+                mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+                dv = (s['top'](*mid) - s['under'](*mid)) / SCALE
+                H = dv + bw
+                Lp = abs(xb - xa)
+                if Lp > 1e-6 and abs(yb_ - ya) < SHALLOW * Lp:
+                    # a shallow side (a flat roof's fall, a low lean-to): a fascia with a level
+                    # bottom, in line with the eaves fascia's bottom - not a barge board sloping
+                    # along it - and a level soffit under it, back to the wall
+                    lowv = a if a[2] <= b[2] else b
+                    c_ = corners.get(ckey(lowv))
+                    ylev = min(ya, yb_) - H
+                    if c_ is not None:
+                        ylev = min(ylev, (c_[1] - O[2]) / SCALE)
+                    q = clean([(xa, ya), (xb, yb_), (xb, ylev), (xa, ylev)])
+                    if q:
+                        pcs.append(q)
+                    side_soffits.append((k, a, b, xa, xb, ylev))
+                    continue
+                q = clean([(xa, ya), (xb, yb_), (xb, yb_ - H), (xa, ya - H)])
+                if q:
+                    pcs.append(q)
+                apexes.append(((xa, ya) if ya > yb_ else (xb, yb_), H))
+                # box end: at the eaves the barge board comes down square round the ends of the
+                # fascia and soffit, covering them - not a strip rising off them, leaving them showing
+                lo, hi = ((xa, ya), (xb, yb_)) if ya <= yb_ else ((xb, yb_), (xa, ya))
+                V = a if a[2] <= b[2] else b
+                c_ = corners.get(ckey(V))
+                if c_ is not None and abs(hi[0] - lo[0]) > 1e-6:
+                    ln_ = max(c_[0], bt)
+                    sg = 1.0 if hi[0] > lo[0] else -1.0
+                    ln_ = min(ln_, 0.9 * abs(hi[0] - lo[0]))
+                    kk = (hi[1] - lo[1]) / (hi[0] - lo[0])
+                    xi = lo[0] + sg * ln_
+                    ybot = min((c_[1] - O[2]) / SCALE, lo[1] - H)
+                    bx_ = clean([(lo[0], ybot), (xi, ybot), (xi, lo[1] + kk * (xi - lo[0])), (lo[0], lo[1])])
+                    if bx_:
+                        boxes.append(bx_)
+            for bx_ in boxes:
+                pcs = cut_away(pcs, [bx_]) + [bx_]
+            # the finial: where two verges meet at a peak
+            tops = {}
+            for (pt, H) in apexes:
+                key = (round(pt[0], 1), round(pt[1], 1))
+                tops.setdefault(key, []).append((pt, H))
+            for key, lst in tops.items():
+                if len(lst) < 2:
+                    continue
+                (ax, ay), H = lst[0]
+                fin = _box(ax - fnw / 2.0, ay - H - fnd, ax + fnw / 2.0, ay + fnh)
+                if fin:
+                    pcs = cut_away(pcs, [fin]) + [fin]
+            pcs = [q for q in pcs if q and abs(area2(q)) > 1e-6]
+            so = merged_slab(pcs, lambda x, y: 0.0, lambda x, y: bt) if pcs else None
+            if so is None:
+                continue
+            nb += 1
+
+            def tw(q, O=O, w=w, n_out=n_out):
+                x, y, z = q
+                return (O[0] + (w[0] * x + n_out[0] * z) * SCALE, O[1] + (w[1] * x + n_out[1] * z) * SCALE,
+                        O[2] + y * SCALE)
+            names = sorted(set(slopes[k]['name'] for k, _a, _b in ln['e']))
+            if side_soffits and not apexes:
+                out.append(("Side fascia - %s (%d)" % (" & ".join(names), nb), 'fascia', so.mapped(tw)))
+            else:
+                out.append(("Barge boards%s - %s (%d)" % (" and finial" if any(len(l_) > 1 for l_ in tops.values())
+                                                           else "", " & ".join(names), nb), 'barge', so.mapped(tw)))
+            # the level soffits under the shallow sides, from the eaves soffits' ends, back to the wall
+            for k, a, b, xa, xb, ylev in (side_soffits if want_soffit else []):
+                u_, L_ = plan_u(a, b)
+                o = _wall_behind(a, u_, n_out, L_, O[2] + (ylev + bt) * SCALE, p.get('_all_faces'), 1.0)
+                if o is None:
+                    problems.append("Soffit under the side of %s: couldn't find the wall there." % slopes[k]['name'])
+                    continue
+                x0_, x1_ = min(xa, xb), max(xa, xb)
+                for V, sgn_ in (((a if xa <= xb else b), 1.0), ((b if xa <= xb else a), -1.0)):
+                    c_ = corners.get(ckey(V))
+                    if c_ is not None:
+                        if sgn_ > 0:
+                            x0_ = max(x0_, min(xa, xb) + c_[0])
+                        else:
+                            x1_ = min(x1_, max(xa, xb) - c_[0])
+                sec = _box(x0_, ylev, x1_, ylev + bt) if x1_ - x0_ > bt else None
+                sso = merged_slab([sec], lambda x, y, o=o: -o, lambda x, y: 0.0) if sec else None
+                if sso is not None:
+                    out.append(("Soffit board - side of %s (%d)" % (slopes[k]['name'], nb), 'soffit', sso.mapped(tw)))
     return out, problems
 
 
@@ -3873,6 +4498,10 @@ def eddy_window(dlg, key, tips=None, place=True):
 # --- Eddy's 3D plugins: hover help and remembered window places (end) ---
 
 EDDY_TIPS = {
+    'Start here': "Framing a building step by step: pick it, the bar sizes, what holds the floors up, then frame "
+                  "it. Each step fills in the other pages.",
+    'Floors and ceilings rest on': "What holds each floor (and ceiling) up: short tabs on the inside face of the "
+                                   "frame, a ledge right round, or nothing.",
     'Frame on': "Inside the building: worked out for you - the frame goes on the inside of the walls and "
                 "under the roof. Or put it on the front or back of the faces you picked.",
     'Walls': "Frame the upright faces.",
@@ -3965,6 +4594,13 @@ BFIELDS = [
                                                            "thickness (W)."),
     ('roof_over', "AD  Roof over the gutter", 0.0, 2000.0, 1, "How far the roof panels hang past the fascia, out over "
                                                              "the gutter. 0 = the board thickness (W)."),
+]
+
+# the floor tabs (Floors page)
+TFIELDS = [
+    ('tab_len', "Tab length", 0.0, 5000.0, 1, "How long each tab is, along the wall. 0 = three bar widths."),
+    ('tab_spacing', "Tabs no further apart than", 0.0, 20000.0, 0, "The most room between tabs along a wall - "
+                                                                   "there's always one near each end. 0 = 1200 mm."),
 ]
 
 # the Floors page (R to U on the key drawing)
@@ -4481,6 +5117,195 @@ def save_preset(name, values):
         json.dump(d, f, indent=2)
 
 
+# --- Eddy's 3D plugins: the 'Start here' page - a few steps, one at a time, with Back and Next ---
+class StartHere:
+    """The 'Start here' page: steps to go through one at a time. Each step has its own copies of the boxes
+    from the other pages ('mirrors'), kept in step with them both ways - so filling in a step fills in the
+    page it belongs to, and the other pages are still there to fine-tune afterwards.
+    steps: [(title, words, [item...])] where an item is one of
+      ('spin', key_in_dlg_sp)              a size box from dlg.sp
+      ('combo', label, combo)              a drop-down list
+      ('check', tick)                      a tick box
+      ('line', label, line_edit)           a text box
+      ('spinint', label, int_spin_box)     a whole-number box
+      ('note', words)                      a grey note
+      ('button', words, callback)          a button
+      ('widget', label, widget)            any widget of its own (not mirrored)
+    on_show: {step number: callback} - run when that step is shown."""
+
+    def __init__(self, dlg, page, steps, on_show=None, intro=""):
+        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QWidget
+        self.dlg = dlg
+        self.on_show = on_show or {}
+        self.pages = []
+        self._sync = False
+        lay = QVBoxLayout(page)
+        if intro:
+            li = QLabel(intro)
+            li.setWordWrap(True)
+            li.setStyleSheet("color: gray;")
+            lay.addWidget(li)
+        self.lbl_step = QLabel()
+        self.lbl_step.setWordWrap(True)
+        lay.addWidget(self.lbl_step)
+        for title, words, items in steps:
+            w = QWidget()
+            fl = QFormLayout(w)
+            if words:
+                lw = QLabel(words)
+                lw.setWordWrap(True)
+                fl.addRow(lw)
+            for it in items:
+                try:
+                    self._add(fl, it)
+                except Exception as e:
+                    print("Start here: a box left out: %s" % e)
+            lay.addWidget(w)
+            w.setVisible(False)
+            self.pages.append((title, w))
+        lay.addStretch(1)
+        row = QHBoxLayout()
+        self.b_back = QPushButton("< Back")
+        self.b_next = QPushButton("Next >")
+        self.b_back.clicked.connect(lambda: self.go(self.at - 1))
+        self.b_next.clicked.connect(lambda: self.go(self.at + 1))
+        row.addWidget(self.b_back)
+        row.addStretch(1)
+        row.addWidget(self.b_next)
+        lay.addLayout(row)
+        self.at = 0
+        self.go(0)
+
+    def _add(self, fl, it):
+        from PySide6.QtWidgets import QLabel, QPushButton, QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit, QSpinBox
+        kind = it[0]
+        if kind == 'note':
+            n_ = QLabel(it[1])
+            n_.setWordWrap(True)
+            n_.setStyleSheet("color: gray;")
+            fl.addRow(n_)
+        elif kind == 'button':
+            b = QPushButton(it[1])
+            b.clicked.connect(lambda *_a, f=it[2]: f())
+            fl.addRow(b)
+        elif kind == 'widget':
+            if it[1]:
+                fl.addRow(it[1], it[2])
+            else:
+                fl.addRow(it[2])
+        elif kind == 'spin':
+            main, lab = self.dlg.sp[it[1]]
+            m = QDoubleSpinBox()
+            m.setDecimals(main.decimals())
+            m.setRange(main.minimum(), main.maximum())
+            m.setSuffix(main.suffix())
+            m.setSpecialValueText(main.specialValueText())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            ml = QLabel(lab.text())
+            ml.setToolTip(main.toolTip())
+            fl.addRow(ml, m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main, ml)
+        elif kind == 'spinint':
+            main = it[2]
+            m = QSpinBox()
+            m.setRange(main.minimum(), main.maximum())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main)
+        elif kind == 'combo':
+            main = it[2]
+            m = QComboBox()
+            for i in range(main.count()):
+                m.addItem(main.itemText(i), main.itemData(i))
+            m.setCurrentIndex(main.currentIndex())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.currentIndexChanged, lambda i, mn=main: mn.setCurrentIndex(i),
+                       main.currentIndexChanged, lambda i, mi=m: mi.setCurrentIndex(i), m)
+            self._enable(m, main)
+        elif kind == 'check':
+            main = it[1]
+            m = QCheckBox(main.text())
+            m.setChecked(main.isChecked())
+            m.setToolTip(main.toolTip())
+            fl.addRow(m)
+            self._pair(m.toggled, lambda on, mn=main: mn.setChecked(on),
+                       main.toggled, lambda on, mi=m: mi.setChecked(on), m)
+            self._enable(m, main)
+        elif kind == 'line':
+            main = it[2]
+            m = QLineEdit()
+            m.setText(main.text())
+            m.setPlaceholderText(main.placeholderText())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.textChanged, lambda t, mn=main: mn.setText(t) if mn.text() != t else None,
+                       main.textChanged, lambda t, mi=m: mi.setText(t) if mi.text() != t else None, m)
+            self._enable(m, main)
+
+    def _pair(self, sig_m, to_main, sig_main, to_m, m):
+        """Keeps a mirror and the box it copies in step, both ways, without going round in circles."""
+        def a(*args):
+            if self._sync:
+                return
+            self._sync = True
+            try:
+                to_main(*args)
+            finally:
+                self._sync = False
+
+        def b(*args):
+            if self._sync:
+                return
+            self._sync = True
+            try:
+                m.blockSignals(True)
+                to_m(*args)
+            finally:
+                m.blockSignals(False)
+                self._sync = False
+        sig_m.connect(a)
+        sig_main.connect(b)
+
+    def _enable(self, m, main, lab=None):
+        """Greyed out when the box it copies is (checked whenever the step is shown)."""
+        self._en = getattr(self, '_en', [])
+        self._en.append((m, main, lab))
+
+    def refresh_enabled(self):
+        for m, main, lab in getattr(self, '_en', []):
+            try:
+                on = main.isEnabled()
+                m.setEnabled(on)
+                if lab is not None:
+                    lab.setEnabled(on)
+            except Exception:
+                pass
+
+    def go(self, k):
+        k = max(0, min(len(self.pages) - 1, k))
+        self.at = k
+        for i, (_t, w) in enumerate(self.pages):
+            w.setVisible(i == k)
+        self.lbl_step.setText("<b>Step %d of %d: %s</b>" % (k + 1, len(self.pages), self.pages[k][0]))
+        self.b_back.setEnabled(k > 0)
+        self.b_next.setEnabled(k < len(self.pages) - 1)
+        f = self.on_show.get(k)
+        if f:
+            try:
+                f()
+            except Exception as e:
+                print("Start here: %s" % e)
+        self.refresh_enabled()
+# --- 'Start here' page (end) ---
+
+
 class FrameDialog(QDialog):
     def __init__(self, cur, viewport, tool):
         super().__init__(viewport)
@@ -4526,6 +5351,9 @@ class FrameDialog(QDialog):
         row.addWidget(self.tabs, 1)
         self.sp = {}
         self.page_of = {}                  # which page each size box is on
+        # 'Start here' first: the steps are put on it once every other page is made
+        self.page_start = QWidget()
+        self.tabs.addTab(self.page_start, "Start here")
 
         page1 = QWidget()
         form = QFormLayout(page1)
@@ -4619,6 +5447,40 @@ class FrameDialog(QDialog):
             self.sp[key] = (s, lab)
             self.page_of[key] = self.tabs.count() - 1
             s.valueChanged.connect(self.changed)
+        self.cb_supports = QComboBox()
+        for t_, d_ in (("Tabs", 'tabs'), ("A ledge all round", 'ledge'), ("Nothing (glue them in)", 'none')):
+            self.cb_supports.addItem(t_, d_)
+        self.cb_supports.setToolTip("What holds each floor (and ceiling) up: short tabs glued on the inside face of "
+                                    "the frame, spaced along each wall (the frame stays whole, each tab a little "
+                                    "block to print), a ledge right round, or nothing.")
+        lab_s = QLabel("Floors and ceilings rest on")
+        lab_s.setToolTip(self.cb_supports.toolTip())
+        ff.addRow(lab_s, self.cb_supports)
+        self.cb_supports.currentIndexChanged.connect(self.changed)
+        for key, label, lo, hi, dec, tip in TFIELDS:
+            s = QDoubleSpinBox()
+            s.setDecimals(dec)
+            s.setRange(lo, hi)
+            s.setKeyboardTracking(True)
+            s.setSuffix(" mm")
+            lab = QLabel(label)
+            s.setToolTip(tip)
+            lab.setToolTip(tip)
+            ff.addRow(lab, s)
+            self.sp[key] = (s, lab)
+            self.page_of[key] = self.tabs.count() - 1
+            s.valueChanged.connect(self.changed)
+        self.sp['tab_len'][0].setSpecialValueText("auto (3 x bar width)")
+        self.sp['tab_spacing'][0].setSpecialValueText("auto (1200 mm)")
+        self.sp_join = QSpinBox()
+        self.sp_join.setRange(1, 50)
+        self.sp_join.setToolTip("Floor Plan buildings: each storey gets a frame of its own (1). Put 2 or more to "
+                                "join that many storeys into one frame - say 5 on a 10-storey building, for two "
+                                "frames that each fit the print bed.")
+        lab_j = QLabel("Storeys in one frame")
+        lab_j.setToolTip(self.sp_join.toolTip())
+        ff.addRow(lab_j, self.sp_join)
+        self.sp_join.valueChanged.connect(self.changed)
         self.checks_floor = QCheckBox("Make the floor panels too")
         self.checks_floor.setToolTip("Cuts a floor panel for each level, sized to drop in inside the frame and "
                                      "rest on the ledges - a separate piece to print. Straight-sided buildings "
@@ -4827,6 +5689,67 @@ class FrameDialog(QDialog):
         last = _ui_settings().get('last_preset')
         if last and last in self.preset_order():
             self.refresh_presets(select=last)
+        self.make_start_here()
+
+    def make_start_here(self):
+        """The 'Start here' page: framing a building in four steps."""
+        self.lbl_picked = QLabel()
+        self.lbl_picked.setWordWrap(True)
+
+        def picked():
+            try:
+                scene = getattr(self.viewport, 'scene', None)
+                sel = _items(getattr(scene, 'selection', None)) if scene is not None else []
+                names = [str(getattr(e, 'name', '') or 'a face') for e in sel]
+            except Exception:
+                names = []
+            if names:
+                self.lbl_picked.setText("Selected: %s" % ", ".join(names[:4]) + (" ..." if len(names) > 4 else ""))
+                self.lbl_picked.setStyleSheet("color: #2e7d32;")
+            else:
+                self.lbl_picked.setText("Nothing selected yet - click the building in the model.")
+                self.lbl_picked.setStyleSheet("color: #b35900;")
+        try:
+            from PySide6.QtCore import QTimer
+            self._pick_timer = QTimer(self)
+            self._pick_timer.timeout.connect(picked)
+            self._pick_timer.start(700)
+        except Exception:
+            pass
+        picked()
+        steps = [
+            ("Pick the building", "Click the building in the model - the whole 'Floor plan' group - so it's "
+                                  "selected. (Or just some of its walls and roof faces.)",
+             [('widget', None, self.lbl_picked)]),
+            ("Bar sizes", "How big are the bars? Pick a preset for your scale, or type the sizes.",
+             [('combo', "Preset", self.cb_preset), ('spin', 'width'), ('spin', 'depth'), ('spin', 'spacing'),
+              ('spin', 'rafter_spacing')]),
+            ("Floors", "A frame for each storey, and what holds the floors and ceilings up. On a Floor Plan "
+                       "building they're found by themselves - nothing to type.",
+             [('combo', "Floors and ceilings rest on", self.cb_supports), ('spin', 'ledge_h'),
+              ('spin', 'ledge_out'), ('spin', 'tab_len'), ('spin', 'tab_spacing'),
+              ('spinint', "Storeys in one frame", self.sp_join),
+              ('note', "Keep the tab height (S) no more than Floor Plan's room for the tabs (TA). 'Storeys in "
+                       "one frame': 1 = a frame for each storey; 5 on a 10-storey building = two frames.")]),
+            ("Frame it", "With the building still selected, frame it.",
+             [('button', "Suggest frame for selection", lambda: self.tool.frame_selection(self)),
+              ('note', "What it made shows under Info. A roof from Floor Plan gets rafters and purlins under "
+                       "it, and its fascia, barge and soffit boards follow its own eaves, verges and overhangs; "
+                       "Floor Plan's floors and ceilings get their tabs.")]),
+        ]
+        try:
+            self.start = StartHere(self, self.page_start, steps, on_show={0: picked},
+                                   intro="Go through the steps with Next - each one fills in the pages to the "
+                                         "right, so you can fine-tune them there afterwards.")
+        except Exception as e:
+            print("%s: 'Start here' page not made: %s" % (PLUGIN_NAME, e))
+
+    def show_start(self):
+        try:
+            self.tabs.setCurrentIndex(0)
+            self.start.go(0)
+        except Exception:
+            pass
 
     # ---- values ----
     def _show_board_colour(self):
@@ -4891,6 +5814,9 @@ class FrameDialog(QDialog):
         v['trusses'] = v.get('truss_spacing', 0.0) > 0
         v['floor_levels'] = self.ed_levels.text().strip()
         v['floor_panels'] = self.checks_floor.isChecked()
+        v['supports'] = self.cb_supports.currentData() or 'tabs'
+        v['tabs'] = v['supports'] == 'tabs'
+        v['storey_join'] = int(self.sp_join.value())
         v['boards'] = self.check_boards.isChecked()
         v['soffits'] = self.check_soffits.isChecked()
         v['roof_panels'] = self.check_roofp.isChecked()
@@ -4919,6 +5845,9 @@ class FrameDialog(QDialog):
                 lv_ = ", ".join("%g" % x for x in lv_)
             self.ed_levels.setText(str(lv_ or ""))
             self.checks_floor.setChecked(bool(d.get('floor_panels', DEFAULTS['floor_panels'])))
+            sup_ = d.get('supports') or ('tabs' if d.get('tabs', True) else 'ledge')
+            self.cb_supports.setCurrentIndex(max(0, self.cb_supports.findData(sup_)))
+            self.sp_join.setValue(int(d.get('storey_join', DEFAULTS['storey_join']) or 1))
             self.check_boards.setChecked(bool(d.get('boards', DEFAULTS['boards'])))
             self.check_soffits.setChecked(bool(d.get('soffits', DEFAULTS['soffits'])))
             self.check_roofp.setChecked(bool(d.get('roof_panels', DEFAULTS['roof_panels'])))
@@ -4971,13 +5900,20 @@ class FrameDialog(QDialog):
             bad_lv = None
         except ValueError as e:
             lv, bad_lv = [], str(e)
-        for k in ('floor_t', 'ledge_h', 'ledge_out', 'floor_fit'):
+        for k in ('floor_fit',):
             self.sp[k][0].setEnabled(bool(lv))
         self.checks_floor.setEnabled(bool(lv))
+        for k in ('tab_len', 'tab_spacing'):
+            self.sp[k][0].setEnabled(v.get('supports', 'tabs') == 'tabs')
+        for k in ('ledge_h', 'ledge_out'):
+            self.sp[k][0].setEnabled(v.get('supports', 'tabs') != 'none')
         if bad_lv:
             self.lbl_floors.setText(bad_lv)
         elif not lv:
-            self.lbl_floors.setText("No floors - no ledges are made.")
+            self.lbl_floors.setText("No floor levels typed: on a Floor Plan building the tabs (or ledge) go under "
+                                    "each of its floors above the ground floor, and each ceiling, by themselves - "
+                                    "using the sizes here. S is the tab height: keep it no more than Floor "
+                                    "Plan's room for the tabs (TA).")
         else:
             lh = v['ledge_h'] if v['ledge_h'] > 0 else v['width']
             lo = v['ledge_out'] if v['ledge_out'] > 0 else v['width']
@@ -5465,6 +6401,9 @@ class SubframeTool(Tool):
         p['_floor'], p['_floor_z'] = find_floor(every + near, infos, bc)
         _save_last_build(every, v)
         p['_all_faces'] = every
+        p['_fp_roof'] = _has_floor_plan_roof(groups)
+        p['_fp_roof_groups'] = _fp_roof_groups(groups) if p['_fp_roof'] else []
+        _floor_plan_setup(groups, p)
         panels, problems = frame_panels(infos, v, p)
         if not panels:
             QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No frame fitted on those faces.")
@@ -5542,10 +6481,21 @@ class SubframeTool(Tool):
             rt_, rov_ = roof_sizes(p)
             msg += ("\n%d plain roof panels on the trusses, %.0f mm thick, hanging %.0f mm past the fascia into the "
                     "gutter - in a 'Roof panels' group, ready for tiles." % (nrp, rt_, rov_))
+        if p.get('_storeys'):
+            nj = p['storey_join']
+            msg += ("\nFloor Plan's %d storeys: a frame for each storey." % p['_storeys'] if nj <= 1 else
+                    "\nFloor Plan's %d storeys: joined %d to a frame." % (p['_storeys'], nj))
+        if p.get('_fp_supports'):
+            msg += "\nThe floors, ceilings and their tabs are Floor Plan's own (its Storeys page) - left as they are."
+        if p.get('_auto_levels'):
+            msg += "\n%s for Floor Plan's floors and ceilings at %s mm (found by themselves)." % (
+                "Tabs" if p.get('supports') == 'tabs' else "Ledges" if p.get('supports') == 'ledge' else
+                "Nothing", ", ".join("%g" % x for x in p['_levels']))
         if p.get('_levels'):
             nf = sum(len(b) for t, b in panels if t == "Floor panels")
-            msg += "\n%d floor ledge%s for %d floor%s" % (
-                p.get('_ledges_made', 0), "s" if p.get('_ledges_made', 0) != 1 else "",
+            msg += "\n%d floor %s for %d floor%s" % (
+                p.get('_ledges_made', 0), ("tab" if p.get('tabs', True) else "ledge") +
+                ("s" if p.get('_ledges_made', 0) != 1 else ""),
                 len(p['_levels']), "s" if len(p['_levels']) > 1 else "")
             msg += (", and %d floor panel%s to drop in on them." % (nf, "s" if nf > 1 else "")) if nf else "."
             if p.get('_ledge_low'):

@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "2.4"  # shown in the window title, so you can tell which file is loaded
+VERSION = "2.6"  # shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -94,7 +94,7 @@ DEFAULTS = {
     'fanlight': 'none', 'fan_h': 400.0, 'transom_w': 75.0, 'fan_cols': 3,
     'slide_over': 100.0, 'rail_h': 60.0,
     'step': 'stone', 'step_h': 150.0, 'step_p': 250.0, 'horn': 100.0,
-    'flight': True, 'flight_to': 'wall', 'rise_max': 180.0, 'going': 280.0,
+    'flight': True, 'flight_to': 'ground', 'cut_below': True, 'rise_max': 180.0, 'going': 280.0,
     'head': 'brick', 'head_h': 215.0, 'head_p': 10.0, 'bearing': 100.0,
     'keystone': False, 'key_w': 150.0, 'key_up': 40.0, 'key_p': 15.0,
     'brick_w': 102.5, 'brick_t': 65.0, 'joint': 10.0,
@@ -102,7 +102,7 @@ DEFAULTS = {
 INT_KEYS = ('cols', 'rows', 'cols_b', 'rows_b', 'leaves', 'fan_cols')
 CHOICE_KEYS = ('style', 'top', 'panel', 'hinge', 'fanlight', 'arch_bars', 'step', 'head', 'flight_to')
 BOOL_KEYS = ('flip', 'flat', 'bars_back', 'remove_face', 'join', 'cut', 'open', 'glass', 'ledges',
-             'braces', 'straps', 'knob', 'keystone', 'flight')
+             'braces', 'straps', 'knob', 'keystone', 'flight', 'cut_below')
 PRESET_KEYS = tuple(DEFAULTS)
 
 BUILTIN_PRESETS = {
@@ -266,6 +266,72 @@ def offset_poly(poly, d):
         if L > lim:
             pt = (P[0] + dx / L * lim, P[1] + dy / L * lim)
         out.append(pt)
+    if min(ds) >= 0.0 and max(ds) > 0.0:
+        out = _no_folds(poly, ds, out)
+    return out
+
+
+def _convex_ccw(poly, eps=1e-9):
+    n = len(poly)
+    if n < 3:
+        return False
+    for i in range(n):
+        a, b, c = poly[i - 1], poly[i], poly[(i + 1) % n]
+        if (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) < -eps * (1.0 + abs(b[0]) + abs(b[1])):
+            return False
+    return True
+
+
+def _halfplane_clip(poly, a, e, n):
+    """The part of poly on the inside (the n side) of the line through a along e."""
+    def side(p):
+        return (p[0] - a[0]) * n[0] + (p[1] - a[1]) * n[1]
+    out = []
+    for i in range(len(poly)):
+        p, q = poly[i - 1], poly[i]
+        sp, sq = side(p), side(q)
+        if sq >= 0:
+            if sp < 0:
+                t = sp / (sp - sq)
+                out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t))
+            out.append(q)
+        elif sp >= 0:
+            t = sp / (sp - sq)
+            out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t))
+    return out
+
+
+def _no_folds(poly, ds, pts):
+    """Moving a curve inwards: short edges (the bit of an arch next to the meeting stiles of a pair
+    of doors, say) can be swallowed by their neighbours, and their moved points then lie outside the
+    true inside shape - a little folded-over triangle that shows as a sliver and won't join into a
+    solid. Each such point is moved onto the nearest corner of the true inside shape, so the points
+    of a swallowed edge all meet there. (Convex outlines only - doors and their leaves are.)"""
+    if not _convex_ccw(poly):
+        return pts
+    K = list(poly)
+    n = len(poly)
+    for i in range(n):
+        p, q = poly[i], poly[(i + 1) % n]
+        ex, ey = q[0] - p[0], q[1] - p[1]
+        L = math.hypot(ex, ey)
+        if L < 1e-12:
+            continue
+        ex, ey = ex / L, ey / L
+        nx, ny = -ey, ex
+        K = _halfplane_clip(K, (p[0] + nx * ds[i], p[1] + ny * ds[i]), (ex, ey), (nx, ny))
+        if len(K) < 3:
+            return pts
+    K = clean(K)
+    if K is None:
+        return pts
+    tol = 1e-6 * (1.0 + max(abs(c) for p in poly for c in p))
+    out = []
+    for pt in pts:
+        if _inside_pt(pt, K) or poly_dist(pt, K) <= tol:
+            out.append(pt)
+        else:
+            out.append(min(K, key=lambda k: (k[0] - pt[0]) ** 2 + (k[1] - pt[1]) ** 2))
     return out
 
 
@@ -370,7 +436,24 @@ def band(inner, outer, z0, z1, closed=False):
         s.add([(a[0], a[1], z0), (d[0], d[1], z0), (d[0], d[1], z1), (a[0], a[1], z1)])
         a, d = inner[-1], outer[-1]
         s.add([(a[0], a[1], z1), (d[0], d[1], z1), (d[0], d[1], z0), (a[0], a[1], z0)])
-    return s.fix()
+    return _drop_degenerate(s).fix()
+
+
+def _drop_degenerate(s):
+    """Where points meet (a swallowed bit of a curve), drops the repeated corners and the faces
+    that have shrunk to nothing, so the solid stays closed."""
+    faces = []
+    for f in s.faces:
+        g = []
+        for q in f:
+            if not g or max(abs(q[k] - g[-1][k]) for k in range(3)) > 1e-9:
+                g.append(q)
+        while len(g) > 1 and max(abs(g[0][k] - g[-1][k]) for k in range(3)) <= 1e-9:
+            g.pop()
+        if len(g) >= 3:
+            faces.append(g)
+    s.faces = faces
+    return s
 
 
 def ring(outer, inner, z0, z1):
@@ -656,7 +739,7 @@ def frustum(lo, hi, z0, z1, kind="raised panel"):
         j = (i + 1) % n
         s.add([(lo[i][0], lo[i][1], z0), (lo[j][0], lo[j][1], z0),
                (hi[j][0], hi[j][1], z1), (hi[i][0], hi[i][1], z1)])
-    return s.fix()
+    return _drop_degenerate(s).fix()
 
 
 def _bottom_index(P):
@@ -727,13 +810,14 @@ def panel_leaf(R, v, sh, zb, zf, glazed, ov):
     """A panelled (or half-glazed) leaf over polygon R, from zb (back) to zf (front).
     Returns (solids, glass, info)."""
     sw, tr, br = v['stile_w'], v['top_rail'], v['bottom_rail']
-    G = clean(offset_poly(R, edge_widths(R, sw, br, tr)))
+    G0 = offset_poly(R, edge_widths(R, sw, br, tr))        # one point for each of R's (for the ring)
+    G = clean(G0)
     if G is None or area2(G) <= 0:
         raise ValueError("The panels don't fit: the stiles and rails are too wide for this door.")
     Gg = clean(offset_poly(G, -ov)) or G          # rails and panels run into the stiles
     pd = max(0.5, min(v['panel_d'], (zf - zb) * 0.6))
     zp = zf - pd                                   # the face of the panels
-    out, glass = [ring(R, G, zb, zf)], []
+    out, glass = [ring(R, G0, zb, zf)], []
     gx0, gx1, gy0, gy1 = bbox(G)
     rx0, rx1, ry0, ry1 = bbox(R)
     mw, lw = v['muntin_w'], v['lock_w']
@@ -832,10 +916,11 @@ def boarded_leaf(R, v, zb, zf, style, hinge_right, ov):
         sw, tr = v['stile_w'], v['top_rail']
         bw_ = v['bottom_rail'] if style == 'sliding' else 0.0
         if style == 'sliding':
-            G = clean(offset_poly(R, edge_widths(R, sw, bw_, tr)))
+            G0 = offset_poly(R, edge_widths(R, sw, bw_, tr))
+            G = clean(G0)
             if G is None:
                 raise ValueError("The frame of the door is too wide for it.")
-            out.append(ring(R, G, zb, zf))
+            out.append(ring(R, G0, zb, zf))
         else:
             fr, G = open_frame(R, sw, zb, zf)
             fr.kind = "door stiles and top rail"
@@ -998,6 +1083,32 @@ def build_flight(sh, v, fd):
     return [so] if so is not None else []
 
 
+def step_cutter(sh, v, fd):
+    """The block the steps take out of whatever is under them (a plinth, a base plate...): the whole
+    footprint of the doorstep and its flight, from the ground up to the top of the doorstep, and from
+    just inside the wall face out to the front of the bottom step. None when there's no flight down,
+    or cutting is switched off."""
+    if not v.get('cut_below', True) or not sh.get('flat_bottom'):
+        return None
+    n, r = flight_count(v)
+    if n == 0:
+        return None
+    x0, x1, y0, _ = sh['box']
+    has_step = v['step'] != 'none'
+    hs = (v['step_h'] if v['step'] == 'stone' else v['brick_w']) if has_step else 0.0
+    F = fd + v['step_p']
+    g = max(50.0, v.get('going', 280.0))
+    xa, xb = x0 - v['horn'], x1 + v['horn']
+    b = v.get('_base_sh', v.get('_base', 0.0))
+    yg = y0 - n * r
+    sec = [(b, yg - 1.0), (F + n * g, yg - 1.0), (F + n * g, y0 + hs), (b, y0 + hs)]
+    so = along_x(sec, xa, xb)
+    if so is not None:
+        so.kind = "step cutter"
+        so.part = 'cutter'
+    return so
+
+
 def _mesh_low_z(mesh):
     zs = [q[2] for q in (_pos(p) for p in _items(getattr(mesh, 'vertices', None))) if q is not None]
     if not zs:
@@ -1047,7 +1158,7 @@ def door_drop(frame, poly, mesh, v, scene=None, group=None):
                 _group_of_mesh(scene, mesh) if scene is not None and mesh is not None else None)
         y0 = min(q[1] for q in poly)
         zdoor = O[2] + V[2] * y0 * SCALE
-        if v.get('flight_to') == 'ground':
+        if v.get('flight_to') == 'ground' or v.get('cut_below', True):
             # measured in the model as a whole (the wall's group may be moved or raised)
             m = _world_matrix(scene, group) if scene is not None and group is not None else None
             pw = _wmap(m, v_add(O, v_mul(V, y0 * SCALE)))
@@ -1119,7 +1230,8 @@ def build_door(sh, v):
         # the head stays flush with the wall, behind the door
         head = build_head(sh, dict(v, head_p=zh, key_p=0.0), 0.0) if v['head'] != 'none' else []
         return {'door': [s for s in door if s], 'glass': [], 'step': [s for s in step if s],
-                'head': [s for s in head if s], 'info': info}
+                'head': [s for s in head if s], 'info': info,
+                'cutter': [c for c in [step_cutter(sh, v, 0.0)] if c is not None]}
 
     P2 = clip_rect(P, x0 - 1, x1 + 1, y0 + hs, y1 + 1) if hs > 0 else P
     P2 = clean(P2)
@@ -1250,7 +1362,8 @@ def build_door(sh, v):
                                (x0 + ov, y1 + ov)], max(base, hb), zf - ov))
     info['zf'] = zf
     return {'door': [s for s in door if s], 'glass': [s for s in glass if s],
-            'step': [s for s in step if s], 'head': [s for s in head if s], 'info': info}
+            'step': [s for s in step if s], 'head': [s for s in head if s], 'info': info,
+            'cutter': [c for c in [step_cutter(sh, v, fd)] if c is not None]}
 
 
 def cut_outline(sh, v):
@@ -2906,8 +3019,13 @@ def fit_kind_shape(poly, v):
     return fit_door(poly, v)
 
 
+_LAST_CUTTERS = []      # the step cutters of the door kind_parts made last (local mm)
+_PLAN_CUTTERS = []      # [(world step cutters, [the wall's group])] from the last plan()
+
+
 def kind_parts(sh, vv):
     built = build_door(sh, vv)
+    _LAST_CUTTERS[:] = list(built.get('cutter') or [])
     out = []
     for grp in ('door', 'step', 'head'):
         for so in built[grp]:
@@ -3577,6 +3695,9 @@ def build_into_wall(op, v, overlap):
     sh = fit_kind_shape(grown, v)
     sols = kind_parts(sh, vv)
     tw = to_world(op['frame'])
+    # the block its steps take out of the plinth (or whatever is under them), kept on the opening
+    # for the whole-building build to use (it's taken off again before the record is saved)
+    op['_cutters'] = [c.mapped(tw) for c in _LAST_CUTTERS]
     return [so.mapped(tw) for so in sols], describe(sh, v)
 
 
@@ -3867,6 +3988,262 @@ def wall_swap_command(swaps):
     return WallWindowsCommand()
 
 
+# ---------------------------------------------------------------------------
+# Steps that cut through what's under them (3D Period Doors only)
+# When a door is up a flight of steps, the steps go right down to the ground and take their own
+# place out of whatever is under them - a plinth, a base plate, a pavement - so they stand on the
+# printer's bed and need no supports. Each thing cut keeps (saved with the model) its plain shape
+# from before any steps were cut into it, and the block each door's steps took out, so it can be
+# made again whenever a door is built again, changed or taken out.
+# ---------------------------------------------------------------------------
+CUT_REC_KEY = "ed3d_step_cuts"
+SUBTRACT_NAMES = ('DIFFERENCE', 'SUBTRACT', 'SUBTRACTION', 'MINUS', 'DIFF', 'CUT', 'SUB')
+
+
+def cut_record(g):
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        return None
+    rec = ext.get(CUT_REC_KEY)
+    return rec if isinstance(rec, dict) and rec.get('orig') else None
+
+
+def set_cut_record(g, rec):
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        if rec is None:
+            return
+        try:
+            g.ext = {}
+        except Exception:
+            return
+        ext = g.ext
+    if rec is None:
+        ext.pop(CUT_REC_KEY, None)
+    else:
+        ext[CUT_REC_KEY] = rec
+
+
+def _pts_bbox(pts):
+    if not pts:
+        return None
+    return (min(p[0] for p in pts), min(p[1] for p in pts), min(p[2] for p in pts),
+            max(p[0] for p in pts), max(p[1] for p in pts), max(p[2] for p in pts))
+
+
+def _bb_overlap(a, b, tol=1e-5):
+    """True when the boxes really overlap (not just touch)."""
+    if a is None or b is None:
+        return False
+    return all(a[k] < b[k + 3] - tol and b[k] < a[k + 3] - tol for k in range(3))
+
+
+def _bb_inside(a, b, tol=1e-5):
+    if a is None or b is None:
+        return False
+    return all(a[k] >= b[k] - tol and a[k + 3] <= b[k + 3] + tol for k in range(3))
+
+
+def _faces_pts(faces):
+    return [p for pts, _h in faces for p in pts]
+
+
+def _invert(m):
+    if m is None:
+        return None
+    try:
+        inv, ok = m.inverted()
+        return inv if ok else None
+    except Exception:
+        return None
+
+
+def _mesh_world_bbox(mesh, m):
+    pts = []
+    for f in _items(getattr(mesh, 'faces', None)):
+        for v in _items(getattr(f, 'vertices', None)):
+            p = _pos(v)
+            if p is not None:
+                pts.append(_wmap(m, p))
+    return _pts_bbox(pts)
+
+
+def _subtract_ops(solid_tools):
+    return [getattr(solid_tools, n) for n in SUBTRACT_NAMES if hasattr(solid_tools, n)]
+
+
+def _minus_one(solid_tools, ops, faces, cutter, cb):
+    """faces (a solid, [(outer, holes)] in metres) take away the cutter ([points] faces)."""
+    from core.group import Group
+    fb = _pts_bbox(_faces_pts(faces))
+    why = None
+    for op in ops:
+        for first in (True, False):
+            ga = Group("piece")
+            ga.mesh, _ = _mesh_from(faces)
+            gc = Group("step cutter")
+            gc.mesh, _ = _mesh_from([(list(p), []) for p in cutter])
+            try:
+                _removed, created = solid_tools.run(op, [ga, gc] if first else [gc, ga])
+            except Exception as e:
+                why = str(e) or e.__class__.__name__
+                continue
+            res = []
+            for c in (created or []):
+                if c is not None and getattr(c, 'mesh', None) is not None:
+                    res += _faces_of_mesh(c.mesh)
+            if not res:
+                if _bb_inside(fb, cb):
+                    return []                    # it was all inside the steps: nothing left of it
+                why = "nothing came back"
+                continue
+            rb = _pts_bbox(_faces_pts(res))
+            if _bb_inside(rb, cb) and not _bb_inside(fb, cb):
+                why = "it came out the wrong way round"     # the steps less the plinth: swap them
+                continue
+            return res
+    raise ValueError(why or "the Solid Tools couldn't take the steps out of it")
+
+
+def solid_minus(faces, cutters):
+    """A solid ([(outer, holes)], metres) less each cutter (a list of [points] faces), with
+    IngeTrazo's own Solid Tools. Returns the new faces."""
+    from core import solids as solid_tools
+    ops = _subtract_ops(solid_tools)
+    if not ops:
+        have = ", ".join(n for n in dir(solid_tools) if n.isupper())
+        raise ValueError("IngeTrazo's Solid Tools have no Subtract this plugin can find (it has: %s)" % have)
+    cur = faces
+    for cutter in cutters:
+        cb = _pts_bbox([p for f in cutter for p in f])
+        if not _bb_overlap(_pts_bbox(_faces_pts(cur)), cb):
+            continue
+        cur = _minus_one(solid_tools, ops, cur, cutter, cb)
+        if not cur:
+            break
+    try:
+        tidy = _merge_flat_faces(cur)
+        if tidy:
+            cur = tidy
+    except Exception as e:
+        print("%s: couldn't tidy the faces after cutting (%s)" % (PLUGIN_NAME, e))
+    return cur
+
+
+def _below_mesh(rec):
+    """The mesh for something steps cut into: its plain shape less every step cutter kept on it."""
+    orig = [(pts, hls) for pts, hls in rec['orig'] if len(pts) >= 3]
+    cutters = [faces for key in sorted(rec.get('cuts') or {}) for faces in rec['cuts'][key]]
+    faces = solid_minus(orig, cutters) if cutters else orig
+    mesh, _bad = _mesh_from(faces)
+    return mesh
+
+
+def plan_step_cuts(scene, jobs, prefixes=()):
+    """What the steps cut out of the things under them.
+    jobs = [(key, [world cutter solids], [groups to leave alone])]; every cut already kept whose key
+    starts with one of `prefixes` is taken off first (a door built again, changed or taken out).
+    Returns ([(group, old mesh, new mesh, old record, new record)], [problems], [names cut])."""
+    tops = _items(getattr(scene, 'groups', None))
+    every = []
+    for t in tops:
+        every += _placements(t)
+    plugin = _plugin_built(tops)
+    targets = {}
+
+    def target(g, m):
+        if id(g) not in targets:
+            old = cut_record(g)
+            rec = json.loads(json.dumps(old)) if old else {
+                'orig': [[list(map(list, pts)), [list(map(list, h)) for h in hls]]
+                         for pts, hls in _faces_of_mesh(g.mesh)], 'cuts': {}}
+            rec.setdefault('cuts', {})
+            targets[id(g)] = (g, m, old, rec)
+        return targets[id(g)][3]
+
+    for g, m in every:
+        rec = cut_record(g)
+        if rec and prefixes and any(k.startswith(pf) for k in (rec.get('cuts') or {}) for pf in prefixes):
+            r = target(g, m)
+            r['cuts'] = {k: c for k, c in r['cuts'].items() if not any(k.startswith(pf) for pf in prefixes)}
+    for key, sols, leave in jobs:
+        sols = [so for so in sols if so is not None]
+        if not sols:
+            continue
+        wb = _pts_bbox([p for so in sols for f in so.faces for p in f])
+        for g, m in every:
+            mesh = getattr(g, 'mesh', None)
+            if (id(g) in plugin or any(g is l for l in leave) or wall_record(g) is not None
+                    or mesh is None or not _items(getattr(mesh, 'faces', None))):
+                continue
+            if not _bb_overlap(_mesh_world_bbox(mesh, m), wb):
+                continue
+            inv = _invert(m)
+            if m is not None and inv is None:
+                continue
+            local = [so.mapped(lambda p, inv=inv: _wmap(inv, p)) for so in sols]
+            r = target(g, m)
+            r['cuts'] = {k: c for k, c in r['cuts'].items() if k != key}
+            r['cuts'][key] = solids_to_rec(local)
+    swaps, problems, names = [], [], []
+    for g, m, old, rec in targets.values():
+        if old is not None and json.dumps(old.get('cuts') or {}, sort_keys=True) == json.dumps(
+                rec['cuts'], sort_keys=True):
+            continue                                  # nothing changed for this one
+        if old is None and not rec['cuts']:
+            continue
+        name = getattr(g, 'name', None) or "a piece"
+        try:
+            new = _below_mesh(rec)
+        except Exception as e:
+            problems.append("%s: %s" % (name, e))
+            continue
+        try:
+            paint_wall(scene, new, g.mesh, [])       # keep its own colours
+        except Exception:
+            pass
+        swaps.append((g, g.mesh, new, json.loads(json.dumps(old)) if old else None,
+                      rec if rec['cuts'] else None))
+        names.append(name)
+    return swaps, problems, names
+
+
+def below_swap_command(swaps, walls=()):
+    """One undo step: the walls (with their doors) and the things the steps cut into, together."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+
+    class StepCutsCommand(Command):
+        def _set(self, scene, which):
+            for g, old, new, old_rec, new_rec in walls:
+                g.mesh = new if which else old
+                r = new_rec if which else old_rec
+                set_wall_record(g, json.loads(json.dumps(r)) if r else None)
+            for g, old, new, old_rec, new_rec in swaps:
+                g.mesh = new if which else old
+                r = new_rec if which else old_rec
+                set_cut_record(g, json.loads(json.dumps(r)) if r else None)
+            try:
+                scene.selection.clear()
+            except Exception:
+                pass
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def do(self, scene):
+            self._set(scene, True)
+
+        def undo(self, scene):
+            self._set(scene, False)
+
+    return StepCutsCommand()
+
+
+
 
 # ---------------------------------------------------------------------------
 # Colours for windows and doors built into their walls (just for looks: they don't change the print).
@@ -4145,7 +4522,11 @@ FIELDS = {
     'flight': ("Steps down when the door is off the ground", "When the bottom of the door is above the "
                "ground, a flight of steps goes down from the doorstep to it - as many as it needs, all the "
                "same height, none taller than the most a step can rise (AA)."),
-    'flight_to': ("Steps go down to", "The bottom of the wall the door is in, or the ground: 0 in the model, or the bottom of the building's plinth or base plate if it goes lower than 0."),
+    'cut_below': ("Steps cut through what's below them", "The steps go right down to the ground and cut "
+                  "their own place out of whatever is under them - the plinth, a base plate, a pavement - "
+                  "so they stand on the bed of the printer and need no supports. Take a door out (or make "
+                  "its steps smaller) and the plinth is mended again."),
+    'flight_to': ("Steps go down to", "The bottom of the wall the door is in, or the ground: 0 in the model, or the bottom of the building's plinth or base plate if it goes lower than 0. When 'Steps cut through what's below them' is ticked they always go to the ground."),
     'rise_max': ("Most a step can rise", 50.0, 500.0, 0, " mm", "The most each step can rise. The steps are "
                                                                 "evened out, so they may come out a bit less."),
     'going': ("Step going (tread)", 100.0, 1000.0, 0, " mm", "How deep each step is, front to back."),
@@ -4180,7 +4561,7 @@ TABS = [
     ("Boards", ('board_w', 'board_gap', 'groove_d', 'board_set', 'ledges', 'ledge_h', 'ledge_t',
                 'braces', 'brace_w', 'straps', 'strap_w', 'strap_t', 'slide_over', 'rail_h')),
     ("Fanlight, knob", ('fanlight', 'fan_h', 'transom_w', 'fan_cols', 'knob', 'knob_d', 'knob_p')),
-    ("Step && head", ('step', 'step_h', 'step_p', 'horn', 'flight', 'flight_to', 'rise_max', 'going', 'head', 'head_h', 'head_p', 'bearing',
+    ("Step && head", ('step', 'step_h', 'step_p', 'horn', 'flight', 'flight_to', 'cut_below', 'rise_max', 'going', 'head', 'head_h', 'head_p', 'bearing',
                       'keystone', 'key_w', 'key_up', 'key_p')),
     ("Sizes", ('frame_w', 'frame_d', 'leaf_t', 'leaf_set', 'brick_w', 'brick_t', 'joint')),
 ]
@@ -5164,6 +5545,7 @@ class PeriodDoorsTool(Tool):
         """[(group name, world solids)] for every opening of the faces, any problems,
         the faces to replace, and {face: outline to cut through the wall}."""
         parts, problems, used, cuts = [], [], [], {}
+        _PLAN_CUTTERS[:] = []
         n = 0
         gap = max(0.0, v.get('lift', 0.0))
         for face in faces:
@@ -5215,6 +5597,11 @@ class PeriodDoorsTool(Tool):
                     problems.append("Opening %d: %s" % (n, e))
                     continue
                 tag_parts(built, 'door', vv)
+                if built.get('cutter') and scene is not None:
+                    wg = _group_of_mesh(scene, mesh) if mesh is not None else None
+                    mw = _world_matrix(scene, wg) if wg is not None else None
+                    _PLAN_CUTTERS.append(([c.mapped(tw).mapped(lambda p, mw=mw: _wmap(mw, p))
+                                           for c in built['cutter']], [wg] if wg is not None else []))
                 if info is not None:
                     ol = cut_outline(sh, vv)
                     if gap > 0:
@@ -5282,6 +5669,9 @@ class PeriodDoorsTool(Tool):
                              for pts, hls in _faces_of_mesh(op['mesh'])],
                     'items': []}
                 walls.append((op['group'], op['mesh'], rec))
+            if not rec.get('uid'):
+                import uuid as _uuid
+                rec['uid'] = _uuid.uuid4().hex[:12]     # names this wall's step cuts in the plinth
             rec['items'] = [w_ for w_ in rec['items'] if not (w_['fi'] == op['fi'] and w_['k'] == op['k'])]
             if fill:
                 if _fill_opening(rec, op):
@@ -5296,13 +5686,22 @@ class PeriodDoorsTool(Tool):
                     'frame': [list(O), list(U), list(V_), list(N)],
                     'values': dict(keep_v), 'overlap': overlap})
         swaps, problems, loose = [], [], []
+        scene_ = getattr(dlg.viewport, 'scene', None)
+        cut_jobs, cut_prefixes = [], []
         for g, mesh, rec in walls:
             plain, _bad = _mesh_from([(pts, hls) for pts, hls in rec['orig'] if len(pts) >= 3])
             sols, kept = [], []
-            _WALL_CTX.update(scene=getattr(dlg.viewport, 'scene', None), group=g, mesh=plain)
+            _WALL_CTX.update(scene=scene_, group=g, mesh=plain)
+            mw = _world_matrix(scene_, g) if scene_ is not None else None
+            if rec.get('uid'):
+                cut_prefixes.append("w%s#" % rec['uid'])
             for w_ in rec['items']:
                 try:
                     got = item_solids(w_, WB_KIND)
+                    cs = w_.pop('_cutters', None)
+                    if cs and rec.get('uid'):
+                        cut_jobs.append(("w%s#%s#%s" % (rec['uid'], w_.get('fi'), w_.get('k')),
+                                         [c.mapped(lambda p, mw=mw: _wmap(mw, p)) for c in cs], [g]))
                     vals = dict(DEFAULTS)
                     vals.update(w_.get('values') or {})
                     for so in got:
@@ -5311,6 +5710,7 @@ class PeriodDoorsTool(Tool):
                     sols += got
                     kept.append(w_)
                 except ValueError as e:
+                    w_.pop('_cutters', None)
                     problems.append("%s: %s" % (w_.get('name', 'an opening'), e))
                     if w_.get('kind') != WB_KIND:
                         kept.append(w_)          # not ours: never lose it
@@ -5330,8 +5730,15 @@ class PeriodDoorsTool(Tool):
                 print("%s: couldn't colour %s: %s" % (PLUGIN_NAME, getattr(g, 'name', 'a wall'), e))
             old_rec = wall_record(g)
             swaps.append((g, mesh, new, json.loads(json.dumps(old_rec)) if old_rec else None, new_rec))
+        below, cut_probs, cut_names = [], [], []
+        if scene_ is not None and (cut_jobs or cut_prefixes):
+            try:
+                below, cut_probs, cut_names = plan_step_cuts(scene_, cut_jobs, cut_prefixes)
+            except Exception as e:
+                cut_probs.append(str(e) or e.__class__.__name__)
         try:
-            dlg.viewport.history.execute(wall_swap_command(swaps))
+            dlg.viewport.history.execute(below_swap_command(below, swaps) if below
+                                         else wall_swap_command(swaps))
         except Exception as e:
             QMessageBox.warning(dlg, PLUGIN_NAME, "Could not change the walls:\n%s" % e)
             return
@@ -5354,6 +5761,10 @@ class PeriodDoorsTool(Tool):
         if loose:
             lines.append("Couldn't join into one solid, so they're in the wall's piece but "
                          "overlapping it (slicers join them when printing): " + "; ".join(loose))
+        if cut_names:
+            lines.append("Steps cut through what's under them (made again to fit): " + ", ".join(cut_names))
+        if cut_probs:
+            lines.append("Couldn't cut the steps into what's under them: " + "; ".join(cut_probs))
         lines.append("Close the plugin whenever you like: Find picks these up again to change them. "
                      "To print: Scale Studio's Pieces page, 'Every group with faces', tick 'Lay each "
                      "piece flat'.")
@@ -5539,6 +5950,18 @@ class PeriodDoorsTool(Tool):
         if err and stats['faces'] == 0:
             QMessageBox.warning(viewport, PLUGIN_NAME, "Could not add the door:\n%s" % err)
             return False
+        cut_names, cut_probs = [], []
+        if _PLAN_CUTTERS:
+            import uuid as _uuid
+            jobs = [("d" + _uuid.uuid4().hex[:12], sols, leave) for sols, leave in _PLAN_CUTTERS]
+            _PLAN_CUTTERS[:] = []
+            try:
+                below, cut_probs, cut_names = plan_step_cuts(scene0, jobs)
+                if below:
+                    hist.execute(below_swap_command(below))
+            except Exception as e:
+                cut_probs.append(str(e) or e.__class__.__name__)
+                cut_names = []
         try:
             viewport.notify_scene_changed()
         except Exception:
@@ -5564,6 +5987,10 @@ class PeriodDoorsTool(Tool):
             rep.append("NOT joined (added as separate pieces): %s - %s" % (name, err))
         if stats['errors']:
             rep.append("%d faces could not be made (%s)." % (stats['errors'], stats['err']))
+        if cut_names:
+            rep.append("Steps cut through what's under them: " + ", ".join(cut_names))
+        if cut_probs:
+            rep.append("Couldn't cut the steps into what's under them: " + "; ".join(cut_probs))
         self.last_report = rep
         for line in rep:
             print("%s: %s" % (PLUGIN_NAME, line))

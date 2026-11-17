@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "7"             # shown in the window title, so you can tell which file is loaded
+VERSION = "7.2"             # shown in the window title, so you can tell which file is loaded
 
 
 PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
@@ -778,22 +778,39 @@ def _even_ends(pcs, J, min_end, near=()):
 
 
 def bond_layout(l, w, J, hl, bond, header_every, offset_mode, offset_fixed, offset_seq,
-                offset_seed, offset_rmax, W, H, tiny=0.0, segments=None, min_end=0.0, x0=0.0):
+                offset_seed, offset_rmax, W, H, tiny=0.0, segments=None, min_end=0.0, x0=0.0,
+                y0=0.0, r0=0):
     """Every brick rectangle of the bond over a W x H panel, before any trimming:
     [(x1, y1, x2, y2, is_header)]. Used by both the generator and the preview.
     segments(y1, y2) gives the runs of wall a course is laid in (between openings); with
     min_end, the bricks at the two ends of each run are evened up so there are no slivers.
-    x0 lines the bond up: a course with no offset has a brick starting there."""
+    x0 lines the bond up: a course with no offset has a brick starting there.
+    y0 and r0 line the courses up with the walls above and below (so they run on through the
+    floor levels): the first course starts y0 below the bottom of the panel (cut off there), and
+    it's course number r0 counted from the ground, so the bond carries on where the wall below
+    left off."""
     out = []
     prev_joints = []
     step_y = w + J
-    rows = int(math.ceil(H / step_y)) + 1
-    offs = _row_offsets(offset_mode, rows, l + J, offset_fixed, offset_seq, offset_seed, offset_rmax)
-    for r in range(rows):
-        y = r * step_y
+    y0 = y0 if 0.0 <= y0 < step_y else 0.0
+    r0 = max(0, int(r0))
+    rows = int(math.ceil((H + y0) / step_y)) + 1
+    # when the courses carry on from a wall below, the course just under this wall is laid too
+    # (not kept) so the first course here is staggered against it exactly as the wall below did
+    first = -1 if r0 > 0 else 0
+    offs = _row_offsets(offset_mode, rows + r0, l + J, offset_fixed, offset_seq, offset_seed, offset_rmax)
+    for rr in range(first, rows):
+        r = rr + r0                       # the course number, counted from the ground
+        y = rr * step_y - y0
         if y >= H:
             continue
         cw = w if y + w <= H else max(0.0005, H - y)
+        ghost = False
+        if y < 0.0:
+            if y + w <= tiny:
+                ghost = True              # all of this course is in the wall below: joints only
+            else:
+                cw, y = y + w, 0.0        # the top of a course that started in the wall below
         unit, shift = _course(r, l, hl, J, bond, header_every)
         if offs is not None:
             is_header = header_every > 0 and (r + 1) % header_every == 0
@@ -809,7 +826,7 @@ def bond_layout(l, w, J, hl, bond, header_every, offset_mode, offset_fixed, offs
                 sx, ex = x, x + L
                 x = ex + J
                 row.append((sx, ex, abs(L - hl) < 1e-9 and abs(hl - l) > 1e-9))
-        runs = segments(y, y + cw) if segments is not None else [(0.0, W)]
+        runs = segments(y, y + cw) if (segments is not None and not ghost) else [(0.0, W)]
         joints = []
         for a, b in runs:
             a, b = max(a, 0.0), min(b, W)
@@ -817,7 +834,7 @@ def bond_layout(l, w, J, hl, bond, header_every, offset_mode, offset_fixed, offs
             pcs = [pc for pc in pcs if pc[1] - pc[0] >= max(tiny, 1e-12)]
             pcs = _even_ends(pcs, J, min_end, prev_joints)
             for x1, x2, hd in pcs:
-                if x2 - x1 >= tiny:
+                if x2 - x1 >= tiny and not ghost:
                     out.append((x1, y, x2, y + cw, hd))
             joints += [x2 + J / 2.0 for _, x2, _ in pcs[:-1]]
         prev_joints = joints
@@ -1881,11 +1898,23 @@ def quoin_layout(outline, H, p, left=True, right=True):
     on the other end at the same course, as at a real corner."""
     qh, J = p['q_h'], p['joint']
     units, excl = [], []
-    k = 0
-    y = 0.0
+    # lined up with the walls below (courses run on through the floors): start part way through one
+    base = p.get('_course_base', 0.0) if p.get('q_courses') else 0.0
+    qs = qh + J
+    k, y = 0, 0.0
+    if base and qs > 0:
+        k = int(math.floor(base / qs + 1e-6))
+        y = -(base - k * qs)
+        if y <= -qs + 1e-6 * qs or y > -1e-6 * qs:
+            y = 0.0
     first = None
     while y < H - J and qh > 0:
         top = min(y + qh, H)
+        if top <= J * 0.5:
+            y = top + J
+            k += 1
+            continue
+        y = max(y, 0.0)
         sp = _span(outline, (y + top) / 2.0)
         if sp:
             xl, xr = sp
@@ -1976,7 +2005,7 @@ def coping_layout(outline, p, rng):
         drop = 0.0
         if on_course and oy > 0.999:
             # a level top: drop the coping onto the last whole course below it
-            base = a[1] - ch
+            base = a[1] - ch + p.get('_course_y0', 0.0)
             k = math.floor(base / step + 1e-6)
             drop = base - k * step
             if drop < 1e-6 * step or drop > step:
@@ -2341,11 +2370,14 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
         min_end = (p.get('min_end_pct') or 0.0) / 100.0 * A if p.get('even_ends', True) else 0.0
         runs = run_finder(outline, [h for h, _, _ in field_holes]) if min_end > 0 else None
         bond_x0 = 0.0
-        if p.get('even_ends', True) and real_holes:
+        if p.get('_course_x0') is not None:
+            bond_x0 = p['_course_x0']     # lined up with the walls above and below it
+        elif p.get('even_ends', True) and real_holes:
             bond_x0 = min(bb[0] for _, bb, _ in real_holes) + J
         rects = bond_layout(A, B, J, p['header_len'], str(p['bond']).lower(), p['header_every'],
                             p['offset_mode'], p['offset_fixed'], p['offset_seq'], p['offset_seed'],
-                            p['offset_rmax'], W, H, tiny, segments=runs, min_end=min_end, x0=bond_x0)
+                            p['offset_rmax'], W, H, tiny, segments=runs, min_end=min_end, x0=bond_x0,
+                            y0=p.get('_course_y0', 0.0), r0=p.get('_course_r0', 0))
         raw = [(_rect(x1, y1, x2, y2), 'header' if hd else 'brick') for x1, y1, x2, y2, hd in rects]
     else:
         if mat == 'ashlar':
@@ -4228,6 +4260,12 @@ class BrickDialog(QDialog):
         self.sp_every.setToolTip("A header course every this many courses.")
         F["Bond"].addRow(self.cb_head)
         F["Bond"].addRow("   Every Nth course:", self.sp_every)
+        self.cb_cground = check("Courses run on through the floors",
+                                "Counts the courses from the ground (height 0), not from the bottom of each "
+                                "wall, so the first floor's bricks carry straight on from the ground floor's - "
+                                "no cut bricks or odd joint at the floor line, and the bond keeps going. "
+                                "Untick to start each wall with a whole course at its bottom.")
+        F["Bond"].addRow(self.cb_cground)
         for w_ in (self.sp_ofix, self.sp_seed, self.sp_rmax, self.sp_every):
             w_.valueChanged.connect(self.changed)
         self.le_seq.textChanged.connect(self.changed)
@@ -4653,7 +4691,7 @@ class BrickDialog(QDialog):
                 'through': self.cb_through, 'foot': self.cb_foot, 'remove_face': self.cb_remove,
                 'pile_core': self.cb_core, 'header_on': self.cb_head, 'c_course': self.cb_ccourse,
                 'worn': self.cb_worn, 'no_hanging': self.cb_hang, 'miss_through': self.cb_mthrough,
-                'pile_timbers_on': self.cb_planks}
+                'pile_timbers_on': self.cb_planks, 'courses_ground': self.cb_cground}
 
     def combos(self):
         return {'material': self.cb_mat, 'bond': self.cb_bond, 'offset_mode': self.cb_off,
@@ -5126,7 +5164,7 @@ DEFAULTS = {
     'material': 'brick',
     'length': 210.0, 'height': 65.0, 'depth': 20.0, 'joint': 10.0, 'min_frag': 20.0, 'header_len': 100.0,
     'var': 0.0, 'relief': 0.0, 'round': 0.0, 'stone_seed': 1,
-    'bond': 'running',
+    'bond': 'running', 'courses_ground': True,
     'offset_mode': 'bond', 'offset_fixed': 0.5, 'offset_seq': '0, 0.5, 0.25, 0.75',
     'offset_seed': 1, 'offset_rmax': 1.0,
     'header_every': 0, '_header_n': 5,
@@ -5357,6 +5395,35 @@ def _full(p):
     if q.get('soldier_len') is None:
         q['soldier_len'] = None
     return q
+
+
+def _course_from_ground(p, fr):
+    """Courses counted from the ground (height 0), not from the bottom of each wall, so they run
+    on through the floor levels: the first floor's courses carry on from the ground floor's, with
+    no cut bricks or odd joint where the two walls meet. Upright walls only."""
+    p['_course_base'], p['_course_y0'], p['_course_r0'], p['_course_x0'] = 0.0, 0.0, 0, None
+    if not p.get('courses_ground', True) or p.get('material', 'brick') != 'brick':
+        return
+    try:
+        if fr['v'].z() < 0.999:
+            return                         # not an upright wall (or the courses are turned)
+        base = fr['origin'].z()
+        o, u = fr['origin'], fr['u']
+        # the bond starts from the same place along every wall in line (a floor above or below),
+        # so the joints carry on up through the floor levels
+        p['_course_x0'] = -(o.x() * u.x() + o.y() * u.y() + o.z() * u.z())
+    except Exception:
+        return
+    step = p['height'] + p['joint']
+    if step <= 0 or abs(base) < 1e-9:
+        return
+    k = int(math.floor(base / step + 1e-6))
+    y0 = base - k * step
+    if y0 < 1e-6 * step or y0 > step * (1 - 1e-6):
+        y0 = 0.0
+    p['_course_base'] = base
+    p['_course_y0'] = y0
+    p['_course_r0'] = k if k >= 0 else k % 3600       # (the bond repeats, so counting on is fine)
 
 
 def _to_metres(p):
@@ -5621,6 +5688,7 @@ class BrickBlockStudioTool(Tool):
             p['soldier_len'] = p['length']
         gap = p.get('hole_gap') or 0.0
         holes = [_grow(h, gap) if gap > 0 else h for h in fr['holes']]   # units stop a hair short
+        _course_from_ground(p, fr)
         res = wall_units(p, W, H, fr['outline'], holes, fr['hole_ids'], self._seed(fr))
         to_w = self._mapper(fr)
         mat = p['material']

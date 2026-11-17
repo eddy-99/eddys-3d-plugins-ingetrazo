@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Openings"
-VERSION = "1.3"
+VERSION = "1.9"
 
 
 def _ed3d_organise(scene, group):
@@ -82,7 +82,8 @@ DEFAULTS = dict(
     door_w=900.0, door_h=2050.0, step=0.0, door_top='square', door_rise=150.0,
     layout='W D W', spread='even', positions='', ends=650.0, top_keep=150.0, gap=600.0,
     side='auto', which='outside', remove_shapes=True,
-    tape_kind='window', tape_to='near', tape_ask=True, tape_count=1)
+    tape_kind='window', tape_to='near', tape_ask=True, tape_count=1, tape_grid=True, grid=100.0,
+    tape_repeat=True, tape_hide=True)
 SIZE_KEYS = ('win_w', 'win_h', 'sill', 'win_rise', 'door_w', 'door_h', 'step', 'door_rise',
              'ends', 'top_keep', 'gap')
 
@@ -1698,6 +1699,233 @@ class OpeningsPreview(QWidget):
         p.end()
 
 
+# --- Eddy's 3D plugins: the 'Start here' page - a few steps, one at a time, with Back and Next ---
+class StartHere:
+    """The 'Start here' page: steps to go through one at a time. Each step has its own copies of the boxes
+    from the other pages ('mirrors'), kept in step with them both ways - so filling in a step fills in the
+    page it belongs to, and the other pages are still there to fine-tune afterwards.
+    steps: [(title, words, [item...])] where an item is one of
+      ('spin', key_in_dlg_sp)              a size box from dlg.sp
+      ('combo', label, combo)              a drop-down list
+      ('check', tick)                      a tick box
+      ('line', label, line_edit)           a text box
+      ('spinint', label, int_spin_box)     a whole-number box
+      ('dspin', label, spin_box)           any other number box
+      ('note', words)                      a grey note
+      ('button', words, callback)          a button
+      ('widget', label, widget)            any widget of its own (not mirrored)
+    on_show: {step number: callback} - run when that step is shown."""
+
+    def __init__(self, dlg, page, steps, on_show=None, intro=""):
+        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QWidget
+        self.dlg = dlg
+        self.on_show = on_show or {}
+        self.pages = []
+        self._sync = False
+        lay = QVBoxLayout(page)
+        if intro:
+            li = QLabel(intro)
+            li.setWordWrap(True)
+            li.setStyleSheet("color: gray;")
+            lay.addWidget(li)
+        self.lbl_step = QLabel()
+        self.lbl_step.setWordWrap(True)
+        lay.addWidget(self.lbl_step)
+        for title, words, items in steps:
+            w = QWidget()
+            fl = QFormLayout(w)
+            if words:
+                lw = QLabel(words)
+                lw.setWordWrap(True)
+                fl.addRow(lw)
+            for it in items:
+                try:
+                    self._add(fl, it)
+                except Exception as e:
+                    print("Start here: a box left out: %s" % e)
+            lay.addWidget(w)
+            w.setVisible(False)
+            self.pages.append((title, w))
+        lay.addStretch(1)
+        row = QHBoxLayout()
+        self.b_back = QPushButton("< Back")
+        self.b_next = QPushButton("Next >")
+        self.b_back.clicked.connect(lambda: self.go(self.at - 1))
+        self.b_next.clicked.connect(lambda: self.go(self.at + 1))
+        row.addWidget(self.b_back)
+        row.addStretch(1)
+        row.addWidget(self.b_next)
+        lay.addLayout(row)
+        self.at = 0
+        self.go(0)
+
+    def _add(self, fl, it):
+        from PySide6.QtWidgets import QLabel, QPushButton, QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit, QSpinBox
+        kind = it[0]
+        if kind == 'note':
+            n_ = QLabel(it[1])
+            n_.setWordWrap(True)
+            n_.setStyleSheet("color: gray;")
+            fl.addRow(n_)
+        elif kind == 'button':
+            b = QPushButton(it[1])
+            b.clicked.connect(lambda *_a, f=it[2]: f())
+            fl.addRow(b)
+        elif kind == 'widget':
+            if it[1]:
+                fl.addRow(it[1], it[2])
+            else:
+                fl.addRow(it[2])
+        elif kind == 'spin':
+            main, lab = self.dlg.sp[it[1]]
+            m = QDoubleSpinBox()
+            m.setDecimals(main.decimals())
+            m.setRange(main.minimum(), main.maximum())
+            m.setSuffix(main.suffix())
+            m.setSpecialValueText(main.specialValueText())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            ml = QLabel(lab.text())
+            ml.setToolTip(main.toolTip())
+            fl.addRow(ml, m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main, ml)
+        elif kind == 'dspin':
+            main = it[2]
+            m = QDoubleSpinBox()
+            m.setDecimals(main.decimals())
+            m.setRange(main.minimum(), main.maximum())
+            m.setSuffix(main.suffix())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main)
+        elif kind == 'spinint':
+            main = it[2]
+            m = QSpinBox()
+            m.setRange(main.minimum(), main.maximum())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main)
+        elif kind == 'combo':
+            main = it[2]
+            m = QComboBox()
+            for i in range(main.count()):
+                m.addItem(main.itemText(i), main.itemData(i))
+            m.setCurrentIndex(main.currentIndex())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.currentIndexChanged, lambda i, mn=main: mn.setCurrentIndex(i),
+                       main.currentIndexChanged, lambda i, mi=m: mi.setCurrentIndex(i), m)
+            self._enable(m, main)
+        elif kind == 'check':
+            main = it[1]
+            m = QCheckBox(main.text())
+            m.setChecked(main.isChecked())
+            m.setToolTip(main.toolTip())
+            fl.addRow(m)
+            self._pair(m.toggled, lambda on, mn=main: mn.setChecked(on),
+                       main.toggled, lambda on, mi=m: mi.setChecked(on), m)
+            self._enable(m, main)
+        elif kind == 'line':
+            main = it[2]
+            m = QLineEdit()
+            m.setText(main.text())
+            m.setPlaceholderText(main.placeholderText())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.textChanged, lambda t, mn=main: mn.setText(t) if mn.text() != t else None,
+                       main.textChanged, lambda t, mi=m: mi.setText(t) if mi.text() != t else None, m)
+            self._enable(m, main)
+
+    def _pair(self, sig_m, to_main, sig_main, to_m, m):
+        """Keeps a mirror and the box it copies in step, both ways, without going round in circles."""
+        def a(*args):
+            if self._sync:
+                return
+            self._sync = True
+            try:
+                to_main(*args)
+            finally:
+                self._sync = False
+
+        def b(*args):
+            if self._sync:
+                return
+            self._sync = True
+            try:
+                m.blockSignals(True)
+                to_m(*args)
+            finally:
+                m.blockSignals(False)
+                self._sync = False
+        sig_m.connect(a)
+        sig_main.connect(b)
+
+    def _enable(self, m, main, lab=None):
+        """Greyed out when the box it copies is (checked whenever the step is shown)."""
+        self._en = getattr(self, '_en', [])
+        self._en.append((m, main, lab))
+
+    def refresh_enabled(self):
+        for m, main, lab in getattr(self, '_en', []):
+            try:
+                on = main.isEnabled()
+                m.setEnabled(on)
+                if lab is not None:
+                    lab.setEnabled(on)
+            except Exception:
+                pass
+
+    def go(self, k):
+        k = max(0, min(len(self.pages) - 1, k))
+        self.at = k
+        for i, (_t, w) in enumerate(self.pages):
+            w.setVisible(i == k)
+        self.lbl_step.setText("<b>Step %d of %d: %s</b>" % (k + 1, len(self.pages), self.pages[k][0]))
+        self.b_back.setEnabled(k > 0)
+        self.b_next.setEnabled(k < len(self.pages) - 1)
+        f = self.on_show.get(k)
+        if f:
+            try:
+                f()
+            except Exception as e:
+                print("Start here: %s" % e)
+        self.refresh_enabled()
+# --- 'Start here' page (end) ---
+
+
+def open_subframe(dlg):
+    """Closes this window and opens Subframe (if it's loaded) at its 'Start here' page - the next step."""
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if mod is not None and (name == "ed3d_subframe" or name.endswith("_ed3d_subframe")) and \
+                hasattr(mod, 'SubframeTool'):
+            try:
+                vp = dlg.viewport
+                try:
+                    dlg.stop_tape()
+                except Exception:
+                    pass
+                dlg.close()                         # one window at a time
+                mod.SubframeTool().on_activate(vp)
+                d2 = getattr(mod.SubframeTool, '_dialog', None)
+                if d2 is not None and hasattr(d2, 'show_start'):
+                    d2.show_start()
+                return
+            except Exception as e:
+                QMessageBox.warning(dlg, PLUGIN_NAME, "Couldn't open Subframe:\n%s" % e)
+                return
+    QMessageBox.information(dlg, PLUGIN_NAME, "Subframe isn't loaded - put ed3d_subframe.py in the plugins "
+                            "folder with this one.")
+
+
 class OpeningsDialog(QDialog):
     def __init__(self, cur, viewport, tool):
         super().__init__(viewport)
@@ -1740,6 +1968,9 @@ class OpeningsDialog(QDialog):
         row.addWidget(self.tabs, 1)
         self.sp = {}
         self.page_of = {}
+        # 'Start here' first: the steps are put on it once every other page is made
+        self.page_start = QWidget()
+        self.tabs.addTab(self.page_start, "Start here")
 
         def size_rows(form, fields):
             for key, label, lo, hi, dec, tip in fields:
@@ -1822,11 +2053,12 @@ class OpeningsDialog(QDialog):
         pt_ = QWidget()
         ft = QFormLayout(pt_)
         self.tabs.addTab(pt_, "Tape measure")
-        how_t = QLabel("1. Click 'Tape measure' (below).\n2. Click the corner or edge of the wall to measure "
-                       "from - it snaps to the corners.\n3. The pop-up comes up straight away: say what goes in and "
-                       "its size - the preview then shows that shape.\n4. Move along the wall the way the opening "
-                       "goes, type the distance (mm) and press Enter - or just click - and it's cut. Then click the "
-                       "next corner for another, or Esc to stop.")
+        how_t = QLabel("1. Click 'Tape measure' (below).\n2. Click the wall - with the grid on, anywhere on it and "
+                       "a grid goes over it; without, its corner or edge to measure from (it snaps to the "
+                       "corners).\n3. The pop-up comes up straight away: say what goes in and its size - the "
+                       "preview then shows that shape.\n4. With the grid: move the mouse and the opening follows, "
+                       "its side and bottom on the grid lines - click to cut it. Without: move along the wall, "
+                       "type the distance (mm) and press Enter, or click. Then click again for another, or Esc.")
         how_t.setWordWrap(True)
         ft.addRow(how_t)
         self.cb_tape_kind = QComboBox()
@@ -1846,6 +2078,37 @@ class OpeningsDialog(QDialog):
         self.sp_tape_count.valueChanged.connect(self.changed)
         self.cb_tape_ask = QCheckBox("Ask for the size each time (pop-up)")
         ft.addRow(self.cb_tape_ask)
+        self.cb_tape_grid = QCheckBox("Grid on the wall - the opening jumps to the grid lines")
+        self.cb_tape_grid.setToolTip("Click the wall and a grid goes over it. Move the mouse and the window or door "
+                                     "follows, its left side and bottom on the grid lines - so openings line up "
+                                     "without measuring. Click to cut it. Typing a distance still works.")
+        ft.addRow(self.cb_tape_grid)
+        self.sp_grid = QDoubleSpinBox()
+        self.sp_grid.setDecimals(1)
+        self.sp_grid.setRange(1.0, 10000.0)
+        self.sp_grid.setSuffix(" mm")
+        self.sp_grid.setToolTip("How far apart the grid lines are (real-world mm). 75 = a brick course, 225 = "
+                                "a brick length, 100 or 300 for round numbers.")
+        ft.addRow("Grid spacing", self.sp_grid)
+        self.cb_tape_grid.toggled.connect(self.changed)
+        self.sp_grid.valueChanged.connect(self.changed)
+        self.cb_tape_repeat = QCheckBox("Keep cutting the same opening - just click where each one goes")
+        self.cb_tape_repeat.setToolTip("After the first one, every click cuts another of the same window or door - "
+                                       "no pop-up, no starting again. 'Change window / door...' picks a different "
+                                       "one; Esc stops.")
+        ft.addRow(self.cb_tape_repeat)
+        self.cb_tape_repeat.toggled.connect(self.changed)
+        self.cb_tape_hide = QCheckBox("Hide this window while placing - a small one stays, with the size")
+        self.cb_tape_hide.setToolTip("While you click the openings in, this window gets out of the way and a small "
+                                     "'Placing openings' window stays open: what goes in and its size (change it "
+                                     "any time), and Main menu / Done to come back. Esc in the model finishes too.")
+        ft.addRow(self.cb_tape_hide)
+        self.cb_tape_hide.toggled.connect(self.changed)
+        self.b_change = QPushButton("Change window / door...")
+        self.b_change.setToolTip("The pop-up again: pick a different window or door (or how many in a row) for the "
+                                 "next ones you click.")
+        self.b_change.clicked.connect(lambda: self.tape.change_opening())
+        ft.addRow(self.b_change)
         for w_ in (self.cb_tape_kind, self.cb_tape_to):
             w_.currentIndexChanged.connect(self.changed)
         self.cb_tape_ask.toggled.connect(self.changed)
@@ -1906,6 +2169,8 @@ class OpeningsDialog(QDialog):
         self.b_tape.setCheckable(True)
         self.tape = TapeState(self)
         self.tape_tool = None
+        self.panel = None                  # the small 'Placing openings' window
+        self._hidden_for_tape = False
         b_close = QPushButton("Close")
         self.cb_lasttab = QCheckBox("Open at the last page used")
         self.cb_lasttab.setToolTip("Ticked, the window opens at the page (Windows, Doors, Placing...) you had open "
@@ -1956,6 +2221,51 @@ class OpeningsDialog(QDialog):
         last = _ui_settings().get('last_preset')
         if last and last in self.preset_order():
             self.refresh_presets(select=last)
+        self.make_start_here()
+
+    def make_start_here(self):
+        """The 'Start here' page: the window and door holes step by step, then on to the frame."""
+        steps = [
+            ("Windows", "How big are the windows, and how high up?",
+             [('spin', 'win_w'), ('spin', 'win_h'), ('spin', 'sill'), ('combo', "Window top", self.cb_win_top),
+              ('spin', 'win_rise')]),
+            ("Doors", "How big are the doors?",
+             [('spin', 'door_w'), ('spin', 'door_h'), ('spin', 'step'), ('combo', "Door top", self.cb_door_top),
+              ('spin', 'door_rise')]),
+            ("Put them in - the quick way", "Select the walls (or the whole building) and type what goes "
+                                            "along each wall: W for a window, D for a door.",
+             [('line', "Openings along the wall", self.ed_layout), ('combo', "Spacing", self.cb_spread),
+              ('combo', "Walls", self.cb_which),
+              ('button', "Cut openings in selected walls", lambda: self.tool.cut_selected(self)),
+              ('note', "Or Next, to put them in one at a time with the tape measure and the grid.")]),
+            ("Or one at a time - with the grid", "Click 'Tape measure', then click a wall: the window or door "
+                                                 "follows the mouse on the grid. Click to cut it.",
+             [('combo', "What goes in", self.cb_tape_kind), ('check', self.cb_tape_grid),
+              ('dspin', "Grid spacing", self.sp_grid),
+              ('check', self.cb_tape_repeat),
+              ('button', "Tape measure", lambda: self.b_tape.setChecked(True)),
+              ('button', "Change window / door...", lambda: self.tape.change_opening()),
+              ('check', self.cb_tape_hide),
+              ('note', "Just keep clicking where each one goes. The small 'Placing openings' window has the "
+                       "size (change it any time) and Main menu / Done to come back here.")]),
+            ("Frame it", "The holes are in. Next comes the frame - it goes round every opening.",
+             [('note', "Select the building, then open Subframe - this window closes and Subframe opens at its "
+                       "own 'Start here' page."),
+              ('button', "Open Subframe", lambda: open_subframe(self))]),
+        ]
+        try:
+            self.start = StartHere(self, self.page_start, steps,
+                                   intro="Go through the steps with Next - each one fills in the pages to the "
+                                         "right, so you can fine-tune them there afterwards.")
+        except Exception as e:
+            print("%s: 'Start here' page not made: %s" % (PLUGIN_NAME, e))
+
+    def show_start(self):
+        try:
+            self.tabs.setCurrentIndex(0)
+            self.start.go(0)
+        except Exception:
+            pass
 
     # ---- values ----
     def values(self):
@@ -1966,7 +2276,9 @@ class OpeningsDialog(QDialog):
                  which=self.cb_which.currentData() or 'outside', remove_shapes=self.cb_remove.isChecked(),
                  tape_kind=self.cb_tape_kind.currentData() or 'window',
                  tape_to=self.cb_tape_to.currentData() or 'near', tape_ask=self.cb_tape_ask.isChecked(),
-                 tape_count=int(self.sp_tape_count.value()))
+                 tape_count=int(self.sp_tape_count.value()), tape_grid=self.cb_tape_grid.isChecked(),
+                 grid=float(self.sp_grid.value()), tape_repeat=self.cb_tape_repeat.isChecked(),
+                 tape_hide=self.cb_tape_hide.isChecked())
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
         return v
@@ -1984,6 +2296,10 @@ class OpeningsDialog(QDialog):
             self.cb_remove.setChecked(bool(d.get('remove_shapes', DEFAULTS['remove_shapes'])))
             self.cb_tape_ask.setChecked(bool(d.get('tape_ask', DEFAULTS['tape_ask'])))
             self.sp_tape_count.setValue(int(d.get('tape_count', DEFAULTS['tape_count']) or 1))
+            self.cb_tape_grid.setChecked(bool(d.get('tape_grid', DEFAULTS['tape_grid'])))
+            self.sp_grid.setValue(float(d.get('grid', DEFAULTS['grid']) or DEFAULTS['grid']))
+            self.cb_tape_repeat.setChecked(bool(d.get('tape_repeat', DEFAULTS['tape_repeat'])))
+            self.cb_tape_hide.setChecked(bool(d.get('tape_hide', DEFAULTS['tape_hide'])))
             for key, (s, _) in self.sp.items():
                 s.setValue(float(d.get(key, DEFAULTS[key])))
         finally:
@@ -2074,9 +2390,25 @@ class OpeningsDialog(QDialog):
         self.b_tape.blockSignals(True)
         self.b_tape.setChecked(True)
         self.b_tape.blockSignals(False)
+        if self.values().get('tape_hide', True):
+            # out of the way while you place the openings - the little 'Placing openings' window stays,
+            # with what goes in and its size, and Main menu / Done. Esc (or another tool) brings it back.
+            self._hidden_for_tape = True
+            try:
+                if getattr(self, 'panel', None) is None:
+                    self.panel = PlacePanel(self)
+                else:
+                    self.panel.load()
+                self.panel.show()
+                self.panel.raise_()
+                self.tape.asked = True          # the panel is the pop-up: no asking on the first click
+                self.hide()
+            except Exception as e:
+                print("%s: placing window: %s" % (PLUGIN_NAME, e))
 
     def stop_tape(self):
         self.tape.reset()
+        self.tape.asked = False
         try:
             act = getattr(self.viewport.window(), "_activate_tool", None)
             if callable(act):
@@ -2095,6 +2427,31 @@ class OpeningsDialog(QDialog):
                 self.b_tape.blockSignals(False)
             except Exception:
                 pass
+            if getattr(self, 'panel', None) is not None:
+                try:
+                    self.panel.hide()
+                except Exception:
+                    pass
+            if getattr(self, '_hidden_for_tape', False):
+                self._hidden_for_tape = False
+                try:
+                    self.show()
+                    self.raise_()
+                except Exception:
+                    pass
+
+    def finish_placing(self, done=False):
+        """'Main menu' or 'Done' in the Placing openings window: stop placing and come back - after Done,
+        at the Start here page's next step (the frame)."""
+        self.stop_tape()
+        self.tape_gone(self.tape_tool)
+        if done:
+            try:
+                self.tabs.setCurrentIndex(0)
+                self.start.go(len(self.start.pages) - 1)
+            except Exception:
+                pass
+            self.show_report("Openings done. Next: the frame - select the building and click 'Open Subframe'.")
 
     def _tape_typed(self):
         txt = self.ed_tape.text().strip().lower().replace('mm', '').strip()
@@ -2470,6 +2827,7 @@ class TapeState:
         self.hover = None
         self.typed = ""
         self.last = None              # (wall entry, x of the opening's left side, distance) under the mouse
+        self.asked = False            # the opening's size has been asked (kept while you click on)
 
     def reset(self):
         self.p0, self.cands, self.hover, self.typed, self.last = None, [], None, "", None
@@ -2514,6 +2872,23 @@ class TapeState:
         width = p['win_w'] if kind == 'window' else p['door_w']
         count = max(1, int(p.get('tape_count', 1) or 1))
         step = width + max(0.0, p['gap'])
+        g = self.grid_place(c, hp, p, kind, width)
+        if g is not None:
+            # the grid: the opening follows the mouse, its left side and bottom on the grid lines
+            xl, yb = g
+            polys = []
+            try:
+                for k in range(count):
+                    x = xl + k * step
+                    if kind == 'window':
+                        polys.append(opening_poly(x, yb, width, p['win_h'], p['win_top'], p['win_rise']))
+                    else:
+                        top = p['door_top'] if p['door_top'] != 'circle' else 'square'
+                        polys.append(opening_poly(x, w.y0 + max(0.0, p['step']), width, p['door_h'], top,
+                                                  p['door_rise']))
+            except ValueError:
+                return None
+            return c, kind, polys, 1.0
         if p.get('tape_to', 'near') == 'middle':
             xl = c['x0'] + sign * d - width / 2.0
         else:
@@ -2533,6 +2908,100 @@ class TapeState:
         if sign < 0:
             polys.reverse()                           # left to right along the wall
         return c, kind, polys, sign
+
+    def grid_on(self, p=None):
+        if p is None:
+            _v, p = self.settings()
+        return bool(p.get('tape_grid', True)) and float(p.get('grid', 0.0) or 0.0) > 0 and not self.typed
+
+    def grid_place(self, c, hp, p, kind, width):
+        """With the grid on (and no distance typed): (left side, bottom) of the opening under the mouse,
+        both on the grid lines - or None."""
+        if not self.grid_on(p) or hp is None:
+            return None
+        G = float(p['grid'])
+        w = c['wall']
+        lp = _wmap(c['inv'], hp) if c['inv'] is not None else hp
+        x, y, _z = to2(w, lp)
+        x_lo = getattr(w, 'x_lo', 0.0)
+        x_hi = getattr(w, 'x_hi', x_lo + w.length)
+        count = max(1, int(p.get('tape_count', 1) or 1))
+        run = width * count + max(0.0, p['gap']) * (count - 1)       # the whole row
+        # on the grid, and kept inside the wall: it stops at the ends instead of running off them
+        k_lo = 1                                     # a grid step of wall left at each end
+        k_hi = math.floor((x_hi - run - x_lo) / G + 1e-9) - 1
+        k = round((x - width / 2.0 - x_lo) / G)
+        if k_hi >= k_lo:
+            k = max(k_lo, min(k_hi, k))
+        xl = x_lo + k * G
+        if kind == 'window':
+            h = p['win_h']
+            y_top = w.y0 + w.height - max(0.0, p.get('top_keep', 0.0))   # K left above it
+            j_hi = math.floor((y_top - h - w.y0) / G + 1e-9)
+            j = max(1, round((y - h / 2.0 - w.y0) / G))
+            if j_hi >= 1:
+                j = min(j, j_hi)
+            yb = w.y0 + j * G
+        else:
+            yb = w.y0 + max(0.0, p['step'])
+        return xl, yb
+
+    def grid_lines(self, c):
+        """The grid on the face of the wall: a small cross at each grid point near the mouse (not lines
+        right across the wall, which were too bright against the opening's outline)."""
+        _v, p = self.settings()
+        G = float(p.get('grid', 0.0) or 0.0)
+        w = c['wall']
+        if G <= 0:
+            return []
+        V = QVector3D
+
+        def W(x, y):
+            q = to3(w, x, y, c['z'])
+            return V(*(_wmap(c['m'], q) if c['m'] is not None else q))
+        x_lo = getattr(w, 'x_lo', 0.0)
+        x_hi = getattr(w, 'x_hi', x_lo + w.length)
+        y0, y1 = w.y0, w.y0 + w.height
+        # round the mouse (or where you clicked)
+        hp = self.hover or self.p0
+        lp = _wmap(c['inv'], hp) if c['inv'] is not None else hp
+        mx, my, _z = to2(w, lp)
+        R = max(1000.0, 6.0 * G)
+        arm = min(0.1 * G, 30.0)
+        out = []
+        i0 = int(math.ceil((max(x_lo, mx - R) - x_lo) / G - 1e-9))
+        i1 = int(math.floor((min(x_hi, mx + R) - x_lo) / G + 1e-9))
+        j0 = int(math.ceil((max(y0, my - R) - y0) / G - 1e-9))
+        j1 = int(math.floor((min(y1, my + R) - y0) / G + 1e-9))
+        if (i1 - i0 + 1) * (j1 - j0 + 1) > 1500:
+            return []
+        for i_ in range(i0, i1 + 1):
+            x = x_lo + i_ * G
+            for j_ in range(j0, j1 + 1):
+                y = y0 + j_ * G
+                out.append((W(x - arm, y), W(x + arm, y)))
+                out.append((W(x, y - arm), W(x, y + arm)))
+        return out
+
+    def follow(self, hp):
+        """With the grid: when the mouse moves off the wall it's on (onto the floor above, or round the
+        corner), the wall under the mouse is picked up instead - so the grid goes with it."""
+        if self.p0 is None or hp is None or not self.grid_on():
+            return
+        c = self.pick_wall(hp)
+        if c is not None:
+            w = c['wall']
+            lp = _wmap(c['inv'], hp) if c['inv'] is not None else hp
+            x, y, z = to2(w, lp)
+            if abs(z - c['z']) < 5.0 and getattr(w, 'x_lo', 0.0) - 1.0 <= x <= getattr(w, 'x_hi', w.length) + 1.0 \
+                    and w.y0 - 1.0 <= y <= w.y0 + w.height + 1.0:
+                return                          # still on it
+        try:
+            here = walls_at(self.dlg.scene(), hp)
+        except Exception:
+            here = []
+        if here:
+            self.p0, self.cands = hp, here
 
     def distance_to(self, hp):
         c = self.pick_wall(hp)
@@ -2560,6 +3029,19 @@ class TapeState:
             q = to3(w, x, y, c['z'])
             return V(*(_wmap(c['m'], q) if c['m'] is not None else q))
         out = []
+        if self.grid_on(p):
+            out += self.grid_lines(c)
+            for poly in polys:
+                n = len(poly)
+                for i in range(n):
+                    out.append((W(*poly[i]), W(*poly[(i + 1) % n])))
+            # the tape: from where you clicked along to the opening's left side
+            lp0 = _wmap(c['inv'], self.p0) if c['inv'] is not None else self.p0
+            y0 = to2(w, lp0)[1]
+            x1 = bbox(polys[0])[0]
+            out.append((W(c['x0'], y0), W(x1, y0)))
+            out.append((W(x1, y0 - 60.0), W(x1, y0 + 60.0)))
+            return out
         for poly in polys:
             n = len(poly)
             for i in range(n):
@@ -2582,7 +3064,21 @@ class TapeState:
 
     def status(self):
         if self.p0 is None:
+            if self.asked and self.repeat_on():
+                return "Click the wall for %s (Esc = finished)" % self.what()
+            if self.grid_on():
+                return "Grid: click the wall to put the grid on it (Esc = stop)"
             return "Tape: click the corner or edge of the wall to measure from (Esc = stop)"
+        if self.grid_on():
+            _v, p = self.settings()
+            got = self.opening_at(0.0, self.hover, p)
+            if got is not None:
+                xl = bbox(got[2][0])[0]
+                yb = bbox(got[2][0])[2]
+                return ("Grid: %.0f mm from the left end, %.0f mm up - click to cut it, or type a distance from "
+                        "where you clicked and press Enter (Esc = finished)" % (
+                            xl - getattr(got[0]['wall'], 'x_lo', 0.0), yb - got[0]['wall'].y0))
+            return "Grid: move the mouse over the wall - the opening follows it on the grid (Esc = start again)"
         d = self._dist()
         vv = self.dlg.values()
         what = "the middle" if vv.get('tape_to') == 'middle' else "the side"
@@ -2594,23 +3090,64 @@ class TapeState:
         return "Tape: %s mm to %s - type a distance and press Enter, or click (Esc = start " \
                "again)" % ("%.0f" % d if d is not None else "-", what)
 
+    def repeat_on(self):
+        return bool(self.dlg.values().get('tape_repeat', True))
+
+    def change_opening(self):
+        """'Change window / door...': the pop-up again, for a different opening from now on."""
+        v, _p = self.settings()
+        if ask_opening(self.dlg, v.get('tape_kind', 'window')):
+            self.asked = True
+            self.dlg.show_report("Now cutting: %s. Click where you want each one (Esc to stop)." % self.what())
+            return True
+        return False
+
+    def what(self):
+        v, p = self.settings()
+        k = v.get('tape_kind', 'window')
+        n = int(v.get('tape_count', 1) or 1)
+        w_, h_ = (p['win_w'], p['win_h']) if k == 'window' else (p['door_w'], p['door_h'])
+        return "%s%s %.0f x %.0f mm" % ("%d x " % n if n > 1 else "a ", k + ("s" if n > 1 else ""), w_, h_)
+
     # ---- what you do
     def click(self, pt):
+        if self.p0 is not None and self.repeat_on():
+            # clicking on: the same wall cuts another; another wall is picked up (and, with the grid, cut
+            # straight away where you clicked)
+            here = walls_at(self.dlg.scene(), pt)
+            if not here:
+                self.dlg.show_report("Click on the front or back of a plain wall.", bad=True)
+                return
+            ids = set(id(c['group']) for c in self.cands)
+            if not any(id(c['group']) in ids for c in here):
+                self.p0, self.cands, self.typed = pt, here, ""
+                if not self.grid_on():
+                    self.dlg.show_report("Tape: measuring from here now - move along the wall, type the distance "
+                                         "and press Enter (or click).")
+                    return
+            self.hover = pt
+            self.commit()
+            return
         if self.p0 is None:
             cands = walls_at(self.dlg.scene(), pt)
             if not cands:
                 self.dlg.show_report("The tape needs to start on the front or back of a plain wall - click its "
-                                     "corner or edge.", bad=True)
+                                     "corner or edge (or, with the grid, anywhere on it).", bad=True)
                 return
             self.p0, self.cands, self.typed = pt, cands, ""
             v, _p = self.settings()
-            if v.get('tape_ask', True):
+            if v.get('tape_ask', True) and not (self.asked and self.repeat_on()):
                 # ask the size now, so the preview follows what's set in the pop-up
                 if not ask_opening(self.dlg, v.get('tape_kind', 'window')):
                     self.reset()
                     self.dlg.show_report("Tape: cancelled - click the corner or edge of a wall to start again.")
                     return
-            self.dlg.show_report("Tape: now move along the wall, type the distance and press Enter (or click).")
+                self.asked = True
+            if self.grid_on():
+                self.dlg.show_report("Grid: move the mouse over the wall - the opening follows it, its side and "
+                                     "bottom on the grid lines. Click to cut it.")
+            else:
+                self.dlg.show_report("Tape: now move along the wall, type the distance and press Enter (or click).")
             return
         self.hover = pt
         self.commit()
@@ -2640,7 +3177,17 @@ class TapeState:
             self.dlg.show_report("That opening can't be made (check its sizes).", bad=True)
             return
         c, kind, polys, _sign = got
-        cut_one(self.dlg, c, kind, polys, p)
+        done = cut_one(self.dlg, c, kind, polys, p)
+        if done and self.repeat_on():
+            # stay on the same opening: the wall (just cut, so read again) is still picked - click for another
+            p0 = self.p0
+            self.reset()
+            self.p0, self.cands = p0, walls_at(self.dlg.scene(), p0)
+            if not self.cands:
+                self.p0 = None
+            self.dlg.show_report("Cut %s. Click where you want the next one - the same again - or change it in "
+                                 "the 'Placing openings' window (Esc when you've finished)." % self.what())
+            return
         self.reset()                    # ready for the next one
 
 
@@ -2654,10 +3201,17 @@ def cut_one(dlg, c, kind, polys, p):
     holes, notches, probs = check_openings(w, ops, p)
     if not (holes or notches):
         dlg.show_report("%s: %s" % (name, "; ".join(probs) or "nothing to cut"), bad=True)
-        try:
-            QMessageBox.information(dlg, PLUGIN_NAME, "%s:\n%s" % (name, "\n".join(probs) or "nothing to cut"))
-        except Exception:
-            pass
+        panel = getattr(dlg, 'panel', None) if getattr(dlg, '_hidden_for_tape', False) else None
+        if panel is not None:
+            try:                                    # placing: said in the little window, no pop-up
+                panel.say("Not cut - %s" % ("; ".join(probs) or "nothing to cut"), bad=True)
+            except Exception:
+                pass
+        else:
+            try:
+                QMessageBox.information(dlg, PLUGIN_NAME, "%s:\n%s" % (name, "\n".join(probs) or "nothing to cut"))
+            except Exception:
+                pass
         return False
     nm_, bad = make_mesh(cut_wall(faces, w, holes, notches))
     if bad:
@@ -2675,6 +3229,149 @@ def cut_one(dlg, c, kind, polys, p):
         msg += "\n" + "\n".join(probs)
     dlg.show_report(msg, bad=bool(probs))
     return True
+
+
+class PlacePanel(QDialog):
+    """The little 'Placing openings' window that stays open while you click the openings in: what goes
+    in and its size (change it any time - the next click uses it), and Main menu / Done."""
+    def __init__(self, dlg):
+        super().__init__(getattr(dlg, 'viewport', None))
+        from PySide6.QtWidgets import QSpinBox
+        self.dlg = dlg
+        self._busy = False
+        self.setWindowTitle("Placing openings")
+        self.setModal(False)
+        try:
+            from PySide6.QtCore import Qt as _Qt
+            self.setWindowFlags(_Qt.Tool | _Qt.WindowTitleHint | _Qt.WindowCloseButtonHint)
+        except Exception:
+            pass
+        f = QFormLayout(self)
+        top = QLabel("Click on a wall where each one goes - the same again every click. Change it here any "
+                     "time.")
+        top.setWordWrap(True)
+        f.addRow(top)
+        self.cb = QComboBox()
+        for lab_, k_ in TAPE_KINDS:
+            self.cb.addItem(lab_, k_)
+        f.addRow("Opening", self.cb)
+        self.sp = {}
+        self.labs = {}
+        for key, label in (('w', "Width"), ('h', "Height"), ('y', "Sill height")):
+            s_ = QDoubleSpinBox()
+            s_.setDecimals(1)
+            s_.setRange(0.0, 50000.0)
+            s_.setSuffix(" mm")
+            lab = QLabel(label)
+            f.addRow(lab, s_)
+            self.sp[key] = s_
+            self.labs[key] = lab
+        self.tops = QComboBox()
+        f.addRow("Top", self.tops)
+        self.cnt = QSpinBox()
+        self.cnt.setRange(1, 200)
+        f.addRow("How many in a row", self.cnt)
+        self.gap = QDoubleSpinBox()
+        self.gap.setDecimals(1)
+        self.gap.setRange(0.0, 50000.0)
+        self.gap.setSuffix(" mm")
+        f.addRow("Gap between them", self.gap)
+        self.lbl = QLabel()
+        self.lbl.setWordWrap(True)
+        self.lbl.setStyleSheet("color: gray;")
+        f.addRow(self.lbl)
+        row = QHBoxLayout()
+        b_menu = QPushButton("Main menu")
+        b_menu.setToolTip("Back to the Openings window (stops placing).")
+        b_done = QPushButton("Done")
+        b_done.setToolTip("Finished with the openings - back to the Openings window, at the next step.")
+        row.addWidget(b_menu)
+        row.addStretch(1)
+        row.addWidget(b_done)
+        f.addRow(row)
+        b_menu.clicked.connect(lambda: self.dlg.finish_placing(done=False))
+        b_done.clicked.connect(lambda: self.dlg.finish_placing(done=True))
+        self.load()
+        self.cb.currentIndexChanged.connect(self.kind_changed)
+        for w_ in list(self.sp.values()) + [self.gap]:
+            w_.valueChanged.connect(self.push)
+        self.cnt.valueChanged.connect(self.push)
+        self.tops.currentIndexChanged.connect(self.push)
+        try:
+            eddy_place(self, "Openings - placing")
+        except Exception:
+            pass
+
+    def load(self):
+        """From the Windows and Doors pages."""
+        self._busy = True
+        try:
+            v = self.dlg.values()
+            k = v.get('tape_kind', 'window')
+            self.cb.setCurrentIndex(max(0, self.cb.findData(k)))
+            self.tops.clear()
+            for lab_, k_ in (TOPS if k == 'window' else DOOR_TOPS):
+                self.tops.addItem(lab_, k_)
+            if k == 'window':
+                self.sp['w'].setValue(v['win_w'])
+                self.sp['h'].setValue(v['win_h'])
+                self.sp['y'].setValue(v['sill'])
+                self.tops.setCurrentIndex(max(0, self.tops.findData(v['win_top'])))
+                self.labs['y'].setText("Sill height")
+            else:
+                self.sp['w'].setValue(v['door_w'])
+                self.sp['h'].setValue(v['door_h'])
+                self.sp['y'].setValue(v['step'])
+                self.tops.setCurrentIndex(max(0, self.tops.findData(v['door_top'])))
+                self.labs['y'].setText("Step up off the bottom")
+            self.cnt.setValue(int(v.get('tape_count', 1) or 1))
+            self.gap.setValue(float(v['gap']))
+            self.gap.setEnabled(self.cnt.value() > 1)
+        finally:
+            self._busy = False
+        self.show_what()
+
+    def kind_changed(self, *_):
+        if self._busy:
+            return
+        d = self.dlg.values()
+        d['tape_kind'] = self.cb.currentData() or 'window'
+        self.dlg.set_values(d)
+        self.load()
+
+    def push(self, *_):
+        """Into the Windows and Doors pages - so the next click uses it."""
+        if self._busy:
+            return
+        d = self.dlg.values()
+        k = self.cb.currentData() or 'window'
+        d['tape_kind'] = k
+        d['tape_count'] = int(self.cnt.value())
+        d['gap'] = self.gap.value()
+        if k == 'window':
+            d.update(win_w=self.sp['w'].value(), win_h=self.sp['h'].value(), sill=self.sp['y'].value(),
+                     win_top=self.tops.currentData() or 'square')
+        else:
+            d.update(door_w=self.sp['w'].value(), door_h=self.sp['h'].value(), step=self.sp['y'].value(),
+                     door_top=self.tops.currentData() or 'square')
+        self.dlg.set_values(d)
+        self.gap.setEnabled(self.cnt.value() > 1)
+        self.show_what()
+        try:
+            self.dlg.viewport.update()
+        except Exception:
+            pass
+
+    def show_what(self):
+        try:
+            self.lbl.setText("Now: %s. Esc in the model also finishes." % self.dlg.tape.what())
+            self.lbl.setStyleSheet("color: gray;")
+        except Exception:
+            pass
+
+    def say(self, text, bad=False):
+        self.lbl.setText(text)
+        self.lbl.setStyleSheet("color: %s;" % ("#b35900" if bad else "#2e7d32"))
 
 
 def ask_opening(dlg, kind):
@@ -2823,6 +3520,7 @@ def make_tape_tool(dlg):
             try:
                 q = ctx.world
                 st.hover = (float(q.x()), float(q.y()), float(q.z()))
+                st.follow(st.hover)
                 ctx.viewport.update()
             except Exception:
                 pass
@@ -2837,10 +3535,12 @@ def make_tape_tool(dlg):
 
         def on_key(self, viewport, key, modifiers):
             if key == Qt.Key_Escape:
-                if st.p0 is not None:
+                if st.typed:
+                    st.typed = ""                # first clears a distance being typed
+                elif st.p0 is not None and not st.repeat_on():
                     st.reset()
                 else:
-                    dlg.stop_tape()
+                    dlg.stop_tape()              # finished: the window comes back
                 viewport.update()
                 return True
             if key in (Qt.Key_Return, Qt.Key_Enter):

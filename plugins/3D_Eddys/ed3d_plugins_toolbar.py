@@ -11,7 +11,7 @@
 # PURPOSE. See the LICENSE file or <https://www.gnu.org/licenses/> for details.
 
 """
-3D Plugins Toolbar (version 2) - one-click icons for your IngeTrazo plugins
+3D Plugins Toolbar (version 2.1) - one-click icons for your IngeTrazo plugins
 A toolbar along the top of the IngeTrazo window with a button for each of the
 3D plugins (Print Scaler, Part Splitter, Brick & Block Studio, Loft, Gutters & Downpipes,
 Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
@@ -22,12 +22,16 @@ Workflow toolbars: a toolbar of steps to work through in order - say, making a b
 plan, bricks, windows, doors, frame, roof... Copy any buttons onto it (the same plugin can be on
 it more than once, and on your other toolbars too), each step numbered with a note of your own.
 The next step is lit up; each one gets a tick when you've done it; 'Start again' clears them.
+'Open last' (at the end of each workflow toolbar) opens the model you last had open, in one click -
+the top one in IngeTrazo's own File > Open Recent list.
 Make one with Arrange toolbars (right-click any of the toolbars).
 """
 
 import os
 import json
 import math
+
+VERSION = "2.1"   # 2.1: 'Open last' button on the workflow toolbars
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Plugins Toolbar"
@@ -475,6 +479,19 @@ def make_icon(kind):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(46, 125, 50))
         p.drawPolygon(QPolygonF([QPointF(17, 1), QPointF(26, 6), QPointF(17, 12)]))
+    elif kind == "openlast":
+        # an open folder with a green arrow: open the model you had last
+        p.setPen(dark)
+        p.setBrush(QColor(222, 178, 82))
+        p.drawPolygon(QPolygonF([QPointF(3, 8), QPointF(12, 8), QPointF(14, 11), QPointF(25, 11),
+                                 QPointF(25, 27), QPointF(3, 27)]))
+        p.setBrush(QColor(245, 205, 110))
+        p.drawPolygon(QPolygonF([QPointF(3, 27), QPointF(8, 15), QPointF(30, 15), QPointF(25, 27)]))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(46, 125, 50))
+        p.drawPolygon(QPolygonF([QPointF(19, 1), QPointF(28, 6), QPointF(19, 11)]))
+        p.setPen(QPen(QColor(46, 125, 50), 3.0))
+        p.drawLine(QPointF(12, 6), QPointF(20, 6))
     elif kind == "layers":
         p.setPen(dark)
         for i, col in enumerate(((168, 80, 56), (84, 90, 102), (46, 92, 68))):   # brick, slate, ironwork
@@ -884,7 +901,86 @@ def build_workflow(tb, win, items):
     again.setToolTip("Clears the ticks, back to step 1.")
     again.triggered.connect(lambda checked=False: reset_workflow(tb))
     tb.addAction(again)
+    last = QAction(make_icon("openlast"), "Open last", tb)
+    last._wf = True
+    last.setObjectName(TOOLBAR_NAME + "_openlast")
+    last.setToolTip("Opens the model you last had open (the top one in File > Open Recent).")
+    last.triggered.connect(lambda checked=False: open_last(win))
+    tb.addAction(last)
     style_workflow(tb)
+
+
+# ---------------------------------------------------------------------------
+# Open last: one click for the model you last had open. It uses IngeTrazo's own
+# File > Open Recent list (so IngeTrazo still asks about saving the model you're in).
+# ---------------------------------------------------------------------------
+NOT_A_FILE = ("clear", "empty", "no recent", "none")
+
+
+def _recent_menu(win):
+    from PySide6.QtWidgets import QMenu
+    for m in win.findChildren(QMenu):
+        try:
+            if "recent" in _clean(m.title()) and not _ours(m):
+                return m
+        except Exception:
+            continue
+    return None
+
+
+def _recent_files(menu):
+    """The entries in the Open Recent menu that are files, newest first."""
+    try:
+        menu.aboutToShow.emit()          # some programs fill the list just before it shows
+    except Exception:
+        pass
+    out = []
+    for a in menu.actions():
+        try:
+            if a.isSeparator() or a.menu() is not None or not a.isEnabled():
+                continue
+            t = _clean(a.text())
+            if not t or any(w in t for w in NOT_A_FILE):
+                continue
+            out.append(a)
+        except Exception:
+            continue
+    return out
+
+
+def _open_action(win):
+    from PySide6.QtGui import QAction
+    for a in win.findChildren(QAction):
+        try:
+            if _clean(a.text()) in ("open", "open...", "open…", "open file", "open file...") and not _ours(a):
+                return a
+        except Exception:
+            continue
+    return None
+
+
+def open_last(win=None):
+    from PySide6.QtWidgets import QMessageBox
+    win = win or _main_window()
+    if win is None:
+        return
+    menu = _recent_menu(win)
+    files = _recent_files(menu) if menu is not None else []
+    if files:
+        a = files[0]
+        print("%s: Open last - %s" % (PLUGIN_NAME, (a.text() or "").replace("&", "")))
+        a.trigger()
+        return
+    op = _open_action(win)
+    if menu is None:
+        why = "Couldn't find IngeTrazo's Open Recent list."
+    else:
+        why = "There's nothing in IngeTrazo's Open Recent list yet - open a model once and this button will work."
+    if op is not None:
+        QMessageBox.information(win, PLUGIN_NAME, why + "\n\nThe ordinary Open window will come up instead.")
+        op.trigger()
+    else:
+        QMessageBox.information(win, PLUGIN_NAME, why)
 
 
 def style_workflow(tb):

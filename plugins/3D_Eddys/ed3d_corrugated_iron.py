@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Corrugated Iron"
-VERSION = "3"
+VERSION = "4"
 
 
 def _ed3d_organise(scene, group):
@@ -1283,6 +1283,9 @@ def face_frame(face, flip=False, turn=0):
 # never clad when a whole group is picked: sheets and tiles made before, and Subframe's bars
 GROUP_SKIP = ("Sheeting - ", "Roof - ", "Subframe", "Roof truss", "Glazing frames", "Fascia and barge boards",
               "Chimney", "Industrial chimney", "Roof vent", "Doig", "Weather vane")
+# Floor Plan's gable ends (and walls with their gable on) sit under the roof: their sloping
+# tops follow the underside of the roof, so they're never the roof itself
+GROUP_SKIP_IN = (" - Gable on ", " with gable")
 GROUP_WHAT = [("Roof slopes", 'roofs'), ("Walls", 'walls'), ("Roofs and walls", 'both')]
 
 
@@ -1350,6 +1353,8 @@ def faces_in_groups(groups):
 
         def walk(g, lvl):
             nm = str(getattr(g, 'name', '') or '')
+            if any(w in nm for w in GROUP_SKIP_IN):
+                return
             if nm.startswith(GROUP_SKIP):
                 skipped.append(nm)
                 return

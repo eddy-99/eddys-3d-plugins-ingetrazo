@@ -27,6 +27,11 @@
                 and a top plate (flat roof / ceiling) on top.
   Gables        Gable ends on top of the end walls (or the front and back, or the walls you
                 pick), from the roof pitch or the ridge height - each its own piece.
+  Roof          A pitched roof on top: gable (ridge along or across), hip (a pyramid on a square),
+                mono-pitch / lean-to, saltbox, a flat roof with a fall, or gables on the walls you
+                pick. Eaves and verge overhangs, and the gable ends and raised walls under it are
+                filled in to meet it. Each slope is its own piece, ready for Subframe to frame and
+                Roof Tiles to cover. (Shapes without inside corners for now - L, T and U to come.)
 
 Every wall section, floor and plate is its own plain group, so Scale Studio's Pieces page
 can lay each one flat on the print bed. Sizes are real-world mm, like the other plugins -
@@ -46,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Floor Plan"
-VERSION = "2.1"
+VERSION = "2.12"
 
 
 def _ed3d_organise(scene, group):
@@ -75,12 +80,21 @@ JOINTS = [("Flat - the long walls run through", 'long'),
 HEIGHT_MODES = [("Each floor its own height", 'each'), ("Divide the total height by the floors", 'divide')]
 FLOOR_STYLES = [("Slabs - each storey stands on its floor", 'stacked'),
                 ("Drop-in panels inside the walls", 'dropin'),
-                ("No floors - walls only", 'none')]
+                ("No floors - walls only", 'none'),
+                ("Each storey set on the Storeys page (floors and ceilings)", 'storeys')]
 GABLE_ON = [("The two ends (left and right) - ridge along the length", 'ends'),
             ("Front and back - ridge across the building", 'sides'),
             ("The walls I pick (by number)", 'pick')]
 TOP_MODES = [("On top of the walls (a flat roof)", 'over'),
              ("Inside the walls, sitting on the inside walls (a ceiling)", 'inside')]
+ROOF_TYPES = [("Gable - ridge along the length", 'gable_len'),
+              ("Gable - ridge across the building", 'gable_across'),
+              ("Hip - slopes on every side (a pyramid on a square)", 'hip'),
+              ("Mono-pitch / lean-to - one slope", 'mono'),
+              ("Saltbox - gable with a different back slope", 'saltbox'),
+              ("Flat roof with a fall", 'flat'),
+              ("Gables on the walls I pick, slopes on the rest", 'pick')]
+ROOF_LOW = [("the front", 'front'), ("the back", 'back'), ("the left", 'left'), ("the right", 'right')]
 GROUPINGS = [("A group for each floor, inside 'Floor plan'", 'storeys'),
              ("Every piece in one 'Floor plan' group", 'one'),
              ("Every piece a plain group on its own (no holder)", 'loose')]
@@ -96,10 +110,14 @@ DEFAULTS = dict(
     base=False, base_t=0.0, base_over=0.0, top=False, top_t=0.0, top_over=0.0, top_mode='over', top_room=0.0,
     top_join=False,
     gables=False, gable_on='ends', gable_walls='', gable_pitch=45.0, ridge_h=0.0, gable_join=False,
+    roof=False, roof_type='gable_len', roof_low='front', roof_gables='', roof_fill=True,
+    roof_pitch=40.0, roof_pitch2=0.0, roof_fall=3.0, eave_over=0.0, verge_over=0.0, roof_t=0.0,
+    storey_rows=[], tab_room=0.0, ceil_t=0.0,
     grouping='storeys')
 SIZE_KEYS = ('length', 'width', 'cut_l', 'cut_w', 'wall_t', 'split_len', 'gap', 'total_h', 'floor_t', 'fit',
              'lip_h', 'lip_fit', 'ledge_w', 'ledge_h', 'part_t', 'part_room', 'base_t', 'base_over', 'top_t', 'top_over',
-             'gable_pitch', 'ridge_h', 'top_room')
+             'gable_pitch', 'ridge_h', 'top_room', 'roof_pitch', 'roof_pitch2', 'roof_fall', 'eave_over',
+             'verge_over', 'roof_t', 'tab_room', 'ceil_t')
 
 BUILTIN_PRESETS = {
     "Two-storey house 7.5 x 6 m": dict(
@@ -131,12 +149,45 @@ BUILTIN_PRESETS = {
         storey_heights='2600, 2400', storeys=2, floor_style='stacked', floor_t=200.0, lip_h=150.0, lip_fit=20.0,
         cross_x='3500', part_t=150.0, base=True, base_t=150.0, base_over=100.0,
         gables=True, gable_on='ends', gable_pitch=45.0, ridge_h=0.0),
+    "Cottage with a gable roof": dict(
+        shape='rect', length=7000.0, width=5000.0, wall_t=300.0, joint='swap', height_mode='each',
+        storey_heights='2600, 2400', storeys=2, floor_style='stacked', floor_t=200.0, lip_h=150.0, lip_fit=20.0,
+        cross_x='3500', part_t=150.0, base=True, base_t=150.0, base_over=100.0,
+        roof=True, roof_type='gable_len', roof_pitch=40.0, eave_over=300.0, verge_over=200.0, roof_t=150.0,
+        roof_fill=True),
+    "House with a hipped roof": dict(
+        shape='rect', length=8000.0, width=6000.0, wall_t=300.0, joint='swap', height_mode='each',
+        storey_heights='2700, 2600', storeys=2, floor_style='stacked', floor_t=200.0, lip_h=150.0, lip_fit=20.0,
+        cross_x='4000', part_t=150.0, base=True, base_t=150.0, base_over=100.0,
+        roof=True, roof_type='hip', roof_pitch=35.0, eave_over=400.0, roof_t=150.0, roof_fill=True),
+    "Cottage - storeys with floors on tabs (for Subframe)": dict(
+        shape='rect', length=7000.0, width=5000.0, wall_t=300.0, joint='pinwheel', height_mode='each',
+        storey_heights='2600, 2400', storeys=2, floor_style='storeys', floor_t=200.0, fit=20.0,
+        cross_x='3500', part_t=150.0, part_room=160.0, base=True, base_t=150.0, base_over=100.0,
+        storey_rows=[dict(floor=True, ceiling=False), dict(floor=True, ceiling=True)],
+        roof=True, roof_type='gable_len', roof_pitch=40.0, eave_over=300.0, verge_over=200.0, roof_t=150.0,
+        roof_fill=True),
+    "Lean-to shed (mono-pitch)": dict(
+        shape='rect', length=4000.0, width=2500.0, wall_t=200.0, joint='long', height_mode='each',
+        storey_heights='2200', storeys=1, floor_style='none', base=True, base_t=150.0, base_over=50.0,
+        roof=True, roof_type='mono', roof_low='front', roof_pitch=15.0, eave_over=250.0, verge_over=150.0,
+        roof_t=100.0, roof_fill=True),
 }
 
 COLOURS = {'wall': (196, 120, 90), 'wall2': (176, 104, 78), 'slab': (205, 185, 150), 'floor': (215, 195, 160),
            'ledge': (110, 85, 60), 'part': (225, 170, 120), 'base': (150, 150, 145), 'top': (120, 120, 125),
-           'lip': (160, 140, 110), 'gable': (186, 96, 70)}
+           'lip': (160, 140, 110), 'gable': (186, 96, 70), 'roof': (110, 95, 90)}
 STOREY_NAMES = ["Ground floor", "First floor", "Second floor", "Third floor", "Fourth floor", "Fifth floor"]
+
+
+def storey_rows(rows, n):
+    """What each storey has (Storeys page): [{'floor', 'ceiling'}] - one for each storey."""
+    out = []
+    rows = rows if isinstance(rows, (list, tuple)) else []
+    for k in range(n):
+        r = rows[k] if k < len(rows) and isinstance(rows[k], dict) else {}
+        out.append(dict(floor=bool(r.get('floor', True)), ceiling=bool(r.get('ceiling', k == n - 1 and n > 0))))
+    return out
 
 
 def storey_name(k):
@@ -223,6 +274,25 @@ def plan_params(v):
             if not nums:
                 raise ValueError("Type the numbers of the walls to put gables on (Gables page), like 2, 4.")
             p['_gable_walls'] = [int(round(x)) - 1 for x in nums]
+    p['roof_t'] = p['roof_t'] if p['roof_t'] > 0 else 0.5 * t
+    p['tab_room'] = p['tab_room'] if p['tab_room'] > 0 else (p['floor_t'] or 0.5 * t)
+    p['ceil_t'] = p['ceil_t'] if p['ceil_t'] > 0 else (p['floor_t'] or 0.5 * t)
+    p['_rows'] = storey_rows(p.get('storey_rows'), len(p['_heights']))
+    if p['floor_style'] == 'storeys' and p['floor_t'] <= 0:
+        raise ValueError("Set the floor thickness (H, on the Floors page).")
+    p['_roof_gables'] = []
+    if p.get('roof'):
+        if p.get('roof_type') == 'flat':
+            if not (0 < p['roof_fall'] < 30):
+                raise ValueError("Set the fall of the flat roof (RC, on the Roof page) - a few degrees, like 3.")
+        elif not (0 < p['roof_pitch'] < 80):
+            raise ValueError("Set the roof pitch (RA, on the Roof page) - between 1 and 80 degrees.")
+        if p['roof_pitch2'] and not (0 < p['roof_pitch2'] < 80):
+            raise ValueError("The second pitch (RB, on the Roof page) needs to be between 1 and 80 degrees "
+                             "(or 0 for the same as the roof pitch).")
+        if p.get('roof_type') == 'pick':
+            nums = parse_list(p.get('roof_gables', ''), "Gable walls")
+            p['_roof_gables'] = [int(round(x)) - 1 for x in nums]
     return p
 
 
@@ -757,6 +827,240 @@ def gable_solid(poly, z0, u, mid, half, tanp, zbase=None):
     return S.fix()
 
 
+# ---------------------------------------------------------------------------
+# The roof: one sloping plane for each side that slopes, the roof being the lowest of them
+# (on a shape without inside corners that gives the ridges and hips by itself)
+# ---------------------------------------------------------------------------
+def is_convex(poly):
+    """True if a counter-clockwise outline has no inside corners."""
+    n = len(poly)
+    for i in range(n):
+        a, b, c = poly[i - 1], poly[i], poly[(i + 1) % n]
+        if (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) < -1e-9:
+            return False
+    return True
+
+
+def roof_tans(p, outline):
+    """For each side of the outline: tan(pitch) if the roof slopes down to it, None for a gable end."""
+    n = len(outline)
+    us = [_unit(outline[i], outline[(i + 1) % n]) for i in range(n)]
+    sides = [side_name(u) for u in us]
+    typ = p.get('roof_type', 'gable_len')
+    a = math.tan(math.radians(p['roof_pitch'])) if p['roof_pitch'] > 0 else 0.0
+    b = math.tan(math.radians(p['roof_pitch2'])) if p['roof_pitch2'] > 0 else a
+    low = p.get('roof_low', 'front')
+    if typ == 'gable_len':
+        out = [a if s in ('front', 'back') else None for s in sides]
+    elif typ == 'gable_across':
+        out = [a if s in ('left', 'right') else None for s in sides]
+    elif typ == 'hip':
+        out = [b if s in ('left', 'right') else a for s in sides]
+    elif typ == 'mono':
+        out = [a if s == low else None for s in sides]
+    elif typ == 'flat':
+        out = [math.tan(math.radians(p['roof_fall'])) if s == low else None for s in sides]
+    elif typ == 'saltbox':
+        out = [a if s == 'front' else b if s == 'back' else None for s in sides]
+    elif typ == 'pick':
+        bad = [i + 1 for i in p['_roof_gables'] if not 0 <= i < n]
+        if bad:
+            raise ValueError("Roof gable walls: there's no wall %s - this shape has walls 1 to %d."
+                             % (", ".join(str(x) for x in bad), n))
+        out = [None if i in p['_roof_gables'] else a for i in range(n)]
+    else:
+        raise ValueError("Unknown roof type.")
+    if not any(x for x in out):
+        raise ValueError("No side of the roof slopes - with these walls as gables there's nothing to hold it up. "
+                         "Pick another roof type (or fewer gable walls).")
+    return out
+
+
+def _side_overhang(outline, ds):
+    """The outline with each side moved out by its own distance (ds[i]), its sides kept parallel."""
+    n = len(outline)
+    lines = []
+    for i in range(n):
+        a, b = outline[i], outline[(i + 1) % n]
+        u = _unit(a, b)
+        lines.append(((a[0] + u[1] * ds[i], a[1] - u[0] * ds[i]), u))      # right of the side = outside
+    out = []
+    for i in range(n):
+        q = meet(lines[i - 1][0], lines[i - 1][1], lines[i][0], lines[i][1])
+        if q is not None:
+            out.append(q)
+    return clean(out)
+
+
+def _clip_plane(poly, A, B):
+    """The part of poly where A.q + B >= 0."""
+    L2 = A[0] * A[0] + A[1] * A[1]
+    if L2 < 1e-18:
+        return poly if B >= -1e-9 else []
+    q0 = (-B * A[0] / L2, -B * A[1] / L2)
+    return clip_half(poly, q0, A)
+
+
+def _envelope_regions(poly, planes):
+    """planes: {key: (gx, gy, c)} for z = gx*x + gy*y + c. Returns {key: region of poly where that
+    plane is the lowest} - empty regions left out."""
+    out = {}
+    for i, (gi0, gi1, ci) in planes.items():
+        reg = list(poly)
+        for j, (gj0, gj1, cj) in planes.items():
+            if j == i or len(reg) < 3:
+                continue
+            reg = _clip_plane(reg, (gj0 - gi0, gj1 - gi1), cj - ci)
+        reg = clean(reg) if len(reg) >= 3 else None
+        if reg and abs(area2(reg)) > 1e-3:
+            out[i] = reg
+    return out
+
+
+def _plane_z(pl, q):
+    return pl[0] * q[0] + pl[1] * q[1] + pl[2]
+
+
+def slab_on_plane(region, pl, depth):
+    """A roof slope: its top on the plane over the region, its underside 'depth' below that, its edges
+    upright (plumb), so slopes meeting at a ridge or hip close up with no gap."""
+    S = PSolid()
+    S.add([(x, y, _plane_z(pl, (x, y))) for x, y in region])
+    S.add([(x, y, _plane_z(pl, (x, y)) - depth) for x, y in reversed(region)])
+    n = len(region)
+    for i in range(n):
+        a, b = region[i], region[(i + 1) % n]
+        za, zb = _plane_z(pl, a), _plane_z(pl, b)
+        S.add([(a[0], a[1], za - depth), (b[0], b[1], zb - depth), (b[0], b[1], zb), (a[0], a[1], za)])
+    return S.fix()
+
+
+def fill_solid(poly, z0, planes):
+    """A wall (or the top of one) standing on z0, its top following the underside of the roof: the
+    lowest of the planes, so a gable end, a saltbox's lopsided gable or the raised back wall under a
+    lean-to roof all come out right. Each side is one whole face."""
+    regions = _envelope_regions(poly, planes)
+    S = PSolid()
+    S.add([(x, y, z0) for x, y in reversed(poly)])
+
+    def under(q):
+        return min(_plane_z(pl, q) for pl in planes.values())
+    keys = list(planes)
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        ts = []
+        for x_ in range(len(keys)):
+            for y_ in range(x_ + 1, len(keys)):
+                p1, p2 = planes[keys[x_]], planes[keys[y_]]
+                fa, fb = _plane_z(p1, a) - _plane_z(p2, a), _plane_z(p1, b) - _plane_z(p2, b)
+                if (fa < -1e-9 and fb > 1e-9) or (fa > 1e-9 and fb < -1e-9):
+                    ts.append((fa / (fa - fb), p1))
+        top = [(a[0], a[1], under(a))]
+        for t_, p1 in sorted(ts, key=lambda x: x[0]):
+            r = (a[0] + t_ * (b[0] - a[0]), a[1] + t_ * (b[1] - a[1]))
+            zr = under(r)
+            # only where the roof really changes slope (a crossing hidden above another plane isn't a corner)
+            if abs(zr - _plane_z(p1, r)) < 1e-6:
+                top.append((r[0], r[1], zr))
+        top.append((b[0], b[1], under(b)))
+        pts = [(a[0], a[1], z0), (b[0], b[1], z0)] + list(reversed(top))
+        f_ = []
+        for q in pts:
+            if not f_ or max(abs(q[j] - f_[-1][j]) for j in range(3)) > 1e-6:
+                f_.append(q)
+        while len(f_) > 1 and max(abs(f_[0][j] - f_[-1][j]) for j in range(3)) <= 1e-6:
+            f_.pop()
+        if len(f_) >= 3:
+            S.add(f_)
+    for k, reg in regions.items():
+        S.add([(x, y, _plane_z(planes[k], (x, y))) for x, y in reg])
+    return S.fix()
+
+
+def build_roof(p, outline, zw, us, names):
+    """The roof slopes on top of the walls (zw = the top of the walls, or of the top plate):
+    ([Piece], under-roof planes {side: plane}, notes)."""
+    if not is_convex(outline):
+        raise ValueError("The roof can only go on a shape without inside corners for now (a rectangle, or any "
+                         "shape with every corner pointing out). L, T and U roofs are coming next.")
+    tans = roof_tans(p, outline)
+    n = len(outline)
+    ds = [p['eave_over'] if tans[i] else p['verge_over'] for i in range(n)]
+    eaves = _side_overhang(outline, ds) if any(d != 0 for d in ds) else list(outline)
+    if not eaves or len(eaves) < 3:
+        raise ValueError("The overhangs (RD, RE) don't leave a roof.")
+    tops, unders, depth = {}, {}, {}
+    for i in range(n):
+        if not tans[i]:
+            continue
+        u = us[i]
+        nx, ny = -u[1], u[0]                         # into the building
+        P = outline[i]
+        tn = tans[i]
+        dv = p['roof_t'] * math.sqrt(1.0 + tn * tn)  # the thickness, measured upright
+        # the underside meets the outside of the wall at the top of the wall
+        c = zw - tn * (P[0] * nx + P[1] * ny)
+        unders[i] = (tn * nx, tn * ny, c)
+        tops[i] = (tn * nx, tn * ny, c + dv)
+        depth[i] = dv
+    regions = _envelope_regions(eaves, tops)
+    pieces = []
+    zmax = zw
+    k = 0
+    for i in sorted(regions):
+        reg = regions[i]
+        k += 1
+        nm = "Roof slope %d (%s)" % (k, names[i].split("(", 1)[1].rstrip(")") if "(" in names[i] else names[i])
+        zs_ = [_plane_z(tops[i], q) for q in reg]
+        pc = Piece(nm, 'roof', -2, reg, min(zs_) - depth[i], max(zs_))
+        pc.custom = slab_on_plane(reg, tops[i], depth[i])
+        pieces.append(pc)
+        zmax = max(zmax, max(zs_))
+    notes = dict(slopes=len(pieces), rise=zmax - zw, top=zmax,
+                 pitches=sorted(set(round(math.degrees(math.atan(t_)), 1) for t_ in tans if t_)))
+    return pieces, unders, notes
+
+
+def two_row_tabs(tabs, holder, rows=2):
+    """Shows a tab window's pages as buttons on `rows` rows (in holder), instead of its own single
+    row of tabs. Clicking a button opens that page; the button of the page that's open is pressed."""
+    from PySide6.QtWidgets import QGridLayout, QPushButton, QButtonGroup, QSizePolicy
+    n = tabs.count()
+    if n == 0:
+        return
+    grid = QGridLayout(holder)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(2)
+    grid.setVerticalSpacing(2)
+    per = int(math.ceil(n / float(rows)))
+    group = QButtonGroup(holder)
+    group.setExclusive(True)
+    btns = []
+    for i in range(n):
+        b = QPushButton(tabs.tabText(i).replace("&&", "&").replace("&", "&&"))
+        b.setCheckable(True)
+        b.setToolTip(tabs.tabToolTip(i) or "")
+        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        b.setStyleSheet("QPushButton { padding: 3px 6px; } QPushButton:checked { font-weight: bold; "
+                        "background: #cfe3f7; border: 1px solid #5b8fc7; }")
+        grid.addWidget(b, i // per, i % per)
+        group.addButton(b, i)
+        btns.append(b)
+    group.idClicked.connect(tabs.setCurrentIndex)
+
+    def show(i):
+        if 0 <= i < len(btns):
+            btns[i].setChecked(True)
+    tabs.currentChanged.connect(show)
+    show(tabs.currentIndex())
+    try:
+        tabs.tabBar().hide()
+    except Exception:
+        pass
+    holder._tab_buttons = btns
+
+
 class Piece:
     def __init__(self, name, kind, storey, poly, z0, z1, lip=None, lip_h=0.0, prof=None):
         self.name, self.kind, self.storey = name, kind, storey
@@ -767,8 +1071,11 @@ class Piece:
         self.parts = None                           # [(name, solid)]: made as a group of these
         self.feet_z = 0.0
         self.inside = False                         # top plate inside the walls
+        self.custom = None                          # a solid made already (roof slopes, filled gables)
 
     def solid(self):
+        if self.custom is not None:
+            return self.custom
         if self.feet:
             return plate_with_walls(self.poly, self.z0, self.z1, self.feet, self.feet_z)
         if self.holes:
@@ -830,7 +1137,48 @@ def build_plan(p, outline):
                 pieces.append(Piece(nm, 'wall', k, pc, wz0, wz1))
     # gable ends on top of the walls (on the top plate, if there is one)
     gable_notes = []
-    if p.get('gables'):
+    roof_notes = None
+    if p.get('roof'):
+        # a pitched roof on top, and (ticked) the gable ends and raised walls under it filled in
+        kg = storeys[-1]
+        label = "Walls" if one_piece else storey_name(kg)
+        zw = H + (p['top_t'] if p.get('top') and p.get('top_mode') != 'inside' else 0.0)
+        roof_pcs, unders, roof_notes = build_roof(p, outline, zw, us, names)
+        fills = 0
+        if p.get('roof_fill'):
+            joined = bool(p.get('gable_join'))
+            if joined and p.get('top') and p.get('top_mode') != 'inside':
+                raise ValueError("The gable ends can't be joined to their walls with a top plate in the way - "
+                                 "untick the top plate (Base & top page) or 'Join each gable to its wall' "
+                                 "(Gables page).")
+            wall_at = {pc.name: (idx, pc) for idx, pc in enumerate(pieces) if pc.kind == 'wall' and pc.storey == kg}
+            drop = set()
+            for quad, i in wall_quads(outline, t, p['joint'], kg):
+                if i in unders:
+                    continue                            # the roof slopes down onto this wall
+                parts = split_quad(quad, us[i], p['split_len'], gap)
+                for j, pc in enumerate(parts):
+                    sol = fill_solid(pc, zw, unders)
+                    rise = max(q[2] for f_ in sol.faces for q in f_) - zw
+                    if rise <= 1e-6:
+                        continue
+                    part_txt = (" part %d" % (j + 1)) if len(parts) > 1 else ""
+                    below = wall_at.get("%s - %s%s" % (label, names[i], part_txt))
+                    if joined and below is not None:
+                        drop.add(below[0])
+                        g_ = Piece("%s - %s with gable%s" % (label, names[i], part_txt), 'gable', kg, pc,
+                                   below[1].z0, zw + rise)
+                        g_.custom = fill_solid(pc, below[1].z0, unders)
+                    else:
+                        g_ = Piece("%s - Gable on %s%s" % (label, names[i], part_txt), 'gable', kg, pc, zw, zw + rise)
+                        g_.custom = sol
+                    pieces.append(g_)
+                    fills += 1
+            if drop:
+                pieces = [pc for idx, pc in enumerate(pieces) if idx not in drop]
+        pieces += roof_pcs
+        roof_notes['fills'] = fills
+    if p.get('gables') and not p.get('roof'):
         if p.get('gable_join') and p.get('top') and p.get('top_mode') != 'inside':
             raise ValueError("Gables can't be joined to their walls with a top plate in the way - untick the "
                              "top plate (Base & top page) or 'Join each gable to its wall'.")
@@ -894,8 +1242,16 @@ def build_plan(p, outline):
         fl = offset(inner, p['fit'])
         if fl is None:
             raise ValueError("The floor fit (J) leaves no floor.")
+        # the floors above the ground floor kept back from the walls by W too, so they drop in inside a
+        # subframe (onto its tabs) instead of running through it. The ground floor stays full size:
+        # the frame stands on it.
+        room = max(0.0, p.get('part_room', 0.0))
+        fl_up = offset(inner, p['fit'] + room) if room > 0 else fl
+        if fl_up is None or (room > 0 and not _inset_ok(fl_up, inner, p['fit'] + room)):
+            raise ValueError("The room for a subframe (W) leaves no floor.")
         for k in range(len(hs)):
-            pieces.append(Piece("%s - Floor panel" % storey_name(k), 'floor', k, fl, zs[k], zs[k] + ft))
+            pieces.append(Piece("%s - Floor panel" % storey_name(k), 'floor', k, fl if k == 0 else fl_up,
+                                zs[k], zs[k] + ft))
         if p.get('ledges'):
             ledge_ring = wall_quads(inner, p['ledge_w'], 'mitre')
             for k in range(1, len(hs)):
@@ -913,6 +1269,39 @@ def build_plan(p, outline):
             rects = [(o, hs, kd) for o, hs, kd in join_rects(partition_rects(inner, q_))]
         else:
             rects = [(r, [], kd) for r, kd in partition_rects(inner, p)]
+    # each storey as set on the Storeys page: its floor and its ceiling. What holds them up (tabs or a
+    # ledge) is Subframe's - on the face of its frame - so room is left under each one for it (TA)
+    part_lim = {}                                   # storey -> (inside walls' bottom, top)
+    if style == 'storeys':
+        rows = p['_rows']
+        room = max(0.0, p.get('part_room', 0.0))
+        fit = p['fit']
+        th = p['tab_room']
+        fl0 = offset(inner, fit) if fit > 0 else inner
+        fl_up = offset(inner, fit + room) if (fit + room) > 0 else inner
+        if fl0 is None or fl_up is None or (fit + room > 0 and not _inset_ok(fl_up, inner, fit + room)):
+            raise ValueError("The floor fit (J) and the room for a subframe (W) leave no floor.")
+        n_s = len(hs)
+        floor_bot = {}                              # storey -> the bottom of the room left under its floor
+        for k in range(n_s):
+            if not rows[k]['floor']:
+                continue
+            pieces.append(Piece("%s - Floor panel" % storey_name(k), 'floor', k, fl0 if k == 0 else fl_up,
+                                zs[k], zs[k] + ft))
+            if k > 0:
+                floor_bot[k] = zs[k] - th
+        for k in range(n_s):
+            lo = zs[k] + (ft if rows[k]['floor'] else 0.0)
+            hi = floor_bot.get(k + 1, zs[k + 1])
+            if rows[k]['ceiling']:
+                c_top = hi
+                c_bot = c_top - p['ceil_t']
+                if c_bot - th <= lo + 1e-6:
+                    raise ValueError("The %s's ceiling doesn't fit between its floor and the one above "
+                                     "(TB, TA, H)." % storey_name(k).lower())
+                pieces.append(Piece("%s - Ceiling" % storey_name(k), 'floor', k, fl_up, c_bot, c_top))
+                hi = c_bot - th
+            part_lim[k] = (lo, hi)
     top_in = bool(p.get('top')) and p.get('top_mode') == 'inside'
     top_room = p['top_room']
     tplate = None
@@ -943,6 +1332,8 @@ def build_plan(p, outline):
     for k in range(len(hs)):
         z0 = zs[k] + ft
         z1 = zs[k + 1]
+        if k in part_lim:
+            z0, z1 = part_lim[k]
         if top_in and k == len(hs) - 1:
             z1 -= p['top_t']                        # the top plate sits on them, its top level with the walls
             if joined_top:
@@ -996,7 +1387,7 @@ def build_plan(p, outline):
                  walls=len(outline), wall_len=sum(math.hypot(outline[(i + 1) % n_out][0] - outline[i][0],
                                                              outline[(i + 1) % n_out][1] - outline[i][1])
                                                   for i in range(n_out)) / 1000.0,
-                 gables=gable_notes, wall_names=names)
+                 gables=gable_notes, wall_names=names, roof=roof_notes)
     return pieces, notes
 
 
@@ -1278,6 +1669,26 @@ EDDY_TIPS = {
                  "and back (the ridge runs across), or the walls you pick by number.",
     'Walls (by number)': "The numbers of the walls to put gables on, commas between, like 2, 4. The walls are "
                          "numbered as they're named in the model - 'Wall 2 (right)' is 2.",
+    'Roof': "A pitched roof on top of the walls - each slope its own piece. Subframe frames it and Roof Tiles "
+            "covers it.",
+    'Start here': "The building step by step - shape, walls, storeys, roof, base - then build it and open "
+                  "Subframe to frame it. Each step fills in the other pages.",
+    'Storeys': "Each storey's floor and ceiling - used when Floors (Floors page) is 'Each storey set on the "
+               "Storeys page'. Subframe puts the tabs (or a ledge) under them.",
+    'Pitched roof on top': "Puts a roof on top of the walls (on the top plate, if it's on top of the walls). "
+                           "Each slope is its own piece, ready to print flat.",
+    'Roof type': "Gable: two slopes meeting at a ridge, with pointed gable ends. Hip: a slope down to every "
+                 "wall (on a square it's a pyramid). Mono-pitch: one slope, the other walls built up to meet it. "
+                 "Saltbox: a gable with a different pitch at the back. Flat with a fall: a nearly flat roof that "
+                 "sheds the rain one way. Or pick which walls are gables and the rest slope.",
+    'Slopes down to': "Mono-pitch and flat roofs: which side the roof slopes down to (the low side, where the "
+                      "gutter goes).",
+    'Gable walls (by number)': "The walls that are gable ends, commas between, like 2 or 2, 4 - the roof slopes "
+                               "down to all the others. 'Wall 2 (right)' is 2.",
+    'Fill in under the roof (gable ends and raised walls)': "Builds the gable ends - and the raised walls under a "
+                                                             "lean-to or flat roof - up to meet the underside of the "
+                                                             "roof, each its own piece (or joined to its wall, with "
+                                                             "'Join each gable to its wall' on the Gables page).",
     'Join the inside walls where they cross': "Inside walls that cross or meet are joined into one piece - a "
                                               "cross, a T or an L - instead of being cut where they meet. "
                                               "Scale Studio stands a joined piece on its end to print, so it "
@@ -1324,9 +1735,11 @@ WALL_FIELDS = [
                                                                "outside walls at each end, so they butt up "
                                                                "against the frame from Subframe instead of "
                                                                "going through it, and the frame stays whole. "
-                                                               "Set it to Subframe's bar depth (plus its "
-                                                               "'lift' if you use one). 0 = right up to the "
-                                                               "walls."),
+                                                               "Drop-in floors above the ground floor are kept "
+                                                               "back this much too, so they drop in inside the "
+                                                               "frame onto its tabs. Set it to Subframe's bar "
+                                                               "depth (plus its 'lift' if you use one). 0 = right "
+                                                               "up to the walls."),
 ]
 FLOOR_FIELDS = [
     ('total_h', "G   Total height", 0.0, 500000.0, 1, "The height from the bottom of the walls to the top, "
@@ -1365,7 +1778,33 @@ GABLE_FIELDS = [
                                                        "0 = worked out from the pitch (X). Set it and the pitch "
                                                        "follows from it."),
 ]
-ALL_FIELDS = SHAPE_FIELDS + WALL_FIELDS + FLOOR_FIELDS + PLATE_FIELDS + GABLE_FIELDS
+ROOF_FIELDS = [
+    ('roof_pitch', "RA   Roof pitch", 0.0, 80.0, 2, "The angle of the roof slopes, from level. 45 is a steep cottage "
+                                                     "roof, 30 to 35 a typical Victorian slate roof, 15 a lean-to."),
+    ('roof_pitch2', "RB   Second pitch", 0.0, 80.0, 1, "Saltbox: the pitch of the back slope. Hip: the pitch of the "
+                                                         "end slopes (left and right), so the hipped ends can be "
+                                                         "steeper or flatter than the front and back. 0 = the same "
+                                                         "as the roof pitch (RA)."),
+    ('roof_fall', "RC   Fall (flat roof)", 0.0, 30.0, 2, "Flat roof with a fall: how much it slopes so the rain runs "
+                                                          "off - a few degrees, like 3."),
+    ('eave_over', "RD   Eaves overhang", 0.0, 5000.0, 1, "How far the roof hangs out past the walls along its low "
+                                                          "edges (the eaves), measured level. 0 = flush with the "
+                                                          "walls."),
+    ('verge_over', "RE   Verge overhang (gable ends)", 0.0, 5000.0, 1, "How far the roof hangs out past the gable "
+                                                                       "ends (the verges). 0 = flush with the "
+                                                                       "gable walls."),
+    ('roof_t', "RF   Roof thickness", 0.0, 5000.0, 1, "How thick the roof slopes are, square to the slope. 0 = half "
+                                                       "the wall thickness. Roof Tiles puts its tiles on top of it."),
+]
+TAB_FIELDS = [
+    ('tab_room', "TA   Room for the tabs", 0.0, 5000.0, 1, "How much room is left under each floor (above the "
+                                                         "ground) and each ceiling for Subframe's tabs or ledge "
+                                                         "to hold it up - make it at least Subframe's tab height. "
+                                                         "The inside walls and the ceilings stop under it. 0 = "
+                                                         "the floor thickness."),
+    ('ceil_t', "TB   Ceiling thickness", 0.0, 5000.0, 1, "How thick the ceiling panels are. 0 = the floor thickness."),
+]
+ALL_FIELDS = SHAPE_FIELDS + WALL_FIELDS + FLOOR_FIELDS + PLATE_FIELDS + GABLE_FIELDS + ROOF_FIELDS + TAB_FIELDS
 
 INFO_TEXT = ("<b>How to use it</b><br>"
              "Pick a shape and type the overall size (Shape page), the wall thickness (Walls page) and the "
@@ -1399,16 +1838,31 @@ INFO_TEXT = ("<b>How to use it</b><br>"
              "Give the roof pitch (X) or the ridge height (Y). Each gable is its own piece, standing on the "
              "top of the walls (or on the top plate), split for the print bed like the wall below it. Tick "
              "'Join each gable to its wall' to have the wall and its gable as one piece.<br><br>"
+             "<b>Storeys</b><br>Pick 'Each storey set on the Storeys page' in Floors (Floors page). Then on the "
+             "Storeys page tick what each storey has - a floor, a ceiling. You only get what you tick, so there "
+             "are no doubled-up floors. The ground floor's floor stands on the base and the frame from Subframe "
+             "stands on it; the others, and the ceilings, are kept back from the walls by W (Walls page) so they "
+             "drop in inside the frame, with room under each (TA) for Subframe's tabs or ledge. Set W to the "
+             "frame's bar depth.<br><br>"
+             "<b>Roof</b><br>Tick 'Pitched roof on top' on the Roof page and pick the type: gable, hip, "
+             "mono-pitch (lean-to), saltbox, flat with a fall, or the walls you pick as gables. Set the pitch "
+             "(RA), the overhangs at the eaves (RD) and the gable ends (RE) and the thickness (RF). Each slope "
+             "is its own piece, and the gable ends (and the raised walls under a lean-to) are built up to meet "
+             "it - the roof makes its own gables, so the Gables page is only used for 'Join each gable to its "
+             "wall'. Then frame it with Subframe and cover it with Roof Tiles. For now the roof goes on shapes "
+             "without inside corners (rectangles and the like) - L, T and U shapes are coming.<br><br>"
              "Sizes are real-world mm - Scale Studio takes it down to your model scale.")
 
 
 def _auto_sizes(v):
     t = float(v.get('wall_t', 0.0) or 0.0)
     ft = float(v.get('floor_t', 0.0) or 0.0)
-    return {'ledge_w': t, 'ledge_h': t, 'part_t': 0.5 * t, 'base_t': ft or t, 'top_t': ft or t}
+    return {'ledge_w': t, 'ledge_h': t, 'part_t': 0.5 * t, 'base_t': ft or t, 'top_t': ft or t, 'roof_t': 0.5 * t}
 
 
 PIECE_KEYS = [
+    ("Ceiling", ('ceil_t', 'tab_room', 'fit', 'part_room')),
+    ("Roof slope", ('roof_pitch', 'roof_pitch2', 'eave_over', 'verge_over', 'roof_t')),
     ("Gable", ('gable_pitch', 'ridge_h', 'wall_t')),
     ("Floor slab", ('floor_t', 'lip_h', 'lip_fit')),
     ("Floor panel", ('floor_t', 'fit')),
@@ -1434,7 +1888,7 @@ class KeyDrawing(QWidget):
     """A drawing that shows what each lettered size is."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(360, 820)
+        self.setMinimumSize(360, 1015)
 
     def paintEvent(self, _ev):
         from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
@@ -1443,7 +1897,7 @@ class KeyDrawing(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(250, 250, 246))
-        k = min(float(self.width()) / 360.0, self.height() / 820.0)
+        k = min(float(self.width()) / 360.0, self.height() / 1015.0)
         p.scale(k, k)
         red = QColor(200, 40, 40)
         wallc, inside = QColor(196, 120, 90), QColor(240, 232, 215)
@@ -1569,6 +2023,39 @@ class KeyDrawing(QWidget):
         for i, t_ in enumerate(notes):
             p.drawText(QRectF(10 if i < 12 else 185, 704 + (i % 12) * 9.0, 175, 10),
                        Qt.AlignLeft | Qt.AlignVCenter, t_)
+
+        # ---- the roof, seen from the end (Roof page)
+        p.setFont(f)
+        p.setPen(QColor(60, 60, 60))
+        p.drawText(QRectF(10, 826, 340, 18), Qt.AlignLeft, "Roof, seen from the end")
+        rx0, rx1, rz, rtop = 100.0, 260.0, 930.0, 870.0      # walls' outside faces, wall top, ridge
+        box(rx0, rz, 16, 30, wallc)
+        box(rx1 - 16, rz, 16, 30, wallc)
+        poly([(rx0, rz), (rx1, rz), ((rx0 + rx1) / 2, rtop)], QColor(186, 96, 70))   # the gable end
+        over, th = 30.0, 9.0
+        sl = (rz - rtop) / ((rx1 - rx0) / 2)
+        mid_ = (rx0 + rx1) / 2
+        rc = QColor(*COLOURS['roof'])
+        for sgn in (-1, 1):                                  # each slope, plumb-cut at the eaves
+            xe = mid_ + sgn * ((rx1 - rx0) / 2 + over)
+            ze = rz + over * sl
+            poly([(xe, ze), (mid_, rtop), (mid_, rtop - th * 1.3), (xe, ze - th * 1.3)], rc)
+        dim(rx0 - over, rz + 46, rx0, rz + 46, "RD", rx0 - over / 2, rz + 58)
+        p.setPen(QPen(red, 1.1))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(rx1 - 40, rz - 40, 80, 80), int(180 * 16), int(-37 * 16))   # the pitch, from level
+        p.setPen(red)
+        p.drawText(QRectF(rx1 - 66, rz - 22, 24, 16), Qt.AlignCenter, "RA")
+        dim(mid_ + 6, rtop - th * 1.3, mid_ + 6, rtop, "", 0, 0)
+        p.setPen(red)
+        p.drawText(QRectF(mid_ + 8, rtop - 26, 24, 14), Qt.AlignCenter, "RF")
+        p.setFont(f2)
+        p.setPen(QColor(60, 60, 60))
+        for i, t_ in enumerate(["RA  roof pitch", "RB  second pitch (saltbox back, hip ends)",
+                                "RC  fall (flat roof)", "RD  eaves overhang", "RE  verge overhang (past the gables)",
+                                "RF  roof thickness"]):
+            p.drawText(QRectF(10 if i < 3 else 185, 980 + (i % 3) * 10.0, 175, 10),
+                       Qt.AlignLeft | Qt.AlignVCenter, t_)
         p.end()
 
 
@@ -1624,7 +2111,7 @@ class PlanPreview(QWidget):
         xs = [q[0] for q in self.outline]
         ys = [q[1] for q in self.outline]
         for pc in self.pieces:
-            if pc.kind in ('base', 'top'):
+            if pc.kind in ('base', 'top', 'roof'):
                 xs += [q[0] for q in pc.poly]
                 ys += [q[1] for q in pc.poly]
         bw, bh = (max(xs) - min(xs)) or 1.0, (max(ys) - min(ys)) or 1.0
@@ -1670,6 +2157,13 @@ class PlanPreview(QWidget):
         for pc in shown:
             if pc.kind == 'gable':                  # the gables, over the walls they stand on
                 draw(pc.poly, COLOURS['gable'], width=1.6)
+        for pc in self.pieces:
+            if pc.kind == 'roof':                   # the roof slopes, see-through, over it all
+                col = QColor(*COLOURS['roof'])
+                col.setAlpha(45)
+                p.setBrush(col)
+                p.setPen(QPen(QColor(*COLOURS['roof']).darker(140), 1.2, Qt.DashLine))
+                p.drawPolygon(QPolygonF([P(q) for q in pc.poly]))
         p.setPen(QColor(110, 110, 110))
         p.setFont(QFont())
         p.drawText(QRectF(12, H - 20, pw - 24, 16), Qt.AlignCenter, "front - %s" % (
@@ -1718,7 +2212,20 @@ class PlanPreview(QWidget):
                 p.setPen(QPen(col.darker(160), 0.8))
                 p.setBrush(col)
                 p.drawRect(QRectF(x0 + wall_w, Z(pc.z1), wall_w * 0.6, Z(pc.z0) - Z(pc.z1)))
-        gs = [pc for pc in self.pieces if pc.kind == 'gable']
+        rf = [pc for pc in self.pieces if pc.kind == 'roof']
+        if rf:                                      # the roof, roughly, seen from the end
+            zr0 = min(pc.z0 for pc in rf)
+            zr1 = max(pc.z1 for pc in rf)
+            col = QColor(*COLOURS['roof'])
+            p.setPen(QPen(col.darker(150), 0.8))
+            col.setAlpha(170)
+            p.setBrush(col)
+            if len(rf) == 1:                        # one slope: a wedge
+                pts_ = [QPointF(x0 - 6, Z(zr0)), QPointF(x0 + span + 6, Z(zr0)), QPointF(x0 + span + 6, Z(zr1))]
+            else:
+                pts_ = [QPointF(x0 - 6, Z(zr0)), QPointF(x0 + span + 6, Z(zr0)), QPointF(x0 + span / 2, Z(zr1))]
+            p.drawPolygon(QPolygonF(pts_))
+        gs = [pc for pc in self.pieces if pc.kind == 'gable' and pc.prof]
         if gs:                                      # the gable, seen from the end, over the walls
             zg0 = gs[0].prof[4] if len(gs[0].prof) > 4 else gs[0].z0
             zg1 = max(pc.z1 for pc in gs)
@@ -1790,6 +2297,268 @@ def save_preset(name, values):
         json.dump(d, f, indent=2)
 
 
+# --- Eddy's 3D plugins: the 'Start here' page - a few steps, one at a time, with Back and Next ---
+class StartHere:
+    """The 'Start here' page: steps to go through one at a time. Each step has its own copies of the boxes
+    from the other pages ('mirrors'), kept in step with them both ways - so filling in a step fills in the
+    page it belongs to, and the other pages are still there to fine-tune afterwards.
+    steps: [(title, words, [item...])] where an item is one of
+      ('spin', key_in_dlg_sp)              a size box from dlg.sp
+      ('combo', label, combo)              a drop-down list
+      ('check', tick)                      a tick box
+      ('line', label, line_edit)           a text box
+      ('spinint', label, int_spin_box)     a whole-number box
+      ('note', words)                      a grey note
+      ('button', words, callback)          a button
+      ('widget', label, widget)            any widget of its own (not mirrored)
+    on_show: {step number: callback} - run when that step is shown."""
+
+    def __init__(self, dlg, page, steps, on_show=None, intro=""):
+        from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton, QWidget
+        self.dlg = dlg
+        self.on_show = on_show or {}
+        self.pages = []
+        self._sync = False
+        lay = QVBoxLayout(page)
+        if intro:
+            li = QLabel(intro)
+            li.setWordWrap(True)
+            li.setStyleSheet("color: gray;")
+            lay.addWidget(li)
+        self.lbl_step = QLabel()
+        self.lbl_step.setWordWrap(True)
+        lay.addWidget(self.lbl_step)
+        for title, words, items in steps:
+            w = QWidget()
+            fl = QFormLayout(w)
+            if words:
+                lw = QLabel(words)
+                lw.setWordWrap(True)
+                fl.addRow(lw)
+            for it in items:
+                try:
+                    self._add(fl, it)
+                except Exception as e:
+                    print("Start here: a box left out: %s" % e)
+            lay.addWidget(w)
+            w.setVisible(False)
+            self.pages.append((title, w))
+        lay.addStretch(1)
+        row = QHBoxLayout()
+        self.b_back = QPushButton("< Back")
+        self.b_next = QPushButton("Next >")
+        self.b_back.clicked.connect(lambda: self.go(self.at - 1))
+        self.b_next.clicked.connect(lambda: self.go(self.at + 1))
+        row.addWidget(self.b_back)
+        row.addStretch(1)
+        row.addWidget(self.b_next)
+        lay.addLayout(row)
+        self.at = 0
+        self.go(0)
+
+    def _add(self, fl, it):
+        from PySide6.QtWidgets import QLabel, QPushButton, QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit, QSpinBox
+        kind = it[0]
+        if kind == 'note':
+            n_ = QLabel(it[1])
+            n_.setWordWrap(True)
+            n_.setStyleSheet("color: gray;")
+            fl.addRow(n_)
+        elif kind == 'button':
+            b = QPushButton(it[1])
+            b.clicked.connect(lambda *_a, f=it[2]: f())
+            fl.addRow(b)
+        elif kind == 'widget':
+            if it[1]:
+                fl.addRow(it[1], it[2])
+            else:
+                fl.addRow(it[2])
+        elif kind == 'spin':
+            main, lab = self.dlg.sp[it[1]]
+            m = QDoubleSpinBox()
+            m.setDecimals(main.decimals())
+            m.setRange(main.minimum(), main.maximum())
+            m.setSuffix(main.suffix())
+            m.setSpecialValueText(main.specialValueText())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            ml = QLabel(lab.text())
+            ml.setToolTip(main.toolTip())
+            fl.addRow(ml, m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main, ml)
+        elif kind == 'spinint':
+            main = it[2]
+            m = QSpinBox()
+            m.setRange(main.minimum(), main.maximum())
+            m.setValue(main.value())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.valueChanged, lambda v, mn=main: mn.setValue(v),
+                       main.valueChanged, lambda v, mi=m: mi.setValue(v), m)
+            self._enable(m, main)
+        elif kind == 'combo':
+            main = it[2]
+            m = QComboBox()
+            for i in range(main.count()):
+                m.addItem(main.itemText(i), main.itemData(i))
+            m.setCurrentIndex(main.currentIndex())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.currentIndexChanged, lambda i, mn=main: mn.setCurrentIndex(i),
+                       main.currentIndexChanged, lambda i, mi=m: mi.setCurrentIndex(i), m)
+            self._enable(m, main)
+        elif kind == 'check':
+            main = it[1]
+            m = QCheckBox(main.text())
+            m.setChecked(main.isChecked())
+            m.setToolTip(main.toolTip())
+            fl.addRow(m)
+            self._pair(m.toggled, lambda on, mn=main: mn.setChecked(on),
+                       main.toggled, lambda on, mi=m: mi.setChecked(on), m)
+            self._enable(m, main)
+        elif kind == 'line':
+            main = it[2]
+            m = QLineEdit()
+            m.setText(main.text())
+            m.setPlaceholderText(main.placeholderText())
+            m.setToolTip(main.toolTip())
+            fl.addRow(it[1], m)
+            self._pair(m.textChanged, lambda t, mn=main: mn.setText(t) if mn.text() != t else None,
+                       main.textChanged, lambda t, mi=m: mi.setText(t) if mi.text() != t else None, m)
+            self._enable(m, main)
+
+    def _pair(self, sig_m, to_main, sig_main, to_m, m):
+        """Keeps a mirror and the box it copies in step, both ways, without going round in circles."""
+        def a(*args):
+            if self._sync:
+                return
+            self._sync = True
+            try:
+                to_main(*args)
+            finally:
+                self._sync = False
+
+        def b(*args):
+            if self._sync:
+                return
+            self._sync = True
+            try:
+                m.blockSignals(True)
+                to_m(*args)
+            finally:
+                m.blockSignals(False)
+                self._sync = False
+        sig_m.connect(a)
+        sig_main.connect(b)
+
+    def _enable(self, m, main, lab=None):
+        """Greyed out when the box it copies is (checked whenever the step is shown)."""
+        self._en = getattr(self, '_en', [])
+        self._en.append((m, main, lab))
+
+    def refresh_enabled(self):
+        for m, main, lab in getattr(self, '_en', []):
+            try:
+                on = main.isEnabled()
+                m.setEnabled(on)
+                if lab is not None:
+                    lab.setEnabled(on)
+            except Exception:
+                pass
+
+    def go(self, k):
+        k = max(0, min(len(self.pages) - 1, k))
+        self.at = k
+        for i, (_t, w) in enumerate(self.pages):
+            w.setVisible(i == k)
+        self.lbl_step.setText("<b>Step %d of %d: %s</b>" % (k + 1, len(self.pages), self.pages[k][0]))
+        self.b_back.setEnabled(k > 0)
+        self.b_next.setEnabled(k < len(self.pages) - 1)
+        f = self.on_show.get(k)
+        if f:
+            try:
+                f()
+            except Exception as e:
+                print("Start here: %s" % e)
+        self.refresh_enabled()
+# --- 'Start here' page (end) ---
+
+
+def roof_top_for(v, angle):
+    """How high the top of the roof comes out (mm above the bottom of the walls) with the roof at this
+    angle - the pitch, or the fall of a flat roof."""
+    d = dict(v)
+    d['roof'] = True
+    d['roof_fall' if d.get('roof_type') == 'flat' else 'roof_pitch'] = angle
+    p = plan_params(d)
+    _pcs, notes = build_plan(p, make_outline(p))
+    return notes['roof']['top']
+
+
+def solve_roof_angle(v, target):
+    """The roof angle that brings the top of the roof to 'target' mm: (angle, None) or (None, why not)."""
+    flat = v.get('roof_type') == 'flat'
+    lo, hi = (0.2, 29.5) if flat else (1.0, 79.0)
+    try:
+        t_lo, t_hi = roof_top_for(v, lo), roof_top_for(v, hi)
+    except ValueError as e:
+        return None, str(e)
+    if target < t_lo - 0.5:
+        return None, "That's too low for a roof on these walls - it needs at least %.0f mm." % t_lo
+    if target > t_hi + 0.5:
+        return None, "That's too high for this roof - at most %.0f mm." % t_hi
+    for _ in range(40):
+        mid = (lo + hi) / 2.0
+        if roof_top_for(v, mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    return round((lo + hi) / 2.0, 2), None
+
+
+def open_openings(dlg):
+    """Opens Openings (if it's loaded) - the next step after the floor plan: cutting the window and door
+    holes in the walls."""
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if mod is not None and (name == "ed3d_openings" or name.endswith("_ed3d_openings")) and \
+                hasattr(mod, 'OpeningsTool'):
+            try:
+                vp = dlg.viewport
+                dlg.close()                         # one window at a time: Floor Plan steps aside
+                mod.OpeningsTool().on_activate(vp)
+                d2 = getattr(mod.OpeningsTool, '_dialog', None)
+                if d2 is not None and hasattr(d2, 'show_start'):
+                    d2.show_start()
+                return
+            except Exception as e:
+                QMessageBox.warning(dlg, PLUGIN_NAME, "Couldn't open Openings:\n%s" % e)
+                return
+    QMessageBox.information(dlg, PLUGIN_NAME, "Openings isn't loaded - put ed3d_openings.py in the plugins "
+                            "folder with this one.")
+
+
+def open_subframe(dlg):
+    """Opens Subframe (if it's loaded) at its 'Start here' page, to frame what was just built."""
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if mod is not None and (name == "ed3d_subframe" or name.endswith("_ed3d_subframe")) and \
+                hasattr(mod, 'SubframeTool'):
+            try:
+                mod.SubframeTool().on_activate(dlg.viewport)
+                d2 = getattr(mod.SubframeTool, '_dialog', None)
+                if d2 is not None and hasattr(d2, 'show_start'):
+                    d2.show_start()
+                return
+            except Exception as e:
+                QMessageBox.warning(dlg, PLUGIN_NAME, "Couldn't open Subframe:\n%s" % e)
+                return
+    QMessageBox.information(dlg, PLUGIN_NAME, "Subframe isn't loaded - put ed3d_subframe.py in the plugins "
+                            "folder with this one.")
+
+
 class PlanDialog(QDialog):
     def __init__(self, cur, viewport, tool):
         super().__init__(viewport)
@@ -1837,9 +2606,20 @@ class PlanDialog(QDialog):
         self.left.setTabToolTip(1, "What each lettered size is.")
         row.addWidget(self.left, 1)
         self.tabs = QTabWidget()
-        row.addWidget(self.tabs, 1)
+        # the page buttons go on two rows above the pages (one row of tabs was getting crowded)
+        tabs_box = QWidget()
+        tb_lay = QVBoxLayout(tabs_box)
+        tb_lay.setContentsMargins(0, 0, 0, 0)
+        tb_lay.setSpacing(2)
+        self.tab_rows = QWidget()
+        tb_lay.addWidget(self.tab_rows)
+        tb_lay.addWidget(self.tabs, 1)
+        row.addWidget(tabs_box, 1)
         self.sp = {}
         self.page_of = {}
+        # 'Start here' first: the steps are put on it once every other page is made
+        self.page_start = QWidget()
+        self.tabs.addTab(self.page_start, "Start here")
 
         def spin_rows(form, fields):
             for key, label, lo, hi, dec, tip in fields:
@@ -1877,6 +2657,12 @@ class PlanDialog(QDialog):
         n1.setWordWrap(True)
         n1.setStyleSheet("color: gray;")
         fs.addRow(n1)
+        # how high the building comes out: the walls, and to the top of the roof
+        self.lbl_height = QLabel()
+        self.lbl_height.setWordWrap(True)
+        fs.addRow(self.lbl_height)
+        self.lbl_height2 = QLabel()                 # the same, on the Start here page
+        self.lbl_height2.setWordWrap(True)
 
         # ---- Walls
         page = QWidget()
@@ -1950,6 +2736,30 @@ class PlanDialog(QDialog):
         self.lbl_floors.setStyleSheet("color: gray;")
         ff.addRow(self.lbl_floors)
 
+        # ---- Storeys: each storey's floor and ceiling, and what they rest on
+        page = QWidget()
+        fst = QVBoxLayout(page)
+        self.tabs.addTab(page, "Storeys")
+        self.lbl_st_head = QLabel("Pick 'Each storey set on the Storeys page' in Floors (Floors page) to use "
+                                  "this page.")
+        self.lbl_st_head.setWordWrap(True)
+        fst.addWidget(self.lbl_st_head)
+        from PySide6.QtWidgets import QGridLayout
+        self.st_grid_w = QWidget()
+        self.st_grid = QGridLayout(self.st_grid_w)
+        self.st_grid.setContentsMargins(0, 0, 0, 0)
+        fst.addWidget(self.st_grid_w)
+        self.st_rows = []                           # [(floor tick, ceiling tick, storey name)]
+        self._st_data = []
+        fs2 = QFormLayout()
+        fst.addLayout(fs2)
+        spin_rows(fs2, TAB_FIELDS)
+        self.lbl_storeys = QLabel()
+        self.lbl_storeys.setWordWrap(True)
+        self.lbl_storeys.setStyleSheet("color: gray;")
+        fst.addWidget(self.lbl_storeys)
+        fst.addStretch(1)
+
         # ---- Base & top
         page = QWidget()
         fp = QFormLayout(page)
@@ -2006,6 +2816,41 @@ class PlanDialog(QDialog):
         self.lbl_gables.setStyleSheet("color: gray;")
         fg.addRow(self.lbl_gables)
 
+        # ---- Roof
+        page = QWidget()
+        fr = QFormLayout(page)
+        self.tabs.addTab(page, "Roof")
+        self.ck_roof = QCheckBox("Pitched roof on top")
+        fr.addRow(self.ck_roof)
+        self.cb_roof_type = QComboBox()
+        for lab_, k_ in ROOF_TYPES:
+            self.cb_roof_type.addItem(lab_, k_)
+        fr.addRow("Roof type", self.cb_roof_type)
+        self.cb_roof_low = QComboBox()
+        for lab_, k_ in ROOF_LOW:
+            self.cb_roof_low.addItem(lab_, k_)
+        self.lbl_roof_low = QLabel("Slopes down to")
+        fr.addRow(self.lbl_roof_low, self.cb_roof_low)
+        self.ed_roof_gables = QLineEdit()
+        self.ed_roof_gables.setPlaceholderText("e.g. 2   (the walls that are gable ends)")
+        self.lbl_roof_gables = QLabel("Gable walls (by number)")
+        fr.addRow(self.lbl_roof_gables, self.ed_roof_gables)
+        spin_rows(fr, ROOF_FIELDS)
+        for k_ in ('roof_pitch', 'roof_pitch2', 'roof_fall'):
+            self.sp[k_][0].setSuffix("°")
+        self.sp['roof_pitch2'][0].setSpecialValueText("same as RA")
+        self.ck_roof_fill = QCheckBox("Fill in under the roof (gable ends and raised walls)")
+        fr.addRow(self.ck_roof_fill)
+        for c_ in (self.ck_roof, self.ck_roof_fill):
+            c_.toggled.connect(self.changed)
+        for cb_ in (self.cb_roof_type, self.cb_roof_low):
+            cb_.currentIndexChanged.connect(self.changed)
+        self.ed_roof_gables.textChanged.connect(self.changed)
+        self.lbl_roof = QLabel()
+        self.lbl_roof.setWordWrap(True)
+        self.lbl_roof.setStyleSheet("color: gray;")
+        fr.addRow(self.lbl_roof)
+
         # ---- Output
         page = QWidget()
         fo = QFormLayout(page)
@@ -2053,6 +2898,7 @@ class PlanDialog(QDialog):
         self.cb_lasttab = QCheckBox("Open at the last page used")
         self.cb_lasttab.setToolTip("Ticked, the window opens at the page you had open last time.")
         st = _ui_settings()
+        two_row_tabs(self.tabs, self.tab_rows)
         self.cb_lasttab.setChecked(bool(st.get('remember_tab', True)))
         if self.cb_lasttab.isChecked():
             try:
@@ -2102,6 +2948,189 @@ class PlanDialog(QDialog):
         last = _ui_settings().get('last_preset')
         if last and last in self.preset_order():
             self.refresh_presets(select=last)
+        self.make_start_here()
+
+    def make_start_here(self):
+        """The 'Start here' page: the building step by step, from the basics to cutting the openings."""
+        self.cb_ceilings = QComboBox()
+        for t_, d_ in (("Under the roof only (the top storey)", 'top'), ("On every storey", 'every'),
+                       ("None", 'none')):
+            self.cb_ceilings.addItem(t_, d_)
+        rows_ = self.storey_values()
+        if rows_ and all(r_['ceiling'] for r_ in rows_):
+            self.cb_ceilings.setCurrentIndex(1)
+        elif rows_ and not any(r_['ceiling'] for r_ in rows_):
+            self.cb_ceilings.setCurrentIndex(2)
+        self.cb_ceilings.setToolTip("Which storeys get a ceiling panel. Tick or untick them one by one on the "
+                                    "Storeys page.")
+        self.cb_ceilings.currentIndexChanged.connect(self.set_ceilings)
+
+        def storeys_on():
+            i_ = self.cb_fstyle.findData('storeys')
+            if self.cb_fstyle.currentIndex() != i_:
+                self.cb_fstyle.setCurrentIndex(i_)
+
+        # ---- step 1, the basics: a roof or not, and the building's size - its own boxes, filling in the
+        # pages behind (the height with the roof sets the roof's pitch)
+        from PySide6.QtWidgets import QDoubleSpinBox as _DS
+        self._basics_busy = False
+        self.ck_b_roof = QCheckBox("A roof on it")
+        self.ck_b_roof.setToolTip("Tick for a pitched roof (the Roof page has the kinds - gable, hip, lean-to...).")
+
+        def mm_box(tip, top=500000.0):
+            b = _DS()
+            b.setDecimals(0)
+            b.setRange(0.0, top)
+            b.setSuffix(" mm")
+            b.setKeyboardTracking(False)            # worked out when you press Enter or move on
+            b.setToolTip(tip)
+            return b
+        self.sb_len = mm_box("How long the building is, outside the walls, along the front.")
+        self.sb_wid = mm_box("How wide the building is, outside the walls, front to back.")
+        self.sb_hw = mm_box("From the bottom of the walls to the top of the walls - the roof not counted. "
+                            "It's shared out equally between the floors.")
+        self.sb_hr = mm_box("From the bottom of the walls to the very top of the roof (the ridge). The roof's "
+                            "pitch is worked out to fit it.")
+        self.sp_b_floors = QSpinBox()
+        self.sp_b_floors.setRange(1, 50)
+        self.sp_b_floors.setKeyboardTracking(False)
+        self.sp_b_floors.setToolTip("How many floors (storeys) the building has.")
+        self.lbl_basics = QLabel()
+        self.lbl_basics.setWordWrap(True)
+        self.ck_b_roof.toggled.connect(self.apply_basics)
+        for b_ in (self.sb_len, self.sb_wid, self.sb_hw, self.sb_hr, self.sp_b_floors):
+            b_.valueChanged.connect(self.apply_basics)
+        self.refresh_basics()
+        steps = [
+            ("The basics", "Does it have a roof, and how big is it? Sizes are real-world mm, outside the walls "
+                           "- Scale Studio takes it down to your model scale.",
+             [('widget', None, self.ck_b_roof), ('widget', "Length", self.sb_len), ('widget', "Width", self.sb_wid),
+              ('widget', "Height without the roof", self.sb_hw),
+              ('widget', "Height with the roof", self.sb_hr),
+              ('widget', "Number of floors", self.sp_b_floors), ('widget', None, self.lbl_basics),
+              ('note', "Heights are from the bottom of the walls (a base plate goes under that). Press Enter "
+                       "after typing a size to see it in the preview.")]),
+            ("Shape", "A plain rectangle - or an L, T or U shape?",
+             [('combo', "Shape", self.cb_shape), ('spin', 'cut_l'), ('spin', 'cut_w'),
+              ('widget', None, self.lbl_height2),
+              ('note', "For any other shape, type its corners on the Shape page - or draw it as a level face "
+                       "and use 'Build on selected face' at the 'Build it' step.")]),
+            ("Walls", "How thick are the walls, how do the corners meet, and where do the inside walls go?",
+             [('spin', 'wall_t'), ('combo', "Wall ends meet", self.cb_joint),
+              ('line', "Inside walls across, at", self.ed_cx), ('line', "Inside walls along, at", self.ed_cy),
+              ('spin', 'part_room'),
+              ('note', "Framing it with Subframe? Set W to its bar depth (160 for 160 mm bars) - the inside "
+                       "walls, floors and ceilings then keep clear of the frame.")]),
+            ("Floors and ceilings", "Each storey gets a floor. Which get a ceiling? (The Storeys page has a tick "
+                                    "for each one.)",
+             [('spin', 'floor_t'), ('spin', 'fit'), ('widget', "Ceilings", self.cb_ceilings), ('spin', 'ceil_t'),
+              ('spin', 'tab_room'),
+              ('note', "Different heights for each floor? Type them on the Floors page.")]),
+            ("Roof", "What kind of roof, and how far does it hang over the walls?",
+             [('check', self.ck_roof), ('combo', "Roof type", self.cb_roof_type), ('spin', 'roof_pitch'),
+              ('spin', 'eave_over'), ('spin', 'verge_over'), ('spin', 'roof_t'), ('check', self.ck_roof_fill)]),
+            ("Base", "A base plate (plinth) under it all?",
+             [('check', self.ck_base), ('spin', 'base_t'), ('spin', 'base_over')]),
+            ("Build it", "Check the preview on the left, then build it.",
+             [('button', "Build floor plan", lambda: self.tool.build(self, on_face=False)),
+              ('button', "Build on selected face", lambda: self.tool.build(self, on_face=True)),
+              ('note', "It's built at the origin of the model (or inside the edge of the face you picked). "
+                       "Every piece is its own group, ready for Scale Studio.")]),
+            ("Cut the openings", "Next, the window and door holes in the walls - before the frame, so the "
+                                 "frame goes round them.",
+             [('note', "Open Openings and cut the holes. After that come the windows and doors, then the "
+                       "frame (Subframe), as on your toolbar."),
+              ('button', "Open Openings", lambda: open_openings(self))]),
+        ]
+        try:
+            self.start = StartHere(self, self.page_start, steps, on_show={0: self.refresh_basics, 3: storeys_on},
+                                   intro="Go through the steps with Next - each one fills in the pages to the "
+                                         "right, so you can fine-tune them there afterwards.")
+        except Exception as e:
+            print("%s: 'Start here' page not made: %s" % (PLUGIN_NAME, e))
+
+    def apply_basics(self, *_):
+        """The basics step changed: fill in the pages behind it, and work the roof's pitch out from the
+        height with the roof."""
+        if getattr(self, '_basics_busy', False):
+            return
+        self._basics_busy = True
+        msg, bad = "", False
+        try:
+            self.ck_roof.setChecked(self.ck_b_roof.isChecked())
+            self.sp['length'][0].setValue(self.sb_len.value())
+            self.sp['width'][0].setValue(self.sb_wid.value())
+            self.cb_hmode.setCurrentIndex(max(0, self.cb_hmode.findData('divide')))
+            self.sp_storeys.setValue(int(self.sp_b_floors.value()))
+            self.sp['total_h'][0].setValue(self.sb_hw.value())
+            if self.ck_b_roof.isChecked() and self.sb_hr.value() > 0:
+                v = self.values()
+                ang, why = solve_roof_angle(v, self.sb_hr.value())
+                if ang is None:
+                    msg, bad = why, True
+                else:
+                    key = 'roof_fall' if v.get('roof_type') == 'flat' else 'roof_pitch'
+                    self.sp[key][0].setValue(ang)
+        finally:
+            self._basics_busy = False
+        self.changed()
+        self.refresh_basics(msg if bad else None)
+
+    def refresh_basics(self, problem=None):
+        """The basics step's boxes, from the pages behind it."""
+        if not hasattr(self, 'sb_len') or getattr(self, '_basics_busy', False):
+            return
+        self._basics_busy = True
+        try:
+            v = self.values()
+            nt = self.preview.notes if self.preview.pieces else {}
+            boxes = [(self.sb_len, v['length']), (self.sb_wid, v['width'])]
+            try:
+                hs = plan_params(v)['_heights']
+                boxes += [(self.sp_b_floors, len(hs)), (self.sb_hw, sum(hs))]
+            except Exception:
+                boxes += [(self.sp_b_floors, int(v.get('storeys') or 1)), (self.sb_hw, v.get('total_h', 0.0))]
+            rn = nt.get('roof') if nt else None
+            if rn and not problem:
+                boxes.append((self.sb_hr, rn['top']))
+            for b_, val in boxes:
+                b_.blockSignals(True)
+                b_.setValue(val)
+                b_.blockSignals(False)
+            self.ck_b_roof.blockSignals(True)
+            self.ck_b_roof.setChecked(bool(v['roof']))
+            self.ck_b_roof.blockSignals(False)
+            self.sb_hr.setEnabled(bool(v['roof']))
+            if problem:
+                self.lbl_basics.setText(problem)
+                self.lbl_basics.setStyleSheet("color: #b35900;")
+            elif not nt:
+                self.lbl_basics.setText(self.preview.msg or "")
+                self.lbl_basics.setStyleSheet("color: #b35900;")
+            elif rn:
+                self.lbl_basics.setText("That's a %s roof, %.0f mm high above the walls. %s" % (
+                    " and ".join("%g°" % a_ for a_ in rn['pitches']), rn['rise'],
+                    "(The roof's kind and overhangs are on the Roof step.)"))
+                self.lbl_basics.setStyleSheet("color: #2e7d32;")
+            else:
+                self.lbl_basics.setText("No roof - the walls are %.0f mm high." % nt['H'])
+                self.lbl_basics.setStyleSheet("color: #2e7d32;")
+        finally:
+            self._basics_busy = False
+
+    def set_ceilings(self, *_):
+        """'Ceilings' on the Start here page: ticks the ceilings on the Storeys page to match."""
+        mode = self.cb_ceilings.currentData() or 'top'
+        n = len(self.st_rows)
+        for k, (_cf, cc, _lab) in enumerate(self.st_rows):
+            cc.setChecked(mode == 'every' or (mode == 'top' and k == n - 1))
+
+    def show_start(self):
+        try:
+            self.tabs.setCurrentIndex(0)
+            self.start.go(0)
+        except Exception:
+            pass
 
     # ---- values ----
     def values(self):
@@ -2118,7 +3147,11 @@ class PlanDialog(QDialog):
                  base=self.ck_base.isChecked(), top=self.ck_top.isChecked(),
                  gables=self.ck_gables.isChecked(), gable_on=self.cb_gable_on.currentData() or 'ends',
                  gable_walls=self.ed_gwalls.text().strip(), gable_join=self.ck_gjoin.isChecked(),
-                 top_mode=self.cb_topmode.currentData() or 'over', top_join=self.ck_topjoin.isChecked())
+                 top_mode=self.cb_topmode.currentData() or 'over', top_join=self.ck_topjoin.isChecked(),
+                 roof=self.ck_roof.isChecked(), roof_type=self.cb_roof_type.currentData() or 'gable_len',
+                 roof_low=self.cb_roof_low.currentData() or 'front',
+                 roof_gables=self.ed_roof_gables.text().strip(), roof_fill=self.ck_roof_fill.isChecked(),
+                 storey_rows=self.storey_values())
         for key, (s, _) in self.sp.items():
             v[key] = float(s.value())
         return v
@@ -2128,13 +3161,14 @@ class PlanDialog(QDialog):
         try:
             for cb, key in ((self.cb_shape, 'shape'), (self.cb_joint, 'joint'), (self.cb_hmode, 'height_mode'),
                             (self.cb_fstyle, 'floor_style'), (self.cb_group, 'grouping'),
-                            (self.cb_gable_on, 'gable_on'), (self.cb_topmode, 'top_mode')):
+                            (self.cb_gable_on, 'gable_on'), (self.cb_topmode, 'top_mode'),
+                            (self.cb_roof_type, 'roof_type'), (self.cb_roof_low, 'roof_low')):
                 i_ = cb.findData(d.get(key, DEFAULTS[key]))
                 cb.setCurrentIndex(max(0, i_))
             self.sp_storeys.setValue(int(d.get('storeys', DEFAULTS['storeys']) or 1))
             self.ed_corners.setPlainText(str(d.get('corners_text', '') or ''))
             for ed, key in ((self.ed_heights, 'storey_heights'), (self.ed_cx, 'cross_x'), (self.ed_cy, 'cross_y'),
-                            (self.ed_gwalls, 'gable_walls')):
+                            (self.ed_gwalls, 'gable_walls'), (self.ed_roof_gables, 'roof_gables')):
                 val = d.get(key, DEFAULTS[key])
                 if isinstance(val, (list, tuple)):
                     val = ", ".join("%g" % x for x in val)
@@ -2142,8 +3176,19 @@ class PlanDialog(QDialog):
             for c_, key in ((self.ck_ledges, 'ledges'), (self.ck_one, 'one_piece'), (self.ck_join, 'part_join'),
                             (self.ck_base, 'base'),
                             (self.ck_top, 'top'), (self.ck_gables, 'gables'),
-                            (self.ck_gjoin, 'gable_join'), (self.ck_topjoin, 'top_join')):
+                            (self.ck_gjoin, 'gable_join'), (self.ck_topjoin, 'top_join'),
+                            (self.ck_roof, 'roof'), (self.ck_roof_fill, 'roof_fill')):
                 c_.setChecked(bool(d.get(key, DEFAULTS[key])))
+            rows_ = d.get('storey_rows', [])
+            self._st_data = [dict(r_) for r_ in rows_] if isinstance(rows_, (list, tuple)) else []
+            for w_ in self.st_rows:
+                for x_ in w_:
+                    try:
+                        x_.setParent(None)
+                        x_.deleteLater()
+                    except Exception:
+                        pass
+            self.st_rows = []
             for key, (s, _) in self.sp.items():
                 try:
                     val = float(d.get(key, DEFAULTS[key]))
@@ -2177,7 +3222,7 @@ class PlanDialog(QDialog):
         self.sp_storeys.setEnabled(hm == 'divide')
         self.sp['total_h'][0].setEnabled(hm == 'divide')
         self.sp['floor_t'][0].setEnabled(fsy != 'none')
-        self.sp['fit'][0].setEnabled(fsy == 'dropin')
+        self.sp['fit'][0].setEnabled(fsy in ('dropin', 'storeys'))
         self.sp['lip_h'][0].setEnabled(fsy == 'stacked')
         self.sp['lip_fit'][0].setEnabled(fsy == 'stacked' and v['lip_h'] > 0)
         self.ck_ledges.setEnabled(fsy == 'dropin')
@@ -2185,7 +3230,7 @@ class PlanDialog(QDialog):
         self.sp['ledge_h'][0].setEnabled(fsy == 'dropin' and v['ledges'])
         self.ck_one.setEnabled(fsy != 'stacked')
         self.sp['part_t'][0].setEnabled(bool(v['cross_x'] or v['cross_y']))
-        self.sp['part_room'][0].setEnabled(bool(v['cross_x'] or v['cross_y']))
+        self.sp['part_room'][0].setEnabled(bool(v['cross_x'] or v['cross_y']) or fsy in ('dropin', 'storeys'))
         self.ck_join.setEnabled(bool(v['cross_x'] and v['cross_y']))
         for k_ in ('base_t', 'base_over'):
             self.sp[k_][0].setEnabled(v['base'])
@@ -2195,18 +3240,47 @@ class PlanDialog(QDialog):
         self.sp['top_over'][0].setEnabled(v['top'] and not t_in)
         self.sp['top_room'][0].setEnabled(t_in)
         self.ck_topjoin.setEnabled(t_in and bool(v['cross_x'] or v['cross_y']))
-        g_on = v['gables']
+        r_on = v['roof']
+        g_on = v['gables'] and not r_on              # with a roof, the roof makes its own gables
+        self.ck_gables.setEnabled(not r_on)
         self.cb_gable_on.setEnabled(g_on)
         self.ed_gwalls.setEnabled(g_on and v['gable_on'] == 'pick')
         self.lbl_gwalls.setEnabled(g_on and v['gable_on'] == 'pick')
         self.sp['gable_pitch'][0].setEnabled(g_on and v['ridge_h'] <= 0)
         self.sp['ridge_h'][0].setEnabled(g_on)
-        self.ck_gjoin.setEnabled(g_on and not (v['top'] and v['top_mode'] != 'inside'))
+        self.ck_gjoin.setEnabled((g_on or (r_on and v['roof_fill'])) and not (v['top'] and v['top_mode'] != 'inside'))
+        rt = v['roof_type']
+        for w_ in (self.cb_roof_type, self.ck_roof_fill):
+            w_.setEnabled(r_on)
+        for w_ in (self.cb_roof_low, self.lbl_roof_low):
+            w_.setEnabled(r_on and rt in ('mono', 'flat'))
+        for w_ in (self.ed_roof_gables, self.lbl_roof_gables):
+            w_.setEnabled(r_on and rt == 'pick')
+        self.sp['roof_pitch'][0].setEnabled(r_on and rt != 'flat')
+        self.sp['roof_pitch2'][0].setEnabled(r_on and rt in ('saltbox', 'hip'))
+        self.sp['roof_fall'][0].setEnabled(r_on and rt == 'flat')
+        for k_ in ('eave_over', 'verge_over', 'roof_t'):
+            self.sp[k_][0].setEnabled(r_on)
         # the floors in the 'Floor shown' list
         try:
             n = len(plan_params(v)['_heights'])
         except Exception:
             n = 1
+        self._busy = True
+        try:
+            self.build_storey_rows(n)
+        finally:
+            self._busy = False
+        st_on = fsy == 'storeys'
+        self.st_grid_w.setEnabled(st_on)
+        for k_, _l, _lo, _hi, _d, _t in TAB_FIELDS:
+            self.sp[k_][0].setEnabled(st_on)
+        self.lbl_st_head.setText("Tick what each storey has - you only get what you tick. Floors above the "
+                                 "ground floor and the ceilings are kept back from the walls by W (Walls page) "
+                                 "so they drop in inside the frame - set W to Subframe's bar depth. Subframe "
+                                 "puts the tabs (or a ledge) under each one, on the face of its frame." if st_on else
+                                 "To use this page, pick 'Each storey set on the Storeys page' in Floors "
+                                 "(Floors page).")
         if self.cb_show.count() != n:
             cur = max(0, self.cb_show.currentIndex())
             self.cb_show.blockSignals(True)
@@ -2234,7 +3308,66 @@ class PlanDialog(QDialog):
             self.lbl_floors.setText(str(e))
             self.lbl_floors.setStyleSheet("color: #b35900;")
         nt = self.preview.notes if self.preview.pieces else {}
-        if not v['gables']:
+        if fsy == 'storeys':
+            if self.preview.pieces:
+                pcs_ = self.preview.pieces
+                nfl = sum(1 for pc in pcs_ if pc.name.endswith(" - Floor panel"))
+                nce = sum(1 for pc in pcs_ if pc.name.endswith(" - Ceiling"))
+                self.lbl_storeys.setText("%d floor%s and %d ceiling%s, each its own piece. Frame it with "
+                                         "Subframe: it puts the tabs (or a ledge) under them." % (
+                                             nfl, "s" if nfl != 1 else "", nce, "s" if nce != 1 else ""))
+                self.lbl_storeys.setStyleSheet("color: gray;")
+            else:
+                self.lbl_storeys.setText(self.preview.msg)
+                self.lbl_storeys.setStyleSheet("color: #b35900;")
+        else:
+            self.lbl_storeys.setText("")
+        rn = nt.get('roof') if nt else None
+        if nt:
+            H_ = nt['H']
+            top_ = max([pc.z1 for pc in self.preview.pieces] + [H_])
+            base_ = 0.0
+            if v['base']:
+                # 0 = worked out, as the build does: the floor thickness, or else the wall thickness
+                base_ = v['base_t'] if v['base_t'] > 0 else float(v.get('floor_t') or v.get('wall_t') or 0.0)
+            txt_h = "<b>Height:</b> walls %.0f mm" % H_
+            if rn:
+                txt_h += "; with the roof %.0f mm (to the ridge)" % top_
+            elif top_ > H_ + 1e-6:
+                txt_h += "; with the gables %.0f mm" % top_
+            else:
+                txt_h += " (no roof)"
+            if base_ > 0:
+                txt_h += " - plus the %.0f mm base plate under it (%.0f mm in all)" % (base_, top_ + base_)
+            txt_h += "."
+        else:
+            txt_h = "<b>Height:</b> <span style='color:#b35900'>%s</span>" % (self.preview.msg or "not worked out yet")
+        self.lbl_height.setText(txt_h)
+        self.lbl_height2.setText(txt_h)
+        if hasattr(self, 'start'):
+            self.refresh_basics()
+        if not r_on:
+            self.lbl_roof.setText("No roof - tick 'Pitched roof on top' to put one on.")
+            self.lbl_roof.setStyleSheet("color: gray;")
+        elif not rn:
+            self.lbl_roof.setText(self.preview.msg)
+            self.lbl_roof.setStyleSheet("color: #b35900;")
+        else:
+            txt = "%d slope%s at %s°, the top %.0f mm above the walls." % (
+                rn['slopes'], "s" if rn['slopes'] != 1 else "", " and ".join("%g" % a_ for a_ in rn['pitches']),
+                rn['rise'])
+            if v['roof_fill'] and rn['fills']:
+                txt += " %d gable end%s / raised wall%s built up under it%s." % (
+                    rn['fills'], "s" if rn['fills'] != 1 else "", "s" if rn['fills'] != 1 else "",
+                    ", each joined to its wall" if v['gable_join'] and rn['fills'] else "")
+            txt += " Each slope is its own piece - frame it with Subframe, cover it with Roof Tiles."
+            self.lbl_roof.setText(txt)
+            self.lbl_roof.setStyleSheet("color: gray;")
+        if r_on:
+            self.lbl_gables.setText("The roof makes its own gable ends (Roof page) - 'Join each gable to its wall' "
+                                    "still works for them.")
+            self.lbl_gables.setStyleSheet("color: gray;")
+        elif not v['gables']:
             self.lbl_gables.setText("No gables - tick 'Gable ends' to put them on.")
             self.lbl_gables.setStyleSheet("color: gray;")
         elif not nt:
@@ -2255,6 +3388,48 @@ class PlanDialog(QDialog):
                                    "%.1f m²." % (nt['walls'], nt['wall_len'], nt['inner_area']))
         else:
             self.lbl_walls.setText(self.preview.msg)
+
+    def storey_values(self):
+        """The Storeys page, as a list of rows (one per storey)."""
+        out = []
+        for k, (cf, cc, _lab) in enumerate(self.st_rows):
+            out.append(dict(floor=cf.isChecked(), ceiling=cc.isChecked()))
+        # storeys not shown just now (fewer floors) keep what they had
+        return out + [dict(r_) for r_ in self._st_data[len(out):]]
+
+    def build_storey_rows(self, n):
+        """A row on the Storeys page for each storey: Floor [ ] rests on [..]   Ceiling [ ] rests on [..]."""
+        if len(self.st_rows) == n:
+            return
+        keep = self.storey_values() if self.st_rows else list(self._st_data)
+        for w_ in self.st_rows:
+            for x_ in w_:
+                try:
+                    x_.setParent(None)
+                    x_.deleteLater()
+                except Exception:
+                    pass
+        self.st_rows = []
+        rows = storey_rows(keep, n)
+        if not self.st_grid.count():
+            for c_, txt in ((1, "Floor"), (2, "Ceiling")):
+                self.st_grid.addWidget(QLabel("<b>%s</b>" % txt), 0, c_)
+        for k in range(n):
+            lab = QLabel(storey_name(k))
+            cf = QCheckBox()
+            cf.setChecked(rows[k]['floor'])
+            cc = QCheckBox()
+            cc.setChecked(rows[k]['ceiling'])
+            for c_, w_ in enumerate((lab, cf, cc)):
+                self.st_grid.addWidget(w_, k + 1, c_)
+            cf.setToolTip("A floor panel for the %s. The ground floor's stands on the base (the frame stands "
+                          "on it); the others drop in inside the walls, kept back by W for a subframe, onto "
+                          "Subframe's tabs." % storey_name(k).lower())
+            cc.setToolTip("A ceiling panel at the top of the %s, under the room for the next floor's tabs (or "
+                          "under the roof, on the top storey). Subframe's tabs hold it up." % storey_name(k).lower())
+            for c_ in (cf, cc):
+                c_.toggled.connect(self.changed)
+            self.st_rows.append((cf, cc, lab))
 
     def watch_selection(self):
         try:
@@ -2427,7 +3602,7 @@ class PlanDialog(QDialog):
 # ---------------------------------------------------------------------------
 # Show floors: a little window to hide and show the walls and the floors of each storey
 # ---------------------------------------------------------------------------
-FLOOR_WORDS = ("Floor slab", "Floor panel", "Ledge")
+FLOOR_WORDS = ("Floor slab", "Floor panel", "Ledge", "Ceiling", " tab ", " ledge ")
 
 
 def _storey_of(name):
@@ -2494,6 +3669,14 @@ def floor_groups(scene):
         if nm.startswith("Base plate"):
             row("Base plate")['floor'].append(e)
             return
+        if nm.startswith("Roof slope"):
+            row("Roof")['floor'].append(e)
+            return
+        if nm.startswith("Roof ("):
+            holders.append(e)
+            for c in _items(getattr(e, 'children', None)):
+                walk(c, depth + 1)
+            return
         lab, piece = _storey_of(nm)
         if lab and piece:
             row("Walls (full height)" if lab == "Walls" else lab)[
@@ -2514,6 +3697,8 @@ def _floor_order(lab):
         return -1
     if lab == "Top plate":
         return 999
+    if lab == "Roof":
+        return 1000
     if lab == "Walls (full height)":
         return 500
     for k in range(50):
@@ -2594,8 +3779,8 @@ class FloorsWindow(QDialog):
         b_all.setToolTip("Shows every wall, floor and plate again.")
         b_all.clicked.connect(self.show_all)
         b_fl = QPushButton("Hide floors && plates")
-        b_fl.setToolTip("Hides every floor slab, floor panel and plate but keeps all the walls - the "
-                        "inside walls too - so you can see every room from above.")
+        b_fl.setToolTip("Hides every floor slab, floor panel and plate (and the roof) but keeps all the "
+                        "walls - the inside walls too - so you can see every room from above.")
         b_fl.clicked.connect(self.hide_floors)
         row.addWidget(b_all)
         row.addWidget(b_fl)
@@ -2647,7 +3832,7 @@ class FloorsWindow(QDialog):
                         continue
                     cb = QCheckBox()
                     cb.setToolTip("Untick to hide the %s %s." % (lab.lower(), "walls" if part == 'walls' else
-                                  ("floor" if lab not in ("Top plate", "Base plate") else "")))
+                                  ("floor" if lab not in ("Top plate", "Base plate", "Roof") else "")))
                     cb.toggled.connect(lambda on, l_=lab, p_=part: self.toggle(l_, p_, on))
                     self.grid.addWidget(cb, r, c_, mid)
                     self.checks[(lab, part)] = cb
@@ -2748,7 +3933,7 @@ class FloorPlanTool(Tool):
     shortcut = "Ctrl+Alt+Shift+F"
     description = "The shell of a building from its floor plan: walls set in from the outline, flat or " \
                   "mitred corners, split at each floor, with floor slabs or drop-in floors, inside walls " \
-                  "base and top plates and gable ends - every piece its own group, ready to print."
+                  "base and top plates, gable ends and a pitched roof - every piece its own group, ready to print."
 
     _dialog = None
 
@@ -2810,7 +3995,7 @@ class FloorPlanTool(Tool):
         msg = "Added %d pieces: %d wall sections (%d a floor%s)" % (
             len(pieces), nw, notes['walls'], ", some split to fit the print bed" if p['split_len'] > 0 and
             nw > notes['walls'] * (1 if p.get('one_piece') and p['floor_style'] != 'stacked' else len(hs)) else "")
-        for kind, word in (('gable', "gable pieces"), ('slab', "floor slabs"), ('floor', "drop-in floor panels"), ('ledge', "ledges"),
+        for kind, word in (('roof', "roof slopes"), ('gable', "gable pieces"), ('slab', "floor slabs"), ('floor', "drop-in floor panels"), ('ledge', "ledges"),
                            ('part', "inside walls"), ('base', "base plate"), ('top', "top plate")):
             c = sum(1 for pc in pieces if pc.kind == kind)
             if c:
@@ -2911,6 +4096,8 @@ class FloorPlanTool(Tool):
                 g.component = False
                 if pc.kind in ('base', 'top'):
                     key = (2, 0)                    # the plates sit in 'Floor plan' itself
+                elif pc.kind == 'roof':
+                    key = (3, 0)                    # the roof slopes: a 'Roof' group of their own
                 elif pc.kind in ('wall', 'gable') and pc.name.startswith("Walls"):
                     key = (0, -1)                   # full-height walls: a group of their own
                 else:
@@ -2934,7 +4121,8 @@ class FloorPlanTool(Tool):
                     if k[0] == 2:
                         kids += gs
                         continue
-                    nm = "%s (%d pieces)" % ("Walls" if k[0] == 0 else storey_name(k[1]), len(gs))
+                    nm = "%s (%d pieces)" % ("Walls" if k[0] == 0 else "Roof" if k[0] == 3 else storey_name(k[1]),
+                                             len(gs))
                     h = holder(Group, nm, gs)
                     if h is None:
                         kids += gs
