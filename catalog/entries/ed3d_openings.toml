@@ -3,7 +3,7 @@
 # from the plugin file named in 'source', and sends it with the picture in
 # catalog/screenshots/ whenever the plugin or this entry changes.
 
-id = "openings"
+id = "ed3d_openings"
 source = "plugins/3D_Eddys/ed3d_openings.py"
 author = "Phillip Edwards (Eddy)"
 author_url = "https://github.com/eddy-99"

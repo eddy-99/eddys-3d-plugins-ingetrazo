@@ -4,6 +4,9 @@
 # Written with the help of AI (Claude).
 """Sends new and changed plugins to the IngeTrazo extensions catalog.
 
+Version 1.1 (17 Nov 2026): finds each plugin's catalog entry by what it downloads,
+not by its file name, and never writes over another author's entry.
+
 For every catalog/entries/<id>.toml in this repository it works out what the
 catalog entry should say now:
 
@@ -23,6 +26,11 @@ opens a pull request on the catalog from your fork, one per plugin, touching
 only that plugin's entry and its picture. An update to a plugin that is already
 listed then goes in by itself (the catalog's own automerge); a new plugin waits
 for a maintainer to approve its first entry.
+
+Which catalog file is ours is worked out from where each catalog entry downloads
+from (this repository, this plugin file), not from the file name, and it never
+writes over an entry that belongs to someone else: that plugin is skipped and the
+run goes red with a note saying what to change.
 
 It never runs any plugin code. Run by .github/workflows/send-to-ingetrazo-catalog.yml (a copy of catalog/send-to-ingetrazo-catalog.yml).
 
@@ -106,6 +114,34 @@ def newer(a: str, b: str) -> bool:
     return nums(a) > nums(b)
 
 
+def login(url) -> str:
+    """The GitHub account an author_url names, lower-case ("" if none)."""
+    m = re.fullmatch(r"https://github\.com/([A-Za-z0-9-]{1,39})/?", str(url or "").strip())
+    return m.group(1).lower() if m else ""
+
+
+def downloads_from(entry: dict, source_repo: str, source: str) -> bool:
+    """True when a catalog entry downloads this very plugin file from this repository."""
+    pat = (r"https://raw\.githubusercontent\.com/" + re.escape(source_repo) +
+           r"/[0-9a-f]{7,40}/" + re.escape(source))
+    return bool(re.fullmatch(pat, str(entry.get("download", "")), flags=re.IGNORECASE))
+
+
+def find_ours(cat: Path, source_repo: str, source: str) -> list[Path]:
+    """The catalog files that already list this plugin, found by what they download,
+    not by their name: the maintainers may have renamed ours (as they did with
+    openings -> ed3d_openings), and someone else may own the plain name."""
+    found = []
+    for f in sorted((cat / "extensions").glob("*.toml")):
+        try:
+            e = tomllib.loads(f.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if downloads_from(e, source_repo, source):
+            found.append(f)
+    return found
+
+
 def main() -> int:
     catalog = os.environ.get("CATALOG_REPO", "ingelibre/ingetrazo-extensions")
     fork = os.environ.get("FORK_REPO", "eddy-99/ingetrazo-extensions")
@@ -133,8 +169,6 @@ def main() -> int:
     sent, same, problems = [], [], []
     for path in sorted(ENTRIES.glob("*.toml")):
         ident = path.stem
-        if only and ident not in only:
-            continue
         try:
             mine = tomllib.loads(path.read_text(encoding="utf-8"))
         except tomllib.TOMLDecodeError as exc:
@@ -147,8 +181,39 @@ def main() -> int:
         data = src.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
 
+        # Which catalog file is ours? Found by where it downloads from, never just by name.
+        ours = find_ours(cat, source_repo, mine["source"])
+        if len(ours) > 1:
+            problems.append(f"{path.stem}: the catalog lists {mine['source']} more than once "
+                            f"({', '.join(f.name for f in ours)}), so nothing was sent - ask the maintainers")
+            continue
+        if ours:
+            ident = ours[0].stem
+            if only and not ({ident, path.stem} & only):
+                continue
+            if (mine.get("id") or path.stem) != ident:
+                problems.append(f"{path.stem}: the catalog calls this plugin '{ident}', so it was sent as "
+                                f"extensions/{ident}.toml (tidy-up: set id = \"{ident}\" in {path.name})")
+        else:
+            ident = mine.get("id") or path.stem
+        if only and not ({ident, path.stem} & only):
+            continue
+
         live_path = cat / "extensions" / f"{ident}.toml"
         live = tomllib.loads(live_path.read_text(encoding="utf-8")) if live_path.is_file() else None
+
+        # Never touch another author's entry, whatever the file is called.
+        if live is not None and not ours:
+            problems.append(
+                f"{path.stem}: NOT SENT - extensions/{ident}.toml in the catalog is "
+                f"\"{live.get('name', {}).get('en', ident)}\" by {live.get('author', '?')} "
+                f"({live.get('author_url', '?')}), not this plugin. Give it its own id in "
+                f"{path.name}, e.g. id = \"ed3d_{ident}\"")
+            continue
+        if live is not None and login(live.get("author_url")) != fork_owner.lower():
+            problems.append(f"{path.stem}: NOT SENT - extensions/{ident}.toml downloads our file but "
+                            f"names another author ({live.get('author_url')}); ask the maintainers")
+            continue
 
         entry = {k: v for k, v in mine.items() if k not in ("source", "pr_note")}
         entry["id"] = ident
@@ -157,16 +222,17 @@ def main() -> int:
 
         # the picture: ours if we have one, else whatever the catalog already shows
         shot_file = None
-        for ext in ("webp", "png", "jpg", "jpeg"):
-            p = SHOTS / f"{ident}.{ext}"
-            if p.is_file():
-                shot_file = p
-                break
+        for stem in dict.fromkeys((ident, path.stem)):
+            for ext in ("webp", "png", "jpg", "jpeg"):
+                p = SHOTS / f"{stem}.{ext}"
+                if p.is_file() and shot_file is None:
+                    shot_file = p
+        shot_name = f"{ident}{shot_file.suffix}" if shot_file is not None else None
         if shot_file is not None and shot_file.stat().st_size > MAX_SHOT:
             problems.append(f"{ident}: {shot_file.name} is over 600 KB, so it was left out")
             shot_file = None
         if shot_file is not None:
-            entry["screenshot"] = shot_file.name
+            entry["screenshot"] = shot_name
         elif live and live.get("screenshot"):
             entry["screenshot"] = live["screenshot"]
         else:
@@ -185,7 +251,7 @@ def main() -> int:
 
         shot_changed = False
         if shot_file is not None:
-            there = cat / "screenshots" / shot_file.name
+            there = cat / "screenshots" / shot_name
             shot_changed = not there.is_file() or there.read_bytes() != shot_file.read_bytes()
 
         if live is not None and not shot_changed and all(live.get(k) == entry.get(k) for k in COMPARE):
@@ -210,8 +276,8 @@ def main() -> int:
         files = [f"extensions/{ident}.toml"]
         if shot_changed:
             (cat / "screenshots").mkdir(exist_ok=True)
-            shutil.copyfile(shot_file, cat / "screenshots" / shot_file.name)
-            files.append(f"screenshots/{shot_file.name}")
+            shutil.copyfile(shot_file, cat / "screenshots" / shot_name)
+            files.append(f"screenshots/{shot_name}")
 
         # the catalog's own check, on just this entry (it reads the file, never runs it)
         offline = ["--offline"] if os.environ.get("CHECK_OFFLINE") == "1" else []
@@ -293,7 +359,7 @@ def main() -> int:
             print("  -", p)
     # a missing picture is a warning; a failed check stops the run going green
     return 1 if any("check found a problem" in p or "does not read" in p or "is not in the repository" in p
-                    for p in problems) else 0
+                    or "NOT SENT" in p or "more than once" in p for p in problems) else 0
 
 
 if __name__ == "__main__":

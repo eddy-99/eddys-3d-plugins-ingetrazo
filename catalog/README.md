@@ -27,6 +27,13 @@ version goes up one step (1.1 → 1.2). To jump to a version of your own (say
 (the file name without `ed3d_`), change `id`, `source`, `name`, `summary` and
 `tags`, add a picture with the same name in `screenshots/`, and push.
 
+**Names in the catalog:** the robot finds each plugin's catalog entry by the
+file it downloads, not by its name, so if the maintainers rename one (as they
+did `openings` → `ed3d_openings`) it still updates the right one. It will never
+write over someone else's entry: if a new plugin's id is already taken, that
+plugin is skipped, the run goes red, and the summary says which id to use
+instead (start new ids with `ed3d_` to be safe).
+
 ## One-time setup
 
 ### 1. Put the workflow where GitHub looks for it
