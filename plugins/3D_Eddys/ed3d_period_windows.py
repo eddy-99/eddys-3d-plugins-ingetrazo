@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Windows"
-VERSION = "2.4"  # shown in the window title, so you can tell which file is loaded
+VERSION = "2.5"  # shown in the window title, so you can tell which file is loaded. 2.5: a door built into the same wall keeps its own colours when the windows are built again
 
 
 def _ed3d_organise(scene, group):
@@ -2338,6 +2338,37 @@ def solids_from_rec(data):
     return out
 
 
+_KEEP_TAGS = ('part', 'kind', 'mortar')
+
+
+def tagged_to_rec(solids):
+    """Like solids_to_rec, but keeps what each solid is (its part - frame, sill, head... - and kind),
+    so a window or door kept on a wall is still coloured part by part when the other plugin builds
+    that wall again."""
+    out = []
+    for so in solids:
+        tags = {}
+        for a in _KEEP_TAGS:
+            val = getattr(so, a, None)
+            if isinstance(val, (str, bool, int, float)):
+                tags[a] = val
+        out.append({'f': [[[round(c, 7) for c in p] for p in f] for f in so.faces], 't': tags})
+    return out
+
+
+def tagged_from_rec(data):
+    """Reads solids kept by tagged_to_rec - or by the older solids_to_rec (faces only, no tags)."""
+    out = []
+    for rec in data or []:
+        faces, tags = (rec.get('f') or [], rec.get('t') or {}) if isinstance(rec, dict) else (rec, {})
+        so = Solid()
+        so.faces = [[tuple(p) for p in f] for f in faces]
+        for k, val in tags.items():
+            setattr(so, k, val)
+        out.append(so)
+    return out
+
+
 def item_solids(item, own_kind):
     """The solids of a window or door kept on a wall: made again from its settings if it's this
     plugin's own kind, otherwise its shape as it was kept (or, failing that, made by the other plugin)."""
@@ -2345,18 +2376,32 @@ def item_solids(item, own_kind):
         vv = dict(DEFAULTS)
         vv.update(item.get('values') or {})
         sols, _t = build_into_wall(item, vv, item.get('overlap', WB_DEFAULT_OVERLAP))
-        item['solids'] = solids_to_rec(sols)
+        item['solids'] = tagged_to_rec(sols)
         return sols
-    if item.get('solids'):
-        return solids_from_rec(item['solids'])
+    kept = tagged_from_rec(item['solids']) if item.get('solids') else None
+    # kept with its parts named (frame, sill, head...): use it as it is
+    if kept and all(getattr(so, 'part', None) for so in kept):
+        return kept
+    # kept by an older version (shape only, no part names), or not kept: made again by the other
+    # plugin, so each part gets its own colour (an untagged one was all painted as the frame)
     import sys as _sys
     want = "ed3d_period_doors" if item.get('kind') == 'door' else "ed3d_period_windows"
     for nm, mod in list(_sys.modules.items()):
         if nm.endswith(want) and hasattr(mod, 'build_into_wall'):
-            vv = dict(mod.DEFAULTS)
-            vv.update(item.get('values') or {})
-            sols, _t = mod.build_into_wall(item, vv, item.get('overlap', WB_DEFAULT_OVERLAP))
-            return [solids_from_rec(solids_to_rec([so]))[0] for so in sols]
+            try:
+                vv = dict(mod.DEFAULTS)
+                vv.update(item.get('values') or {})
+                sols, _t = mod.build_into_wall(item, vv, item.get('overlap', WB_DEFAULT_OVERLAP))
+                got = tagged_from_rec(tagged_to_rec(sols))
+                item['solids'] = tagged_to_rec(got)
+                return got
+            except Exception as e:
+                if kept:
+                    print("%s: %s kept as it was (%s)" % (PLUGIN_NAME, item.get('name', 'an opening'), e))
+                    return kept
+                raise
+    if kept:
+        return kept
     raise ValueError("it was made by %s, which isn't loaded" %
                      ("3D Period Doors" if item.get('kind') == 'door' else "3D Period Windows"))
 

@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "11"
+VERSION = "12"  # 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
 
 
 def _ed3d_organise(scene, group):
@@ -1127,7 +1127,15 @@ GROUP_SKIP = ("Roof - ", "Sheeting - ", "Subframe", "Roof truss", "Glazing frame
               "Chimney", "Industrial chimney", "Roof vent", "Doig", "Weather vane")
 # Floor Plan's gable ends (and walls with their gable on) sit under the roof: their sloping
 # tops follow the underside of the roof, so they're never the roof itself
-GROUP_SKIP_IN = (" - Gable on ", " with gable")
+GROUP_SKIP_IN = (" - Gable on ", " with gable", " - Wall ")
+# a wall with windows or doors built into it (by 3D Period Windows / Doors): the sloping tops of
+# their arched heads, sills and steps are not the roof - its whole group is left out
+BUILT_IN_KEYS = ("ed3d_openings", "ed3d_period_windows")
+
+
+def _has_built_ins(g):
+    ext = getattr(g, 'ext', None)
+    return isinstance(ext, dict) and any(isinstance(ext.get(k), dict) for k in BUILT_IN_KEYS)
 
 
 class WorldFace:
@@ -1194,7 +1202,7 @@ def faces_in_groups(groups):
 
         def walk(g, lvl):
             nm = str(getattr(g, 'name', '') or '')
-            if any(w in nm for w in GROUP_SKIP_IN):
+            if any(w in nm for w in GROUP_SKIP_IN) or _has_built_ins(g):
                 return
             if nm.startswith(GROUP_SKIP):
                 skipped.append(nm)
