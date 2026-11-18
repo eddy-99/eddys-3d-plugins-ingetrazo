@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "8"
+VERSION = "11"
 
 
 def _ed3d_organise(scene, group):
@@ -62,7 +62,7 @@ Z = (0.0, 0.0, 1.0)
 
 # tile types: sizes in real mm
 #   width = cover width (side by side), length = whole tile, gauge = height of each course
-#   shape = bottom edge (flat, fish, round, club), profile = cross-section (None, pantile, roman)
+#   shape = bottom edge (flat, fish, round, club), profile = cross-section (None, pantile, roman, corrugated)
 TILES = [
     ("plain", "Plain tile (clay)", dict(width=165.0, length=265.0, gauge=100.0, thick=12.0,
                                        shape='flat', depth=0.0, profile=None, wave=0.0, bond=True)),
@@ -83,7 +83,12 @@ TILES = [
                                 shape='flat', depth=0.0, profile='pantile', wave=45.0, bond=False)),
     ("roman", "Double Roman tile", dict(width=300.0, length=420.0, gauge=345.0, thick=14.0,
                                         shape='flat', depth=0.0, profile='roman', wave=40.0, bond=False)),
+    # 10 corrugations of 76 mm across the cover width; sheets lap 150 mm up the slope
+    ("tin", "Tin sheet (corrugated)", dict(width=760.0, length=2440.0, gauge=2290.0, thick=6.0,
+                                           shape='flat', depth=0.0, profile='corrugated', wave=19.0,
+                                           bond=False)),
 ]
+CORRUGATIONS = 10
 TILE_INFO = {k: (lab, d) for k, lab, d in TILES}
 TURNS = [("Eaves at the lowest edge", 0), ("Turned a quarter", 90), ("Upside down", 180),
          ("Turned three quarters", 270)]
@@ -340,6 +345,8 @@ def wave_at(profile, s, h):
             if a <= s <= a + w:
                 return h * math.sin(math.pi * (s - a) / w)
         return 0.0
+    if profile == 'corrugated':                    # even round waves, a whole number per sheet
+        return h * 0.5 * (1.0 - math.cos(2.0 * math.pi * CORRUGATIONS * s))
     return 0.0
 
 
@@ -655,7 +662,8 @@ def lay_tiles(outline, holes, v):
             pieces = [pc for pc in pieces if abs(area2(pc)) > 0.02 * W * g * 0.05]
             if not pieces:
                 continue
-            cuts = [xa + W * k / 16.0 for k in range(1, 16)] if prof else []
+            nc = 8 * CORRUGATIONS if prof == 'corrugated' else 16
+            cuts = [xa + W * k / float(nc) for k in range(1, nc)] if prof else []
 
             if printing:
                 def ztop(x, y, yr=yr, xa=xa):
@@ -882,8 +890,8 @@ def face_frame(face, flip=False, turn=0):
     n = _newell(pts)
     if flip:
         n = v_mul(n, -1.0)
-    if abs(n[2]) < 0.999:
-        U = v_norm(v_cross(Z, n))        # level, along the eaves
+    if abs(n[2]) < LEVEL:
+        U = v_norm(v_cross(Z, n))        # level, along the eaves (and down the fall of a flat roof)
     else:
         k = max(range(len(pts)), key=lambda i: v_len(v_sub(pts[(i + 1) % len(pts)], pts[i])))
         e = v_sub(pts[(k + 1) % len(pts)], pts[k])
@@ -1219,16 +1227,21 @@ def _area3(pts):
     return 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
 
 
+# a face tilted by less than this (cos of about 0.25 degrees) counts as level: a floor or a wall
+# top. Anything steeper - down to a flat roof with a fall of a degree or two - is a roof.
+LEVEL = 0.99999
+
+
 def pick_roof_faces(faces, v):
     """The roof pieces among a group's faces: sloping and facing up, and wide enough for a
     course of tiles - so walls, floors, wall tops, the undersides of the roof and the thin edges
-    of a thick roof or roof panel are all left out."""
-    g = max(10.0, v.get('gauge', 100.0))
+    of a thick roof or roof panel are all left out. Flat roofs with a fall count as well."""
+    g = min(600.0, max(10.0, v.get('gauge', 100.0)))      # long tin sheets: still no thin edges
     out = []
     for f in faces:
         pts = f.vertices
         n = _newell(pts)
-        if not (0.05 < n[2] < 0.995):
+        if not (0.05 < n[2] < LEVEL):
             continue
         area = _area3(pts) / (SCALE * SCALE)
         longest = max(v_len(v_sub(pts[(i + 1) % len(pts)], pts[i])) for i in range(len(pts))) / SCALE
@@ -1328,7 +1341,7 @@ VIEW_DIR = v_norm((-0.18, 0.32, -1.0))       # nearly face-on, a little from bel
 LIGHT = v_norm((-0.45, 0.65, 0.6))           # low light from the top left shows the shapes
 COLOURS = {'plain': (176, 84, 56), 'slate': (86, 92, 104), 'smallslate': (98, 104, 116),
            'fish': (170, 80, 54), 'bull': (180, 92, 60), 'beaver': (168, 76, 50), 'club': (174, 86, 58),
-           'pantile': (196, 104, 58), 'roman': (150, 140, 132)}
+           'pantile': (196, 104, 58), 'roman': (150, 140, 132), 'tin': (158, 166, 170)}
 
 
 def preview_caption(v):
@@ -1713,7 +1726,7 @@ class KeyDrawing(QWidget):
         p.setPen(QColor(60, 60, 60))
         notes = ["A  tile width (cover, side by side)", "B  tile length (lapped tiles)",
                  "C  gauge - course to course", "D  tile thickness", "E  extra at the bottom (stepped)",
-                 "F  gap between tiles", "G  tail depth (shaped tiles)", "H  wave height (pantiles, Romans)",
+                 "F  gap between tiles", "G  tail depth (shaped tiles)", "H  wave height (pantiles, Romans, tin)",
                  "I  backing sheet thickness", "J  gap between courses", "U  gap off the roof face",
                  "K - X  on the next key page"]
         for i, t in enumerate(notes):
@@ -1929,7 +1942,7 @@ FIELDS = [
                                                                  "much thicker at its bottom edge."),
     ('depth', "G   Tail depth (shaped tiles)", 0.0, 500.0, 1, "How far the shaped bottom of a fishtail, "
                                                               "bullnose, beaver tail or club tile hangs down."),
-    ('wave', "H   Wave height (pantiles, Romans)", 0.0, 500.0, 1, "How high the rolls of a profiled tile are."),
+    ('wave', "H   Wave height (pantiles, Romans, tin)", 0.0, 500.0, 1, "How high the rolls of a profiled tile are."),
     ('backing', "I   Backing sheet thickness", 0.0, 500.0, 1, "3D printing: a solid sheet under the "
                                                              "tiles, the shape of the roof, so the roof "
                                                              "prints as one piece. 0 = no backing."),
@@ -2451,6 +2464,13 @@ class RoofTilesTool(Tool):
         # half of the ridge, its finials, its flashing - so they can be printed apart
         slope_parts, total, ridges, nslopes = [], 0, 0, 0
         tile_name = TILE_INFO[v['tile']][0]
+        # slates and tiles are named apart so Layers & Colours gives them their own colours;
+        # the ridge and finials take the colour of the roof they are on
+        slates = v['tile'] in ('slate', 'smallslate')
+        tin = v['tile'] == 'tin'
+        word = "slates" if slates else "sheets" if tin else "tiles"
+        ridge_word = "ridge pieces" if slates else "ridge sheets" if tin else "ridge tiles"
+        fin_word = "finials" if (slates or tin) else "tile finials"
         chims = find_chimneys(scene) if (v.get('round_chimneys', True) and scene is not None) else []
         clear = max(10.0, v.get('cgap', 0.0) if v.get('print_mode') else v.get('gap', 0.0))
         went_round = 0
@@ -2482,18 +2502,18 @@ class RoofTilesTool(Tool):
                 continue
             nslopes += 1
             k = nslopes
-            pieces = [("Slope %d - tiles - %s - %d tiles" % (k, tile_name, count), [s.mapped(tw) for s in tiles])]
+            pieces = [("Slope %d - %s - %s - %d %s" % (k, word, tile_name, count, word), [s.mapped(tw) for s in tiles])]
             if rids:
                 if apart:
                     ridge_sols += [s.mapped(tw) for s in rids]
                 else:
-                    pieces.append(("Slope %d - ridge half - %d ridge tiles" % (k, nr), [s.mapped(tw) for s in rids]))
+                    pieces.append(("Slope %d - ridge half - %d %s" % (k, nr, ridge_word), [s.mapped(tw) for s in rids]))
                 ridges += nr
             if fins:
                 if apart:
                     fin_sols += [s.mapped(tw) for s in fins]
                 else:
-                    pieces.append(("Slope %d - finials" % k, [s.mapped(tw) for s in fins]))
+                    pieces.append(("Slope %d - %s" % (k, fin_word), [s.mapped(tw) for s in fins]))
             if fl:
                 pieces.append(("Slope %d - flashing" % k, [s.mapped(tw) for s in fl]))
             slope_parts.append(("Slope %d (%d pieces)" % (k, len(pieces)) if len(pieces) > 1 else None, pieces))
@@ -2505,9 +2525,9 @@ class RoofTilesTool(Tool):
             # the ridge on its own, beside the slopes: both halves together, with its finials
             rp = []
             if ridge_sols:
-                rp.append(("Ridge - %d ridge tiles" % ridges, ridge_sols))
+                rp.append(("Ridge - %d %s" % (ridges, ridge_word), ridge_sols))
             if fin_sols:
-                rp.append(("Ridge - finials", fin_sols))
+                rp.append(("Ridge - %s" % fin_word, fin_sols))
             slope_parts.append(("Ridge (%d pieces)" % len(rp) if len(rp) > 1 else None, rp))
         top = "Roof - %s%s" % (tile_name, " (for 3D printing)" if v['print_mode'] else "")
         if len(slope_parts) == 1 and slope_parts[0][0]:

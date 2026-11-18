@@ -13,7 +13,9 @@
 """
 3D Show / Hide - one small window, with a tab for each kind of thing you want out of the way
 while you work, in build order: the floors, plates and roof of a Floor Plan building (step 1),
-and the boards, roof panels and loose trusses of a Subframe (step 3). The last tab, 'All groups',
+and the boards, roof panels and loose trusses of a Subframe (step 3). A Bridges tab hides the deck,
+parapets, face walls, end and wing walls or arch infill of a 3D Bridges & Arches bridge (version 2.16).
+The last tab, 'All groups',
 lists every main group in the model (and the groups one level inside them): tick to show, and
 tick 'Print' and click 'Select to print' to select them in the model, so 3D Scale Studio
 (with 'Follow selection' ticked) takes just those groups. Ticked = shown, untick to hide. Each click is one Ctrl+Z step, using
@@ -38,7 +40,7 @@ from PySide6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGrid
                                QTreeWidgetItem, QHeaderView)
 
 PLUGIN_NAME = "3D Show / Hide"
-VERSION = "2.15"             # shown in the window title, so you can tell which file is loaded
+VERSION = "2.16"             # shown in the window title, so you can tell which file is loaded
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_show_hide.json")
 
 
@@ -332,6 +334,37 @@ class RoofPage(QWidget):
         if m is None or sc is None:
             return
         hide_things(self.win.viewport, [g for gs in m.show_hide_groups(sc).values() for g in gs], False)
+
+
+class BridgesPage(RoofPage):
+    """3D Bridges & Arches: the deck, parapets, face walls, end and wing walls and the arch infill,
+    so you can get at the rest of the bridge."""
+    key = 'bridges'
+    title = "Bridges"
+    plugin = "ed3d_bridges_arches"
+
+    def refresh(self):
+        m, sc = self.mod(), self.win.scene()
+        if m is None:
+            self.lbl.setText("3D Bridges & Arches isn't loaded, so there's nothing to show here.")
+            return
+        self._build(m)
+        self.lbl.setText("Untick to hide it - the barrels and piers stay put.")
+        found = m.show_hide_groups(sc) if sc is not None else {}
+        for k, (cb, lab) in self.ticks.items():
+            gs = found.get(k, [])
+            cb.blockSignals(True)
+            if not gs:
+                cb.setText("%s - none" % lab)
+                cb.setChecked(True)
+                cb.setEnabled(False)
+            else:
+                hid = sum(1 for g in gs if getattr(g, 'hidden', False))
+                cb.setEnabled(True)
+                cb.setText("%s (%d)" % (lab, len(gs)) if hid in (0, len(gs)) else
+                           "%s (%d, %d hidden)" % (lab, len(gs), hid))
+                cb.setChecked(hid == 0)
+            cb.blockSignals(False)
 
 
 class GroupsPage(QWidget):
@@ -816,10 +849,11 @@ class GroupsPage(QWidget):
 
 TAB_TIPS = {'floors': "Step 1, Floor Plan: each storey's walls and floor, the plates and the roof.",
             'roof': "Step 3, Subframe: the roof panels, the fascia, barge and soffit boards, and loose trusses.",
+            'bridges': "Bridges & Arches: the deck, parapets, face walls, end and wing walls, and arch infill.",
             'groups': "Every main group in the model: show or hide it, and pick what to print."}
 
 # the tabs, in order (the build order) - add new pages here
-PAGES = [FloorsPage, RoofPage, GroupsPage]
+PAGES = [FloorsPage, RoofPage, BridgesPage, GroupsPage]
 
 
 # ---------------------------------------------------------------------------

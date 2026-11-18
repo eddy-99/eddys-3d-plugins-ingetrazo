@@ -21,6 +21,8 @@ round, tapered, with a plinth, bands, a corbelled cap and a coping - on a select
 face or at the origin.
 Pots only: a row of chimney pots (plain, tapered, cannon, crown, square, octagonal) to
 stand on a stack you've drawn.
+Weather vane: on a house stack (tick it on the Stack page), on a roof vent, or on its own -
+on a flat face, on a sloping roof face, or on the ridge of a building you click.
 Sizes are real-world mm; every part is a closed solid. Ctrl+Alt+H.
 """
 
@@ -35,7 +37,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Chimneys"
-VERSION = "5"
+VERSION = "6"
 
 
 def _ed3d_organise(scene, group):
@@ -1131,7 +1133,17 @@ def house_stack(v, roof, frame):
                 k_ += 1
         for i_, one in enumerate(each):          # each pot a piece of its own, to print upright
             parts['Pot %d' % (i_ + 1)] = one
+    # a weather vane: its rod set in the flaunching between the pots, the vane clear above them
+    if v.get('stack_vane'):
+        u = 0.0
+        if npots and rows == 1 and per_row % 2 == 1:
+            u = spread / 2.0                     # a pot in the middle: go in the gap beside it
+        vx = cx + along[0] * u
+        vy = cy + along[1] * u
+        vs, _hh = stack_vane_parts(v)
+        parts.update(place_parts({'Weather vane': vs}, vx, vy, z_top, along))
     rep = {'bricks': len(bricks), 'courses': n_courses, 'above': (z_top - z_high) / S,
+           'vane': bool(v.get('stack_vane')),
            'oversail': n_over, 'width': W / S, 'depth': Dp / S, 'widened': widened, 'rows': rows}
     return parts, rep
 
@@ -1393,6 +1405,48 @@ def vane_parts(v, z0=0.0, base_plate=False):
     return [s_ for s_ in out if s_], zt - z0
 
 
+def stack_vane_parts(v):
+    """A weather vane for the top of a house stack, local mm, its rod's foot at z = 0 (the top
+    course): a plain rod up through the flaunching to clear the pots, then the vane."""
+    rr = max(10.0, v['vane_rod']) / 2.0
+    fl = max(0.0, v['flaunch'])
+    ext = fl + 50.0
+    if int(v['pots']) > 0:
+        ext = max(ext, fl * 0.6 + v['pot_h'] + 150.0)
+    rod = lathe([(0.0, 0.0), (rr, 0.0), (rr, ext), (0.0, ext)], 0.0, 0.0, 0.0, 16)
+    vs, hh = vane_parts(v, ext)
+    return [rod] + vs, hh
+
+
+def vane_on_roof(v, roof, frame):
+    """A weather vane on a sloping roof face (its middle) or astride a ridge (where Along the
+    ridge says): a small block under it cut to the roof, the vane standing on top."""
+    S = SCALE
+    along = frame['along']
+    if frame['ridge'] is not None:
+        a0, a1 = frame['ridge']
+        t = v['vent_along'] / 100.0
+        cx, cy = a0[0] + (a1[0] - a0[0]) * t, a0[1] + (a1[1] - a0[1]) * t
+    else:
+        cx, cy = _centroid([(p[0], p[1]) for p in frame['pts']])
+    rr = max(10.0, v['vane_rod']) / 2.0
+    c = max(2 * rr, 75.0) * S
+    ax, ay = along
+    foot = [(cx + u * ax - w * ay, cy + u * ay + w * ax) for u, w in ((-c, -c), (c, -c), (c, c), (-c, c))]
+    zs = [roof.z(cx, cy)]
+    for (x0, y0), (x1, y1) in zip(foot, foot[1:] + foot[:1]):
+        for k in range(8):
+            t = k / 8.0
+            zs.append(roof.z(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+    z_low, z_high = min(zs), max(zs)
+    zk = z_high + max(8.0, v['vane_t']) * S
+    block = roof_prism(foot, z_low - 1.0, zk, roof)
+    vs, hh = vane_parts(v, 0.0, False)
+    parts = place_parts({'Weather vane': vs}, cx, cy, zk, along)
+    parts['Weather vane'] = block + parts['Weather vane']
+    return parts, {'height': hh + (zk - z_low) / S}
+
+
 def vent_parts(v, kiln=None, kerb=True):
     """The ventilator in local mm, its foot (the kerb's underside) at z = 0, or the kiln
     roof's eaves at z = 0 if kiln = (width, depth). Returns ({part: [solids]}, info)."""
@@ -1528,7 +1582,7 @@ DEFAULTS = dict(kind='house', width=900.0, depth=450.0, height=900.0, along=50.0
                 cap_t=100.0, finial=500.0, vent_along=50.0,
                 kiln_w=7000.0, kiln_d=7000.0, kiln_h=6000.0, kiln_sweep=60.0, kiln_eave=150.0, kiln_top=150.0,
                 vane=True, vane_style='arrow', vane_letters=True, vane_h=1500.0, vane_len=1000.0, vane_t=30.0,
-                vane_rod=40.0, vane_arms=900.0, vane_letter=250.0)
+                vane_rod=40.0, vane_arms=900.0, vane_letter=250.0, stack_vane=False)
 
 PRESETS = [
     ("Cottage stack, 2 pots", dict(kind='house', width=900.0, depth=450.0, height=900.0, oversail=2,
@@ -2237,9 +2291,25 @@ class ChimneyPreview(QWidget):
                 out.append(('poly', [(-W / 2 - e, top), (W / 2 + e, top), (W / 2 - 40, top + fl),
                                      (-W / 2 + 40, top + fl)], FL))
             pots(per_row, W, top + fl * 0.6, v['pot_dia'], v['pot_h'], v['pot_style'])
-            cap = "Stack %.0f x %.0f mm, %d pot%s%s%s" % (W, D, int(v['pots']), "" if int(v['pots']) == 1 else "s",
-                                                       " in 2 rows" if rows == 2 else "",
-                                                       " (widened to fit)" if widened else "")
+            if v.get('stack_vane'):
+                u = W / max(1, per_row) / 2.0 if (int(v['pots']) and rows == 1 and per_row % 2 == 1) else 0.0
+                vs, _hh = stack_vane_parts(v)
+                fs = []
+                for so in vs:
+                    for f, _ in so:
+                        nrm = _newell(f)
+                        L = v_len(nrm) or 1.0
+                        if nrm[1] / L > -1e-6:
+                            continue
+                        sh = 0.6 + 0.4 * min(1.0, -nrm[1] / L + max(0.0, nrm[2] / L) * 0.5)
+                        col = tuple(int(min(255, c_ * sh)) for c_ in (60, 64, 70))
+                        fs.append((sum(q[1] for q in f) / len(f), [(u + q[0], top + q[2]) for q in f], col))
+                fs.sort(key=lambda t_: -t_[0])
+                out += [('poly', pts, col) for _, pts, col in fs]
+            cap = "Stack %.0f x %.0f mm, %d pot%s%s%s%s" % (W, D, int(v['pots']), "" if int(v['pots']) == 1 else "s",
+                                                         " in 2 rows" if rows == 2 else "",
+                                                         " (widened to fit)" if widened else "",
+                                                         ", weather vane" if v.get('stack_vane') else "")
         elif kind == 'industrial':
             Hh = v['ind_height']
             bw, tw = v['ind_bottom'], v['ind_top']
@@ -2636,6 +2706,11 @@ class ChimneyDialog(QDialog):
         self.cb_kfit.setToolTip("Makes the kiln roof's eaves the size of the face you picked (the top of the "
                                 "walls), instead of the width and depth below.")
         pages["Kiln"].insertRow(1, self.cb_kfit)
+        self.cb_svane = QCheckBox("Weather vane on the stack")
+        self.cb_svane.setToolTip("Stands a weather vane (Vane tab) on top of the stack: its rod set in the "
+                                 "flaunching between the pots, the vane clear above them. A piece of its own "
+                                 "for printing.")
+        pages["Stack"].addRow(self.cb_svane)
         self.cb_vane = QCheckBox("Weather vane on top")
         self.cb_vane.setToolTip("Stands a weather vane (Vane tab) on the ventilator's finial.")
         pages["Vent"].addRow(self.cb_vane)
@@ -2713,7 +2788,8 @@ class ChimneyDialog(QDialog):
             s_.valueChanged.connect(self.redraw)
         for cb in (self.cb_style, self.cb_shape, self.cb_vstyle, self.cb_vanest):
             cb.currentIndexChanged.connect(self.changed)
-        for ck in (self.cb_fit, self.cb_level, self.cb_kiln, self.cb_kfit, self.cb_vane, self.cb_letters):
+        for ck in (self.cb_fit, self.cb_level, self.cb_kiln, self.cb_kfit, self.cb_vane, self.cb_letters,
+                   self.cb_svane):
             ck.toggled.connect(self.changed)
         try:
             self.cb_preset.activated.connect(self.preset_picked)
@@ -2861,7 +2937,7 @@ class ChimneyDialog(QDialog):
         self.cb_level.setChecked(bool(cur.get('level', True)))
         self.cb_fit.setChecked(bool(cur.get('fit_pots', True)))
         for ck, key in ((self.cb_kiln, 'kiln'), (self.cb_kfit, 'kiln_fit'), (self.cb_vane, 'vane'),
-                        (self.cb_letters, 'vane_letters')):
+                        (self.cb_letters, 'vane_letters'), (self.cb_svane, 'stack_vane')):
             ck.setChecked(bool(cur.get(key, DEFAULTS[key])))
 
     def redraw(self, *_):
@@ -2880,7 +2956,8 @@ class ChimneyDialog(QDialog):
             self.tabs.setTabEnabled(3, kind in ('house', 'industrial'))
             self.tabs.setTabEnabled(4, kind == 'vent')
             self.tabs.setTabEnabled(5, kind == 'vent')
-            self.tabs.setTabEnabled(6, kind == 'vane' or (kind == 'vent' and self.cb_vane.isChecked()))
+            self.tabs.setTabEnabled(6, kind == 'vane' or (kind == 'vent' and self.cb_vane.isChecked())
+                                    or (kind == 'house' and self.cb_svane.isChecked()))
             want = {'house': 0, 'industrial': 2, 'pots': 1, 'vent': 4, 'vane': 6}[kind]
             if not self.tabs.isTabEnabled(self.tabs.currentIndex()):
                 self.tabs.setCurrentIndex(want)
@@ -2903,7 +2980,7 @@ class ChimneyDialog(QDialog):
                  fit_pots=self.cb_fit.isChecked(), vent_style=self.cb_vstyle.currentData(),
                  vane_style=self.cb_vanest.currentData(), kiln=self.cb_kiln.isChecked(),
                  kiln_fit=self.cb_kfit.isChecked(), vane=self.cb_vane.isChecked(),
-                 vane_letters=self.cb_letters.isChecked())
+                 vane_letters=self.cb_letters.isChecked(), stack_vane=self.cb_svane.isChecked())
         return v
 
 
@@ -2971,7 +3048,7 @@ class ChimneysTool(Tool):
         polys = self._picked(dlg.viewport)
         kind = v['kind']
         from_group = ""
-        if not polys and kind in ('house', 'vent'):
+        if not polys and kind in ('house', 'vent', 'vane'):
             # a whole building clicked: stand it on its ridge
             scene = getattr(dlg.viewport, 'scene', None)
             groups = selected_groups(scene) if scene is not None else []
@@ -2999,6 +3076,8 @@ class ChimneysTool(Tool):
                                                               rep['courses'], rep['oversail'], rep['above'],
                                                               int(v['pots']),
                                                               " in two rows" if rep['rows'] == 2 else ""))
+                if rep['vane']:
+                    msg += " With a weather vane."
                 if rep['widened']:
                     msg += " (Made bigger to fit the pots.)"
             elif kind == 'vent' and polys and any(abs(v_norm(_newell(p_))[2]) < 0.999 for p_ in polys[:2]):
@@ -3012,9 +3091,22 @@ class ChimneysTool(Tool):
                     ", with a weather vane" if v['vane'] else ""))
                 if v['kiln']:
                     msg += " (No kiln roof: that goes on a flat face, the top of the kiln's walls.)"
+            elif kind == 'vane' and polys and any(abs(v_norm(_newell(p_))[2]) < 0.999 for p_ in polys[:2]):
+                # on a sloping roof face, or astride the ridge of two: stood on the roof, not the floor
+                roof, frame = roof_from_faces(polys[:2])
+                parts, rep = vane_on_roof(v, roof, frame)
+                name = "Weather vane"
+                msg = "Built a %.1f m weather vane %s, its foot cut to the roof." % (
+                    rep['height'] / 1000.0, "on the ridge" if frame['ridge'] is not None else "on the roof face")
             else:
                 cx = cy = z0 = 0.0
                 along = (1.0, 0.0)
+                if kind == 'vane' and not polys:
+                    QMessageBox.information(dlg, PLUGIN_NAME, "Pick where the weather vane goes first: a roof "
+                                                              "face, the two faces either side of the ridge, a "
+                                                              "flat face - or click the whole building to stand "
+                                                              "it on the ridge.")
+                    return
                 if polys:
                     pts = polys[0]
                     cx = sum(p[0] for p in pts) / len(pts)

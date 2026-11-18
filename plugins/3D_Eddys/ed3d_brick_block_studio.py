@@ -19,6 +19,8 @@ bricks on edge, cock and hen, upright slates), weathering and bomb-site damage (
 and sunk units, a broken-down top, blast holes and missing units that can go right through,
 hanging units taken out, rubble at the foot), and rubble piles with planks, barrels, crates and
 your own objects. Sizes in real-world mm.
+Version 7.3: follows the outside face other plugins mark on their pieces (3D Bridges & Arches), and
+leaves out the pieces they mark as not walls (pier linings, end walls, barrels...).
 """
 
 import os
@@ -36,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "7.2"             # shown in the window title, so you can tell which file is loaded
+VERSION = "7.3"             # shown in the window title, so you can tell which file is loaded
 
 
 PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
@@ -1535,6 +1537,29 @@ def _wall_face(faces, centre, inside=False):
     return a, t
 
 
+# set on a group by another plugin (3D Bridges & Arches): which way its outside faces, or that it's
+# not a wall at all - so the walling goes on the right side even where the middle of the model
+# would say otherwise (a splayed wing wall, the inner half of a wall built in two halves)
+OUTSIDE_KEY = "ed3d_outside"
+NOT_WALL_KEY = "ed3d_not_wall"
+
+
+def _brick_hint(g):
+    """'skip' for a piece marked as not a wall, the outside direction (x, y, z) if one is marked,
+    else None."""
+    ext = getattr(g, 'ext', None)
+    if not isinstance(ext, dict):
+        return None
+    if ext.get(NOT_WALL_KEY):
+        return 'skip'
+    d = ext.get(OUTSIDE_KEY)
+    try:
+        d = tuple(float(c) for c in d)[:3]
+        return d if len(d) == 3 and any(abs(c) > 1e-9 for c in d) else None
+    except Exception:
+        return None
+
+
 def _brick_records(scene):
     """Walling already made by this plugin: [(centre, normal, size)] - plus the boxes round older
     walling made before it was recorded, as [(lo, hi)]."""
@@ -1641,6 +1666,9 @@ def find_building_walls(scene, inside_walls=False, inside_faces=False):
         mesh = getattr(g, 'mesh', None)
         if mesh is None or not _items(getattr(mesh, 'faces', None)):
             continue
+        hint = _brick_hint(g)
+        if hint == 'skip':
+            continue                          # marked as not a wall by the plugin that made it
         name = str(getattr(g, 'name', '') or 'Wall')
         last = name.lower().split(" - ")[-1]
         if any(w_ in nm_.lower() for nm_ in [name] + parents.get(k, []) for w_ in _NEVER_WALLS):
@@ -1651,7 +1679,12 @@ def find_building_walls(scene, inside_walls=False, inside_faces=False):
         elif any(w_ in last for w_ in _NOT_WALLS):
             continue
         faces = _world_faces(mesh, m)
-        got = _wall_face(faces, centre, inside_faces)
+        if hint:
+            # the outside this piece is marked with: a 'middle' far behind it that way
+            mid_ = _mid([q for fd_ in faces for q in fd_['pts']])
+            got = _wall_face(faces, tuple(mid_[i] - hint[i] * 1e6 for i in range(3)), inside_faces)
+        else:
+            got = _wall_face(faces, centre, inside_faces)
         if got is None:
             skipped += 1
             continue

@@ -47,7 +47,23 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.48"
+VERSION = "1.53"
+
+
+class AutoSpin(QDoubleSpinBox):
+    """A size box where 0 means 'auto'. The box itself only ever holds a plain number, so you can
+    type straight into it; what auto comes to is shown in the label beside it ('auto 320 mm').
+    The up arrow from 0 starts at the auto size instead of 1 mm."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._auto = None
+
+    def stepBy(self, steps):
+        if steps > 0 and self.value() <= self.minimum() and self._auto:
+            self.setValue(min(self.maximum(), round(self._auto, self.decimals())))
+            return
+        super().stepBy(steps)
 
 
 def _ed3d_organise(scene, group):
@@ -84,7 +100,7 @@ DEFAULTS = dict(
     corners=True, side='auto', line_pos='centre',
     floor_levels='', floor_t=0.0, ledge_h=0.0, ledge_out=0.0, floor_fit=0.0, floor_panels=False,
     boards=False, fascia_h=0.0, board_t=0.0, board_off=0.0, barge_w=0.0, finial_h=0.0, finial_drop=0.0,
-    finial_w=0.0, soffits=False, roof_panels=False, roof_t=0.0, roof_over=0.0,
+    finial_w=0.0, finials=True, soffits=False, roof_panels=False, roof_t=0.0, roof_over=0.0,
     tabs=True, supports='tabs', tab_len=0.0, tab_spacing=0.0, storey_join=1)
 SIZE_KEYS = ('width', 'depth', 'spacing', 'rafter_spacing', 'lintel', 'rebate', 'glaze_w', 'glaze_t', 'glaze_setin',
              'glaze_inset',
@@ -2515,11 +2531,25 @@ def frame_panels(chosen, v, p):
                             a.inset[ea] = max(a.inset[ea], depth + lift + p.get('gap', 0.0))
                             a.inset_top[ea] = max(a.inset_top[ea], hb)
     gables = []
-    if p.get('trusses') and p.get('truss_spacing', 0.0) > p['w'] and p.get('_fp_roof'):
-        # Floor Plan's roof is on already, sitting on the walls: trusses would have to stand above it,
-        # so its slopes get rafters and purlins of their own underneath instead (any shape of roof)
-        p['_trusses_skipped'] = True
-    if p.get('trusses') and p.get('truss_spacing', 0.0) > p['w'] and not p.get('_fp_roof'):
+    if p.get('_fp_roof'):
+        # 1.53: Floor Plan's roof is on already. Where it has gable ends (a pitched roof), proper trusses
+        # go in under it - spaced P apart, or the rafter spacing if P isn't set - their rafters right
+        # up against the underside of the roof and their ties sitting on the wall plates. Any other
+        # shape of roof (hips, lean-to...) keeps rafters and purlins under its slopes as before.
+        sp_ = p.get('truss_spacing', 0.0)
+        if sp_ <= p['w']:
+            sp_ = p.get('rafter_spacing', 0.0) if p.get('rafter_spacing', 0.0) > p['w'] else p.get('spacing', 0.0)
+        if sp_ > 2.0 * p['w']:
+            fg = find_gables(ready, p)
+            if fg:
+                p['truss_spacing'] = sp_
+                p['trusses'] = True
+                p['_fp_trusses'] = True
+            elif p.get('trusses'):
+                p['_trusses_skipped'] = True
+        elif p.get('trusses'):
+            p['_trusses_skipped'] = True
+    if p.get('trusses') and p.get('truss_spacing', 0.0) > p['w'] and not p.get('_trusses_skipped'):
         # with trusses, each gable wall's own frame stops at the eaves (a top plate along the top
         # of the wall) and a gable end truss stands on it
         gables = find_gables(ready, p)
@@ -2679,8 +2709,8 @@ def frame_panels(chosen, v, p):
         else:
             problems.append("Boards: no pair of gable walls facing each other in the selection")
     if p.get('_trusses_skipped'):
-        problems.append("Roof trusses: not made - the building has its roof on already (from Floor Plan), so "
-                        "its slopes are framed underneath with rafters and purlins instead.")
+        problems.append("Roof trusses: not made - Floor Plan's roof here has no gable ends for them to "
+                        "stand between, so its slopes are framed underneath with rafters and purlins instead.")
     if bands and p.get('floor_panels') and walls_ and base_z is not None:
         fl, fprob = floor_panels(walls_, p, base_z)
         if fl:
@@ -3043,7 +3073,7 @@ def roof_boards(gables, p):
                 pcs = cut_away(pcs, [bx_]) + [bx_] if is_convex(bx_) else pcs + [bx_]
         # the finial: a post up through the peak, standing above it and hanging below
         fin = _box(apex[0] - fnw / 2.0, apex[1] - bw * math.sqrt(1 + sl * sl) - fnd,
-                   apex[0] + fnw / 2.0, apex[1] + fnh)
+                   apex[0] + fnw / 2.0, apex[1] + fnh) if p.get('finials', True) else None
         if fin:
             pcs = cut_away(pcs, [fin]) + [fin]
         pcs = [q for q in pcs if q and abs(area2(q)) > 1e-6]
@@ -3051,7 +3081,7 @@ def roof_boards(gables, p):
             so = merged_slab(pcs, lambda x, y, z=za: z, lambda x, y, z=zb: z)
             if so is None:
                 continue
-            out.append(("Barge boards and finial - %s end (%d)" % (end, k + 1), 'barge',
+            out.append(("Barge boards%s - %s end (%d)" % (" and finial" if fin else "", end, k + 1), 'barge',
                         so.mapped(lambda q, a=a: a.tw((q[0], q[1], q[2])))))
         mapw = lambda so_, a=a: so_.mapped(lambda q: a.tw((q[0], q[1], q[2])))
         # ---- soffit boards: level boards under the eaves, from the brick face out to the fascia
@@ -3453,7 +3483,7 @@ def fp_roof_boards(roof_groups, p, want_fascia=True, want_soffit=True):
             for (pt, H) in apexes:
                 key = (round(pt[0], 1), round(pt[1], 1))
                 tops.setdefault(key, []).append((pt, H))
-            for key, lst in tops.items():
+            for key, lst in (tops.items() if p.get('finials', True) else ()):
                 if len(lst) < 2:
                     continue
                 (ax, ay), H = lst[0]
@@ -3474,7 +3504,7 @@ def fp_roof_boards(roof_groups, p, want_fascia=True, want_soffit=True):
             if side_soffits and not apexes:
                 out.append(("Side fascia - %s (%d)" % (" & ".join(names), nb), 'fascia', so.mapped(tw)))
             else:
-                out.append(("Barge boards%s - %s (%d)" % (" and finial" if any(len(l_) > 1 for l_ in tops.values())
+                out.append(("Barge boards%s - %s (%d)" % (" and finial" if p.get('finials', True) and any(len(l_) > 1 for l_ in tops.values())
                                                            else "", " & ".join(names), nb), 'barge', so.mapped(tw)))
             # the level soffits under the shallow sides, from the eaves soffits' ends, back to the wall
             for k, a, b, xa, xb, ylev in (side_soffits if want_soffit else []):
@@ -3636,8 +3666,10 @@ def roof_trusses(gables, p, done):
     # like real eaves: the rafters pass over the top of the wall in one piece, out to the fascia.
     # Where the roof you've drawn sits right on the walls that means the trusses stand higher than
     # it, so the report says how far to move the roof up to sit on them.
-    under_roof = False
-    if ovh > 0 and any(getattr(fi, 'ok', False) and fi.kind == 'roof' for fi in p.get('_all_faces') or ()):
+    # 1.53: under Floor Plan's roof the trusses stay down under it (not raised), the rafters running
+    # along its underside; where a wall is in the way the rafter tail outside it is a piece of its own
+    under_roof = bool(p.get('_fp_trusses'))
+    if ovh > 0 and not under_roof and any(getattr(fi, 'ok', False) and fi.kind == 'roof' for fi in p.get('_all_faces') or ()):
         p['_roof_drawn'] = True
     out, problems = [], []
     ends = []                      # (the end wall it stands against, gable end truss)
@@ -5195,11 +5227,10 @@ class StartHere:
                 fl.addRow(it[2])
         elif kind == 'spin':
             main, lab = self.dlg.sp[it[1]]
-            m = QDoubleSpinBox()
+            m = AutoSpin()
             m.setDecimals(main.decimals())
             m.setRange(main.minimum(), main.maximum())
             m.setSuffix(main.suffix())
-            m.setSpecialValueText(main.specialValueText())
             m.setValue(main.value())
             m.setToolTip(main.toolTip())
             ml = QLabel(lab.text())
@@ -5359,7 +5390,7 @@ class FrameDialog(QDialog):
         form = QFormLayout(page1)
         self.tabs.addTab(page1, "Sizes")
         for key, label, lo, hi, dec, tip in FIELDS:
-            s = QDoubleSpinBox()
+            s = AutoSpin()
             s.setDecimals(dec)
             s.setRange(lo, hi)
             s.setKeyboardTracking(True)
@@ -5393,7 +5424,7 @@ class FrameDialog(QDialog):
         gi.setWordWrap(True)
         fg.addRow(gi)
         for key, label, lo, hi, dec, tip in GFIELDS:
-            s = QDoubleSpinBox()
+            s = AutoSpin()
             s.setDecimals(dec)
             s.setRange(lo, hi)
             s.setKeyboardTracking(True)
@@ -5435,7 +5466,7 @@ class FrameDialog(QDialog):
         ff.addRow("Floor levels", self.ed_levels)
         self.ed_levels.textChanged.connect(self.changed)
         for key, label, lo, hi, dec, tip in FFIELDS:
-            s = QDoubleSpinBox()
+            s = AutoSpin()
             s.setDecimals(dec)
             s.setRange(lo, hi)
             s.setKeyboardTracking(True)
@@ -5458,7 +5489,7 @@ class FrameDialog(QDialog):
         ff.addRow(lab_s, self.cb_supports)
         self.cb_supports.currentIndexChanged.connect(self.changed)
         for key, label, lo, hi, dec, tip in TFIELDS:
-            s = QDoubleSpinBox()
+            s = AutoSpin()
             s.setDecimals(dec)
             s.setRange(lo, hi)
             s.setKeyboardTracking(True)
@@ -5470,8 +5501,7 @@ class FrameDialog(QDialog):
             self.sp[key] = (s, lab)
             self.page_of[key] = self.tabs.count() - 1
             s.valueChanged.connect(self.changed)
-        self.sp['tab_len'][0].setSpecialValueText("auto (3 x bar width)")
-        self.sp['tab_spacing'][0].setSpecialValueText("auto (1200 mm)")
+
         self.sp_join = QSpinBox()
         self.sp_join.setRange(1, 50)
         self.sp_join.setToolTip("Floor Plan buildings: each storey gets a frame of its own (1). Put 2 or more to "
@@ -5501,6 +5531,11 @@ class FrameDialog(QDialog):
                                      "the walls (X) to leave room for brick courses. Each board is its own piece.")
         fb.addRow(self.check_boards)
         self.check_boards.toggled.connect(self.changed)
+        self.check_finials = QCheckBox("Finials at the peaks")
+        self.check_finials.setToolTip("A finial post up through the barge boards at each gable peak (sizes Z, AA "
+                                      "and AB). Untick for plain barge boards with no finial.")
+        fb.addRow(self.check_finials)
+        self.check_finials.toggled.connect(self.changed)
         self.check_soffits = QCheckBox("Soffit boards under the eaves")
         self.check_soffits.setToolTip("Level boards under the overhang, from the brick face out to the back of the "
                                       "fascia.")
@@ -5536,7 +5571,7 @@ class FrameDialog(QDialog):
         self.cb_bcol.currentIndexChanged.connect(self._board_mode_changed)
         self.b_bcol.clicked.connect(self._pick_board_colour)
         for key, label, lo, hi, dec, tip in BFIELDS:
-            s = QDoubleSpinBox()
+            s = AutoSpin()
             s.setDecimals(dec)
             s.setRange(lo, hi)
             s.setKeyboardTracking(True)
@@ -5818,6 +5853,7 @@ class FrameDialog(QDialog):
         v['tabs'] = v['supports'] == 'tabs'
         v['storey_join'] = int(self.sp_join.value())
         v['boards'] = self.check_boards.isChecked()
+        v['finials'] = self.check_finials.isChecked()
         v['soffits'] = self.check_soffits.isChecked()
         v['roof_panels'] = self.check_roofp.isChecked()
         return v
@@ -5849,6 +5885,7 @@ class FrameDialog(QDialog):
             self.cb_supports.setCurrentIndex(max(0, self.cb_supports.findData(sup_)))
             self.sp_join.setValue(int(d.get('storey_join', DEFAULTS['storey_join']) or 1))
             self.check_boards.setChecked(bool(d.get('boards', DEFAULTS['boards'])))
+            self.check_finials.setChecked(bool(d.get('finials', DEFAULTS['finials'])))
             self.check_soffits.setChecked(bool(d.get('soffits', DEFAULTS['soffits'])))
             self.check_roofp.setChecked(bool(d.get('roof_panels', DEFAULTS['roof_panels'])))
         finally:
@@ -5861,9 +5898,22 @@ class FrameDialog(QDialog):
         v = self.values()
         # boxes left at 0 show what they come to ('auto 200 mm')
         try:
-            for k_, val in _auto_sizes(v).items():
-                if k_ in self.sp:
-                    self.sp[k_][0].setSpecialValueText("auto  %.0f mm" % val if val > 0 else "auto")
+            if not hasattr(self, '_lab_base'):
+                self._lab_base = {}
+            autos = {k_: ("auto %.0f mm" % val if val > 0 else "auto") for k_, val in _auto_sizes(v).items()}
+            autos.update({'tab_len': "auto (3 x bar width)", 'tab_spacing': "auto 1200 mm"})
+            for k_, t_ in autos.items():
+                if k_ not in self.sp:
+                    continue
+                box_, lab_ = self.sp[k_]
+                base_ = self._lab_base.setdefault(k_, lab_.text())
+                try:
+                    box_._auto = float(t_.split()[1]) if t_.split()[1][0].isdigit() else None
+                except Exception:
+                    box_._auto = None
+                want_ = base_ + ("   (0 = %s)" % t_ if box_.value() <= box_.minimum() else "")
+                if lab_.text() != want_:
+                    lab_.setText(want_)
         except Exception:
             pass
         _ui_settings_save(last_values={k: v[k] for k in DEFAULTS if k in v})   # opens like this next time
@@ -5872,7 +5922,10 @@ class FrameDialog(QDialog):
         for k_, _l, _a, _b, _c, _t in BFIELDS:
             on_ = v.get('roof_panels') if k_ in ('roof_t', 'roof_over') else (
                 v.get('boards') or v.get('soffits') or v.get('roof_panels'))
+            if k_ in ('finial_h', 'finial_drop', 'finial_w'):
+                on_ = v.get('boards') and v.get('finials', True)
             self.sp[k_][0].setEnabled(bool(on_))
+        self.check_finials.setEnabled(bool(v.get('boards')))
         self.sp['spacing'][0].setEnabled(v['walls'] and v['studs'])
         self.sp['lintel'][0].setEnabled(v['openings'])
         self.sp['rebate'][0].setEnabled(v['openings'])

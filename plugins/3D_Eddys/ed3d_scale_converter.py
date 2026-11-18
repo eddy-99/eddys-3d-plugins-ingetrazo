@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
-VERSION = "1.11"
+VERSION = "1.12"
 ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
 
 
@@ -125,7 +125,7 @@ STUDIO_DEFAULTS = {
     'tab': 1, 'unit': 'm', 'show_unit': 'mm', 'mode': 'scale', 'scale': 76.2, 'percent': 50.0,
     'from_scale': 76.2, 'to_scale': 148.0, 'lock': True, 'pivot': 'bottom',
     'split': -1, 'gap': 5.0, 'lay_flat': True,
-    'bed': True, 'bed_x': 220.0, 'bed_y': 220.0, 'bed_z': 250.0, 'nozzle': 0.4, 'warn_thin': True,
+    'bed': True, 'bed_x': 220.0, 'bed_y': 220.0, 'bed_z': 250.0, 'bed_edge': 5.0, 'nozzle': 0.4, 'warn_thin': True,
     'slicer': '', 'slicers': [], 'open_after': False,
     'fix_clean': True, 'fix_cracks': True, 'fix_holes': True, 'hole_edges': 60, 'fix_winding': True,
     'purpose': 'print', 'format': '3mf', 'file_unit': 'mm', 'y_up': False, 'use_scale': True,
@@ -2262,7 +2262,7 @@ def lay_out_packed(parts, bed_w, bed_d, gap):
     return placed, (max(allx) - min(allx), max(ally) - min(ally), max(allz) - min(allz))
 
 
-def split_beds(parts, bed_w, bed_d, gap):
+def split_beds(parts, bed_w, bed_d, gap, margin=None):
     """When the pieces are too much for one bed: shares them out over as many beds as they need.
     parts = [(name, tris)] in mm, already standing as they'll print. Biggest first, in rows across
     each bed; a piece goes on the first bed with room for it (a long piece is turned a quarter turn
@@ -2270,7 +2270,8 @@ def split_beds(parts, bed_w, bed_d, gap):
     block centred on the origin. A piece bigger than the bed gets a bed of its own."""
     if bed_w <= 0 or bed_d <= 0 or not parts:
         return [[(i, tr) for i, (_n, tr) in enumerate(parts)]]
-    margin = min(gap, 5.0)
+    if margin is None:
+        margin = min(gap, 5.0)
     uw, ud = max(1.0, bed_w - margin), max(1.0, bed_d - margin)
     info = []
     for i, (_n, tris) in enumerate(parts):
@@ -2321,10 +2322,10 @@ def split_beds(parts, bed_w, bed_d, gap):
     return out
 
 
-def beds_needed(parts, bed_w, bed_d, gap):
+def beds_needed(parts, bed_w, bed_d, gap, margin=None):
     """How many beds these pieces (mm, [(name, colour, tris)]) take when shared out over beds."""
     try:
-        return len(split_beds([(n, tr) for n, _c, tr in parts], bed_w, bed_d, gap))
+        return len(split_beds([(n, tr) for n, _c, tr in parts], bed_w, bed_d, gap, margin))
     except Exception:
         return 1
 
@@ -6597,6 +6598,10 @@ class StudioDialog(QDialog):
             self.bed.append(s_)
             bedrow.addWidget(s_)
         form.addRow("Bed size:", bedrow)
+        self.sp_edge = self._dspin(st['bed_edge'], 0.0, 100.0, 1, " mm",
+                                   tip="Pieces are kept at least this far in from every edge of the bed - "
+                                       "room for a brim or skirt. 0 = right up to the edge.")
+        form.addRow("Gap from bed edge:", self.sp_edge)
         self.lbl_fit = QLabel()
         self.lbl_fit.setWordWrap(True)
         form.addRow(self.lbl_fit)
@@ -6846,7 +6851,7 @@ class StudioDialog(QDialog):
                    self.cb_view, self.cb_preview):
             cb.currentIndexChanged.connect(upd)
         for sp in [self.sp_scale, self.sp_pct, self.sp_from, self.sp_to, self.sp_gap, self.sp_nozzle,
-                   self.sp_hole, self.sp_png] + self.bed:
+                   self.sp_hole, self.sp_png, self.sp_edge] + self.bed:
             sp.valueChanged.connect(upd)
         self.cb_next.currentIndexChanged.connect(upd)
         for c in (self.cb_beside, self.cb_lock, self.cb_flat, self.cb_bed, self.cb_thin, self.cb_open, self.cb_fclean,
@@ -6883,7 +6888,7 @@ class StudioDialog(QDialog):
             'lock': self.cb_lock.isChecked(), 'pivot': self.cb_pivot.currentData(),
             'split': self.cb_split.currentData(), 'gap': self.sp_gap.value(), 'lay_flat': self.cb_flat.isChecked(),
             'bed': self.cb_bed.isChecked(), 'bed_x': self.bed[0].value(), 'bed_y': self.bed[1].value(),
-            'bed_z': self.bed[2].value(), 'nozzle': self.sp_nozzle.value(), 'warn_thin': self.cb_thin.isChecked(),
+            'bed_z': self.bed[2].value(), 'bed_edge': self.sp_edge.value(), 'nozzle': self.sp_nozzle.value(), 'warn_thin': self.cb_thin.isChecked(),
             'slicer': self.ed_slicer.text().strip(), 'slicers': self.slicers(),
             'open_after': self.cb_open.isChecked(),
             'printers': self.printers(), 'printer': self.cb_bedp.currentData() or '',
@@ -7424,7 +7429,7 @@ class StudioDialog(QDialog):
         self.lbl_scale_info.setText(txt)
         # print page: does it fit
         if self.cb_bed.isChecked() and has:
-            bed = tuple(s.value() for s in self.bed)
+            bed = self.usable(*[s.value() for s in self.bed])
             sx, sy, sz = new
             fits = sz <= bed[2] and ((sx <= bed[0] and sy <= bed[1]) or (sy <= bed[0] and sx <= bed[1]))
             big = biggest_that_fits(now, bed)
@@ -7440,7 +7445,7 @@ class StudioDialog(QDialog):
         else:
             self.lbl_fit.setText(("" if has else "Select the object first.") + self.gathered_fit_html())
             self.b_fit.setEnabled(False)
-        for w in self.bed:
+        for w in self.bed + [self.sp_edge]:
             w.setEnabled(self.cb_bed.isChecked())
         self.sp_nozzle.setEnabled(self.cb_thin.isChecked())
         self.sp_hole.setEnabled(self.cb_fholes.isChecked())
@@ -7453,7 +7458,7 @@ class StudioDialog(QDialog):
         self.canvas.update()
 
     def use_biggest(self, *_):
-        bed = tuple(s.value() for s in self.bed)
+        bed = self.usable(*[s.value() for s in self.bed])
         big = biggest_that_fits(self.size_mm(), bed)
         if big <= 0:
             return
@@ -7977,11 +7982,14 @@ class StudioDialog(QDialog):
         if len(parts) > 1:
             bw = self.bed[0].value() if self.cb_bed.isChecked() else 0.0
             bd = self.bed[1].value() if self.cb_bed.isChecked() else 0.0
+            if bw > 0 and bd > 0:
+                bw, bd = self.usable(bw, bd)        # keep clear of the edge (room for a brim)
             placed, _size = lay_out_packed([(n, tr) for n, _c, tr in parts], bw, bd,
                                            max(0.2, self.sp_gap.value()))
             if bw > 0 and bd > 0 and (_size[0] > bw + 1e-6 or _size[1] > bd + 1e-6):
                 # too much for one bed: as many beds as it needs, each its own file in the slicer
-                beds = split_beds([(n, tr) for n, _c, tr in parts], bw, bd, max(0.2, self.sp_gap.value()))
+                beds = split_beds([(n, tr) for n, _c, tr in parts], bw, bd, max(0.2, self.sp_gap.value()),
+                                  0.0 if self.edge_gap() > 0 else None)
                 if len(beds) > 1:
                     self._bed_split = [[(parts[i][0], parts[i][1], tr) for i, tr in b] for b in beds]
                     return [p for b in self._bed_split for p in b]
@@ -8620,6 +8628,19 @@ class StudioDialog(QDialog):
                     out.append(k)
         return out
 
+    def edge_gap(self):
+        """The gap kept clear round the edge of the bed (for a brim) - 0 when not checking the bed."""
+        try:
+            return max(0.0, self.sp_edge.value()) if self.cb_bed.isChecked() else 0.0
+        except Exception:
+            return 0.0
+
+    def usable(self, bx, by, bz=None):
+        """The part of the bed pieces may go on: the bed less the gap from the edge all round."""
+        e = self.edge_gap()
+        out = (max(1.0, bx - 2 * e), max(1.0, by - 2 * e))
+        return out if bz is None else out + (bz,)
+
     def printer_settings(self, pr):
         """(bed x, y, z, gap, pieces kept separate) for one of your printers - None: the 3D print page."""
         if pr is None:
@@ -8671,9 +8692,10 @@ class StudioDialog(QDialog):
         items = self.bed_items(colour_each=colour_each, dest=key, per_piece=keep)
         parts = items
         if len(items) > 1:
+            ux, uy = self.usable(bx, by)
             placed, _s = lay_out_packed([(n, tr) for n, _c, tr in items],
-                                        bx if self.cb_bed.isChecked() else 0.0,
-                                        by if self.cb_bed.isChecked() else 0.0, max(0.2, gap))
+                                        ux if self.cb_bed.isChecked() else 0.0,
+                                        uy if self.cb_bed.isChecked() else 0.0, max(0.2, gap))
             parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, items)]
         elif items:
             parts = [(items[0][0], items[0][1], stand_centred(items[0][2]))]
@@ -8685,7 +8707,8 @@ class StudioDialog(QDialog):
         if not parts:
             return "", True
         s = tris_size([t for _n, _c, tr in parts for t in tr])
-        fits = (not self.cb_bed.isChecked()) or (s[0] <= bed[0] + 1e-6 and s[1] <= bed[1] + 1e-6 and
+        ub = self.usable(*bed)
+        fits = (not self.cb_bed.isChecked()) or (s[0] <= ub[0] + 1e-6 and s[1] <= ub[1] + 1e-6 and
                                                  s[2] <= bed[2] + 1e-6)
         nm = os.path.splitext(os.path.basename(path))[0] if path else "your usual program"
         where = ("%s's bed" % pr.get('name')) if pr else "the bed on the 3D print page"
@@ -8701,7 +8724,7 @@ class StudioDialog(QDialog):
         the way it will be sent - not just the object selected."""
         if not self._bed or not self.cb_bed.isChecked():
             return ""
-        key = (tuple(id(x) for x in self._bed), tuple(s_.value() for s_ in self.bed), self.sp_gap.value(),
+        key = (tuple(id(x) for x in self._bed), tuple(s_.value() for s_ in self.bed), self.sp_gap.value(), self.edge_gap(),
                self.ed_slicer.text(), self.cb_kind.currentData(), self.cb_pfmt.currentData())
         c = getattr(self, '_fit_cache', None)
         if c and c[0] == key:
@@ -8731,9 +8754,10 @@ class StudioDialog(QDialog):
         """Pieces (mm, already flat if wanted) laid out on one printer's bed. Returns (parts, bed)."""
         bx, by, bz, gap, _keep = self.printer_settings(pr)
         if len(parts) > 1:
+            ux, uy = self.usable(bx, by)
             placed, _s = lay_out_packed([(n, tr) for n, _c, tr in parts],
-                                        bx if self.cb_bed.isChecked() else 0.0,
-                                        by if self.cb_bed.isChecked() else 0.0, max(0.2, gap))
+                                        ux if self.cb_bed.isChecked() else 0.0,
+                                        uy if self.cb_bed.isChecked() else 0.0, max(0.2, gap))
             parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, parts)]
         elif parts:
             parts = [(parts[0][0], parts[0][1], stand_centred(parts[0][2]))]
@@ -8741,7 +8765,8 @@ class StudioDialog(QDialog):
 
     def fit_words(self, parts, bed, path, pr):
         s = tris_size([t for _n, _c, tr in parts for t in tr]) if parts else (0.0, 0.0, 0.0)
-        fits = (not self.cb_bed.isChecked()) or (s[0] <= bed[0] + 1e-6 and s[1] <= bed[1] + 1e-6 and
+        ub = self.usable(*bed)
+        fits = (not self.cb_bed.isChecked()) or (s[0] <= ub[0] + 1e-6 and s[1] <= ub[1] + 1e-6 and
                                                  s[2] <= bed[2] + 1e-6)
         nm = os.path.splitext(os.path.basename(path))[0] if path else "your usual program"
         where = ("%s's bed" % pr.get('name')) if pr else "the bed on the 3D print page"
@@ -8757,7 +8782,8 @@ class StudioDialog(QDialog):
         if len(parts) < 2:
             return too_big
         gap = self.printer_settings(pr)[3]
-        nb = beds_needed(parts, bed[0], bed[1], max(0.2, gap))
+        ub = self.usable(bed[0], bed[1])
+        nb = beds_needed(parts, ub[0], ub[1], max(0.2, gap), 0.0 if self.edge_gap() > 0 else None)
         if nb < 2 or any(tris_size(tr)[2] > bed[2] + 1e-6 for _n, _c, tr in parts):
             return too_big
         return " - too much for one bed: it goes on %d beds (a file for each, each opened on its own)." % nb
@@ -8765,7 +8791,8 @@ class StudioDialog(QDialog):
     def bed_note(self, parts, bed, path, pr, i, n):
         """Two short lines over the preview: which printer's bed, and does it all fit."""
         s = tris_size([t for _n, _c, tr in parts for t in tr]) if parts else (0.0, 0.0, 0.0)
-        fits = (not self.cb_bed.isChecked()) or (s[0] <= bed[0] + 1e-6 and s[1] <= bed[1] + 1e-6 and
+        ub = self.usable(*bed)
+        fits = (not self.cb_bed.isChecked()) or (s[0] <= ub[0] + 1e-6 and s[1] <= ub[1] + 1e-6 and
                                                  s[2] <= bed[2] + 1e-6)
         nm = os.path.splitext(os.path.basename(path))[0] if path else "usual program"
         who = pr.get('name') if pr else self.target_name("").split(" - ")[0]
@@ -9273,13 +9300,15 @@ class StudioDialog(QDialog):
             return
         use_bed = self.cb_bed.isChecked()
         if len(allp) > 1:
-            placed, _s = lay_out_packed([(n, tr) for n, _c, tr in allp], bx if use_bed else 0.0,
-                                        by if use_bed else 0.0, max(0.2, gap))
+            ux, uy = self.usable(bx, by)
+            placed, _s = lay_out_packed([(n, tr) for n, _c, tr in allp], ux if use_bed else 0.0,
+                                        uy if use_bed else 0.0, max(0.2, gap))
             allp = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, allp)]
         else:
             allp = [(allp[0][0], allp[0][1], stand_centred(allp[0][2]))]
         s = tris_size([t for _n, _c, tr in allp for t in tr])
-        fits = (not use_bed) or (s[0] <= bx + 1e-6 and s[1] <= by + 1e-6 and s[2] <= bz + 1e-6)
+        ux, uy = self.usable(bx, by)
+        fits = (not use_bed) or (s[0] <= ux + 1e-6 and s[1] <= uy + 1e-6 and s[2] <= bz + 1e-6)
         shown = (bx, by) if use_bed else (s[0] * 1.15 + 10, s[1] * 1.15 + 10)
         self.canvas.empty_text = "Nothing to show"
         self.canvas.set_parts(allp, shown, None)

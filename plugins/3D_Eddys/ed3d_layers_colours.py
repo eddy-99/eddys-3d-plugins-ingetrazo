@@ -17,7 +17,7 @@ coloured by what it is, so a model is easy to read and easy to manage.
 * Layers: each plugin puts what it builds on a layer of its own (Chimneys, Windows,
   Station canopies...), so a whole kind of structure can be hidden, shown or selected at
   once. The names can be changed here.
-* Colours: each part is painted with a material named after what it is - "Eddy - Brick",
+* Colours / Roofs: each part is painted with a material named after what it is - "Eddy - Brick",
   "Eddy - Slate", "Eddy - Glass", "Eddy - Canopy ironwork"... A material is only made if
   the document hasn't got it yet, so if you recolour one in IngeTrazo, the next thing you
   build uses your colour.
@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPu
                                QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "2"
+VERSION = "5"
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -75,14 +75,26 @@ DEFAULT_PALETTE = [
     ("Window paint", (238, 236, 226), 1.0, "frame, sash, bar, cill, sill, casement, window, mullion, transom", "3D Period Windows"),
     ("Door paint", (60, 82, 70), 1.0, "door, leaf, panel, frame, rail, stile, muntin, fanlight", "3D Period Doors"),
     ("Galvanised iron", (158, 166, 170), 1.0, "corrugated, sheet, tin, iron", ""),
-    ("Slate", (84, 90, 102), 1.0, "slate, tile, roof, ridge, hip, verge", ""),
+    ("Roof tiles", (186, 96, 62), 1.0, "tile, pantile", ""),
+    ("Slate", (84, 90, 102), 1.0, "slate, roof, ridge, hip, verge", ""),
     ("Brick", (168, 80, 56), 1.0, "brick, brickwork, chimney, pier, oversailing, arch", ""),
     ("Stone", (204, 196, 178), 1.0, "block, stone, coping, cill, sill, lintel, plinth, cap, quoin, kerb, string, band, base", ""),
     ("Timber", (140, 102, 66), 1.0, "plank, board, timber, fence, gate, picket, post, rail, weather, cladding, batten", ""),
 ]
 
 # rows added since version 1: put into a palette you saved before they were there
-NEW_ROWS = ("Fascia & barge boards",)
+NEW_ROWS = ("Fascia & barge boards", "Roof tiles")
+
+# The colours shown on the Roofs tab (the rest are on the Colours tab). A colour you add on
+# the Roofs tab is kept there.
+ROOF_ROWS = ("Fascia & barge boards", "Lead", "Galvanised iron", "Roof tiles", "Slate")
+
+
+def _is_roof(row):
+    if len(row) > 5:
+        return row[5] == "roof"
+    return row[0] in ROOF_ROWS
+
 
 # What a part is painted with when none of the words fit, by plugin
 PLUGIN_FALLBACK = {
@@ -127,8 +139,11 @@ def load_settings():
             pal = []
             for r in saved['palette']:
                 try:
-                    pal.append([str(r[0]), tuple(int(c) for c in r[1][:3]), float(r[2]), str(r[3]),
-                                str(r[4]) if len(r) > 4 else ""])
+                    row = [str(r[0]), tuple(int(c) for c in r[1][:3]), float(r[2]), str(r[3]),
+                                str(r[4]) if len(r) > 4 else ""]
+                    if len(r) > 5:
+                        row.append(str(r[5]))
+                    pal.append(row)
                 except Exception:
                     pass
             if pal:
@@ -146,7 +161,8 @@ def load_settings():
 def save_settings(s):
     try:
         out = dict(s)
-        out['palette'] = [[r[0], list(r[1]), r[2], r[3], r[4]] for r in s['palette']]
+        out['palette'] = [[r[0], list(r[1]), r[2], r[3], r[4], "roof" if _is_roof(r) else ""]
+                          for r in s['palette']]
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=1)
     except Exception as e:
@@ -292,7 +308,7 @@ class LayersColoursDialog(QDialog):
     def __init__(self, viewport):
         super().__init__(viewport)
         self.viewport = viewport
-        self.setWindowTitle(PLUGIN_NAME)
+        self.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
         self.resize(640, 560)
         self.s = load_settings()
         lay = QVBoxLayout(self)
@@ -312,34 +328,15 @@ class LayersColoursDialog(QDialog):
         tabs = QTabWidget()
         lay.addWidget(tabs, 1)
 
-        # colours
-        w = QWidget()
-        v = QVBoxLayout(w)
-        note = QLabel("Click a colour to change it. A part takes the first colour with one of its words in "
-                      "its name (whole words; plurals count). Each is a material named \"%s...\": it is only made if the document "
-                      "hasn't got one, so a colour you change in IngeTrazo stays yours." % MAT_PREFIX)
-        note.setWordWrap(True)
-        v.addWidget(note)
-        self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["Material", "Colour", "Words in the part's name", "Only for"])
-        self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.tbl.verticalHeader().setVisible(False)
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl.cellClicked.connect(self._cell_clicked)
-        v.addWidget(self.tbl, 1)
-        row_btns = QHBoxLayout()
-        b_add = QPushButton("Add colour")
-        b_add.clicked.connect(self._add_row)
-        b_del = QPushButton("Remove")
-        b_del.clicked.connect(self._del_row)
-        b_reset = QPushButton("Back to the standard colours")
-        b_reset.clicked.connect(self._reset_palette)
-        row_btns.addWidget(b_add)
-        row_btns.addWidget(b_del)
-        row_btns.addStretch(1)
-        row_btns.addWidget(b_reset)
-        v.addLayout(row_btns)
-        tabs.addTab(w, "Colours")
+        # colours, and the roof colours on a tab of their own
+        note_text = ("Click a colour to change it. A part takes the first colour with one of its words in "
+                     "its name (whole words; plurals count). Each is a material named \"%s...\": it is only "
+                     "made if the document hasn't got one, so a colour you change in IngeTrazo stays yours."
+                     % MAT_PREFIX)
+        self.tbl = self._colour_tab(tabs, "Colours", note_text)
+        self.tbl_roof = self._colour_tab(tabs, "Roofs", "The colours for roofs: clay tiles, slates, ridges, "
+                                         "tin sheets, lead and the fascia and barge boards. " + note_text)
+        self._tabs = tabs
         self._fill_palette(self.s['palette'])
 
         # layers
@@ -401,43 +398,78 @@ class LayersColoursDialog(QDialog):
         btns.addWidget(b_close)
         lay.addLayout(btns)
 
-    # palette table -----------------------------------------------------
+    # palette tables ----------------------------------------------------
+    def _colour_tab(self, tabs, title, text):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        note = QLabel(text)
+        note.setWordWrap(True)
+        v.addWidget(note)
+        tbl = QTableWidget(0, 4)
+        tbl.setHorizontalHeaderLabels(["Material", "Colour", "Words in the part's name", "Only for"])
+        tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        tbl.cellClicked.connect(lambda r, c, t=tbl: self._cell_clicked(t, r, c))
+        v.addWidget(tbl, 1)
+        row_btns = QHBoxLayout()
+        b_add = QPushButton("Add colour")
+        b_add.clicked.connect(lambda _=False, t=tbl: self._add_row(t))
+        b_del = QPushButton("Remove")
+        b_del.clicked.connect(lambda _=False, t=tbl: self._del_row(t))
+        b_reset = QPushButton("Back to the standard colours")
+        b_reset.setToolTip("Puts the standard colours back on both the Colours and Roofs tabs")
+        b_reset.clicked.connect(self._reset_palette)
+        row_btns.addWidget(b_add)
+        row_btns.addWidget(b_del)
+        row_btns.addStretch(1)
+        row_btns.addWidget(b_reset)
+        v.addLayout(row_btns)
+        tabs.addTab(w, title)
+        return tbl
+
     def _fill_palette(self, palette):
         self.tbl.setRowCount(0)
+        self.tbl_roof.setRowCount(0)
+        self._next = 0
         for row in palette:
-            self._insert(row)
+            self._insert(self.tbl_roof if _is_roof(row) else self.tbl, row)
 
-    def _insert(self, row):
-        r = self.tbl.rowCount()
-        self.tbl.insertRow(r)
-        self.tbl.setItem(r, 0, QTableWidgetItem(row[0]))
+    def _insert(self, tbl, row):
+        # each row remembers its place in the whole list, as the first colour that fits wins
+        r = tbl.rowCount()
+        tbl.insertRow(r)
+        name = QTableWidgetItem(row[0])
+        name.setData(Qt.UserRole, self._next)
+        self._next += 1
+        tbl.setItem(r, 0, name)
         sw = QTableWidgetItem("  %d%%" % round(row[2] * 100) if row[2] < 1 else "")
         sw.setBackground(QColor(*row[1]))
         sw.setData(Qt.UserRole, [list(row[1]), row[2]])        # Qt.UserRole
         sw.setFlags(sw.flags() & ~Qt.ItemIsEditable)
         sw.setToolTip("Click to change")
-        self.tbl.setItem(r, 1, sw)
-        self.tbl.setItem(r, 2, QTableWidgetItem(row[3]))
-        self.tbl.setItem(r, 3, QTableWidgetItem(row[4] if len(row) > 4 else ""))
+        tbl.setItem(r, 1, sw)
+        tbl.setItem(r, 2, QTableWidgetItem(row[3]))
+        tbl.setItem(r, 3, QTableWidgetItem(row[4] if len(row) > 4 else ""))
 
-    def _cell_clicked(self, r, c):
+    def _cell_clicked(self, tbl, r, c):
         if c != 1:
             return
-        it = self.tbl.item(r, 1)
+        it = tbl.item(r, 1)
         rgb, op = it.data(Qt.UserRole)
-        col = QColorDialog.getColor(QColor(*rgb), self, "Colour for %s" % self.tbl.item(r, 0).text())
+        col = QColorDialog.getColor(QColor(*rgb), self, "Colour for %s" % tbl.item(r, 0).text())
         if col.isValid():
             it.setBackground(col)
             it.setData(Qt.UserRole, [[col.red(), col.green(), col.blue()], op])
 
-    def _add_row(self):
-        self._insert(["New colour", (180, 180, 180), 1.0, "", ""])
-        self.tbl.scrollToBottom()
+    def _add_row(self, tbl):
+        self._insert(tbl, ["New colour", (180, 180, 180), 1.0, "", ""])
+        tbl.scrollToBottom()
 
-    def _del_row(self):
-        r = self.tbl.currentRow()
+    def _del_row(self, tbl):
+        r = tbl.currentRow()
         if r >= 0:
-            self.tbl.removeRow(r)
+            tbl.removeRow(r)
 
     def _reset_palette(self):
         self._fill_palette([list(r) for r in DEFAULT_PALETTE])
@@ -447,16 +479,21 @@ class LayersColoursDialog(QDialog):
         s['layers_on'] = self.cb_layers.isChecked()
         s['colours_on'] = self.cb_colours.isChecked()
         s['repaint'] = self.cb_repaint.isChecked()
-        pal = []
-        for r in range(self.tbl.rowCount()):
-            name = (self.tbl.item(r, 0).text() if self.tbl.item(r, 0) else "").strip()
-            if not name:
-                continue
-            rgb, op = self.tbl.item(r, 1).data(Qt.UserRole)
-            pal.append([name, tuple(int(c) for c in rgb), float(op),
-                        self.tbl.item(r, 2).text() if self.tbl.item(r, 2) else "",
-                        self.tbl.item(r, 3).text() if self.tbl.item(r, 3) else ""])
-        s['palette'] = pal
+        found = []
+        for tbl, tab in ((self.tbl, ""), (self.tbl_roof, "roof")):
+            for r in range(tbl.rowCount()):
+                it = tbl.item(r, 0)
+                name = (it.text() if it else "").strip()
+                if not name:
+                    continue
+                place = it.data(Qt.UserRole)
+                rgb, op = tbl.item(r, 1).data(Qt.UserRole)
+                found.append((place if place is not None else 1e9, tab == "roof", r,
+                              [name, tuple(int(c) for c in rgb), float(op),
+                               tbl.item(r, 2).text() if tbl.item(r, 2) else "",
+                               tbl.item(r, 3).text() if tbl.item(r, 3) else "", tab]))
+        found.sort(key=lambda x: (x[0], x[1], x[2]))         # back in the order they had
+        s['palette'] = [x[3] for x in found]
         layers = {}
         for r in range(self.tbl_layers.rowCount()):
             layers[self.tbl_layers.item(r, 0).text()] = self.tbl_layers.item(r, 1).text().strip()

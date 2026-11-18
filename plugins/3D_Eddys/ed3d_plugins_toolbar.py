@@ -11,7 +11,7 @@
 # PURPOSE. See the LICENSE file or <https://www.gnu.org/licenses/> for details.
 
 """
-3D Plugins Toolbar (version 2.1) - one-click icons for your IngeTrazo plugins
+3D Plugins Toolbar (version 3.4) - one-click icons for your IngeTrazo plugins
 A toolbar along the top of the IngeTrazo window with a button for each of the
 3D plugins (Print Scaler, Part Splitter, Brick & Block Studio, Loft, Gutters & Downpipes,
 Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
@@ -25,13 +25,50 @@ The next step is lit up; each one gets a tick when you've done it; 'Start again'
 'Open last' (at the end of each workflow toolbar) opens the model you last had open, in one click -
 the top one in IngeTrazo's own File > Open Recent list.
 Make one with Arrange toolbars (right-click any of the toolbars).
+
+Simple view (the first button on the main toolbar): hides all of IngeTrazo's other toolbars so only
+yours are left - fewer buttons to frighten a beginner. Click it again and they all come back. It
+stays on next time you start IngeTrazo, and puts them back for a moment as IngeTrazo closes, so
+IngeTrazo never saves them hidden.
+
+What do you want to make? (the big button after Simple view): pick Make a building, Make a bridge
+and so on, and a maroon-and-gold toolbar comes up with that job's steps across your plugins -
+1 Floor plan, 2 Openings, 3 Frame... Click a step to open that plugin; 'Next' closes the plugin
+you're in and opens the next one. Done steps get a tick and the next one is lit up. It remembers
+where you'd got to when you restart IngeTrazo. 'Close' puts it away.
+
+Step toolbar: open any plugin and a toolbar of its pages comes up - 1 Start here, 2 Shape, 3 Walls...
+Click a step to go to that page, or 'Next' for the next one. The page you're on is lit up and the
+ones you've been to get a tick. It goes away when you close the plugin. Turn it off or on by
+right-clicking any of the 3D Plugins toolbars.
 """
 
 import os
 import json
 import math
 
-VERSION = "2.1"   # 2.1: 'Open last' button on the workflow toolbars
+VERSION = "3.4"   # 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+                  # 2.3: Simple view button - hides all the toolbars except yours;
+                  # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
+                  # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
+                  #      (it didn't come up on Floor Plan);
+                  # 2.6: step toolbar made bigger and bolder in maroon and gold, Simple view at its
+                  #      start, '&' in page names shows properly (Base & top);
+                  # 2.7: step buttons made bigger for sure (size and font set on each button, not just
+                  #      the style); version number shown on the toolbars;
+                  # 2.8: 'What do you want to make?' - pick a building, a bridge... and a maroon-and-gold
+                  #      toolbar takes you through the plugins for it, one step at a time;
+                  # 2.9: step toolbars and buttons a size smaller (2.8 was a bit too big);
+                  # 3.0: the job toolbar (Make a building...) is your normal plugin buttons in a row,
+                  #      numbered; 'What do you want to make?' is a normal button ('Make...');
+                  # 3.1: picking a job lights up step 1 (the one you're on), not step 2; a step gets
+                  #      its tick when you move on from it;
+                  # 3.2: roof step with a choice of covering - roof tiles or roof sheets - on the
+                  #      building and the canopy (it remembers which you picked);
+                  # 3.3: Simple view and Make... are in Arrange toolbars like the other buttons, so
+                  #      they can be moved, put on another toolbar, or unticked;
+                  # 3.4: video links - 'Watch: Getting started' in Make..., and a 'Watch the video'
+                  #      button on the page bar of any plugin that has a video
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Plugins Toolbar"
@@ -69,7 +106,21 @@ PLUGINS = [
     ("3D Floor Plan", "Ctrl+Alt+Shift+F", "Floor plan", "floorplan"),
     ("3D Openings", "Ctrl+Shift+O", "Openings", "openings"),
     ("3D Show / Hide", "Ctrl+Alt+Shift+H", "Show/hide", "eye"),
+    ("3D Bridges & Arches", "Ctrl+Alt+Shift+B", "Bridges", "bridge"),
 ]
+
+
+# buttons that aren't plugins, but can be moved about in Arrange toolbars like the rest
+SIMPLE_ITEM = "Simple view (hide IngeTrazo's other toolbars)"
+MAKE_ITEM = "Make... (what do you want to make?)"
+SPECIAL = {SIMPLE_ITEM: "simple", MAKE_ITEM: "make"}
+
+
+def item_icon(entry):
+    if entry in SPECIAL:
+        return make_icon(SPECIAL[entry])
+    p = next((p for p in PLUGINS if p[0] == entry), None)
+    return make_icon(p[3]) if p else make_icon("note")
 
 
 # plugins that have been renamed: (old name, new name), so saved button layouts still fit
@@ -499,6 +550,46 @@ def make_icon(kind):
             p.setBrush(QColor(*col))
             p.drawPolygon(QPolygonF([QPointF(4, y + 4), QPointF(16, y - 2), QPointF(28, y + 4),
                                      QPointF(16, y + 10)]))
+    elif kind == "simple":
+        # Simple view: a toolbar with one bright button and the rest faded away
+        p.setPen(QPen(QColor(90, 90, 90), 1.4))
+        p.setBrush(QColor(240, 240, 235))
+        p.drawRoundedRect(QRectF(2, 9, 28, 14), 3, 3)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(200, 200, 200, 150))
+        for x in (5.0, 10.5, 21.5):
+            p.drawRect(QRectF(x, 13, 4, 6))
+        p.setBrush(QColor(128, 24, 40))                      # maroon, like the works plate
+        p.drawRoundedRect(QRectF(15, 11, 6.5, 10), 1.5, 1.5)
+        p.setBrush(QColor(212, 168, 60))                     # gold dot
+        p.drawEllipse(QRectF(16.6, 14.4, 3.4, 3.4))
+    elif kind == "make":
+        # what do you want to make: a little house with a gold star
+        p.setPen(dark)
+        p.setBrush(QColor(196, 98, 70))
+        p.drawRect(QRectF(6, 15, 16, 13))
+        p.setBrush(QColor(128, 24, 40))
+        p.drawPolygon(QPolygonF([QPointF(3, 16), QPointF(14, 6), QPointF(25, 16)]))
+        p.setBrush(QColor(170, 210, 235))
+        p.drawRect(QRectF(9, 18, 4, 4))
+        p.setBrush(QColor(90, 60, 40))
+        p.drawRect(QRectF(15, 20, 4, 8))
+        p.setBrush(QColor(240, 200, 90))
+        star = QPolygonF()
+        for i in range(10):
+            r = 6.5 if i % 2 == 0 else 2.8
+            a = math.pi / 2 + i * math.pi / 5
+            star.append(QPointF(25 + r * math.cos(a), 8 - r * math.sin(a)))
+        p.drawPolygon(star)
+    elif kind == "close":
+        p.setPen(QPen(QColor(150, 40, 40), 3.0))
+        p.drawLine(QPointF(9, 9), QPointF(23, 23))
+        p.drawLine(QPointF(23, 9), QPointF(9, 23))
+    elif kind == "next":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(46, 125, 50))
+        p.drawPolygon(QPolygonF([QPointF(6, 12), QPointF(17, 12), QPointF(17, 5), QPointF(28, 16),
+                                 QPointF(17, 27), QPointF(17, 20), QPointF(6, 20)]))
     elif kind == "eye":
         # an eye: show / hide
         p.setPen(QPen(QColor(50, 50, 50), 1.6))
@@ -514,6 +605,33 @@ def make_icon(kind):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(30, 30, 30))
         p.drawEllipse(QRectF(13.5, 13.5, 5, 5))
+    elif kind == "bridge":
+        # a little viaduct: deck, two arches and their piers
+        p.setPen(QPen(QColor(110, 70, 50), 1.0))
+        p.setBrush(QColor(196, 120, 86))
+        path = QPainterPath()
+        path.moveTo(2, 28)
+        path.lineTo(2, 10)
+        path.lineTo(30, 10)
+        path.lineTo(30, 28)
+        path.lineTo(26, 28)
+        path.lineTo(26, 21)
+        path.arcTo(QRectF(18, 15, 8, 12), 0, 180)
+        path.lineTo(18, 28)
+        path.lineTo(14, 28)
+        path.lineTo(14, 21)
+        path.arcTo(QRectF(6, 15, 8, 12), 0, 180)
+        path.lineTo(6, 28)
+        path.closeSubpath()
+        p.drawPath(path)
+        p.setBrush(QColor(225, 214, 192))
+        p.drawRect(QRectF(1, 6, 30, 4))                       # the parapet and coping
+        p.setPen(QPen(QColor(240, 225, 200), 1.0))
+        for x0 in (6.0, 18.0):
+            ring = QPainterPath()
+            ring.arcMoveTo(QRectF(x0 - 1.5, 13.5, 11, 15), 180)
+            ring.arcTo(QRectF(x0 - 1.5, 13.5, 11, 15), 180, -180)
+            p.drawPath(ring)
     p.end()
     return QIcon(pm)
 
@@ -682,7 +800,7 @@ GROUPS = [
     ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
     ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
-    ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates"]),
+    ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In"]),
     ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
@@ -744,6 +862,10 @@ def current_bars():
                     items.append(x)
                 continue
             nm, note = split_step(x)
+            if nm in SPECIAL and not wf and nm not in seen:
+                seen.add(nm)
+                items.append(nm)
+                continue
             if nm not in known:
                 continue
             if wf:
@@ -760,6 +882,10 @@ def current_bars():
     for name in known:
         if name not in seen:
             out[0]['items'].append(name)
+    front = [n for n in (SIMPLE_ITEM, MAKE_ITEM) if n not in seen]
+    if front:                                   # first time: at the front of the main toolbar
+        main = out[0]['items']
+        out[0]['items'] = front + ([DIVIDER] if main and main[0] != DIVIDER else []) + main
     return out
 
 
@@ -788,6 +914,7 @@ def grouped_bars():
     rest = [n for n in known if n not in used]
     if rest:
         bars[0]['items'] += [DIVIDER] + rest
+    bars[0]['items'] = [SIMPLE_ITEM, MAKE_ITEM, DIVIDER] + bars[0]['items']
     return bars
 
 
@@ -831,6 +958,10 @@ def build_buttons(tb, win, items=None):
             sep = tb.addSeparator()
             sep.setObjectName(TOOLBAR_NAME + "_divider")
             continue
+        if entry in SPECIAL:                    # Simple view, Make... - wherever you've put them
+            if entry not in hidden:
+                (add_simple_button if entry == SIMPLE_ITEM else add_make_button)(tb, win)
+            continue
         if entry not in info:
             continue
         name, shortcut, label, icon = info[entry]
@@ -841,6 +972,817 @@ def build_buttons(tb, win, items=None):
         act.triggered.connect(lambda checked=False, n=name, s=shortcut: run_plugin(win, n, s))
         tb.addAction(act)
         act.setVisible(name not in hidden)
+    if getattr(tb, '_bar_id', MAIN_ID) == MAIN_ID:
+        va = tb.addWidget(_version_label())
+        va._wf = True                           # made fresh each time the buttons are rebuilt
+
+
+# ---------------------------------------------------------------------------
+# Simple view: hide all IngeTrazo's other toolbars, leaving only Eddy's
+# ---------------------------------------------------------------------------
+# toolbars that count as ours (they stay up in Simple view)
+OUR_TOOLBARS = (TOOLBAR_NAME, "ScaleConverterToolbar", "ed3d", "Eddy")
+SIMPLE_TIP = ("Simple view: hides all of IngeTrazo's other toolbars, so only your 3D Plugins "
+              "toolbars are left. Click again to bring them all back.")
+
+
+def is_our_toolbar(tb):
+    nm = tb.objectName() or ""
+    return any(nm.startswith(k) for k in OUR_TOOLBARS) or _ours(tb)
+
+
+def _bar_key(tb, i):
+    return tb.objectName() or tb.windowTitle() or "toolbar%d" % i
+
+
+def other_toolbars(win):
+    """IngeTrazo's own toolbars on the main window (not ours, not inside a plugin window)."""
+    from PySide6.QtWidgets import QToolBar
+    from PySide6.QtCore import Qt
+    out = []
+    if win is None:
+        return out
+    for i, tb in enumerate(win.findChildren(QToolBar)):
+        try:
+            if is_our_toolbar(tb) or win.toolBarArea(tb) == Qt.NoToolBarArea:
+                continue
+        except Exception:
+            continue
+        out.append((_bar_key(tb, i), tb))
+    return out
+
+
+def simple_view_on():
+    return bool(load_settings().get('simple_view', False))
+
+
+def set_simple_view(on, win=None, save=True):
+    """On: hides IngeTrazo's other toolbars (noting which were showing). Off: shows them again."""
+    win = win or _main_window()
+    if win is None:
+        return
+    s = load_settings()
+    if on:
+        was = set(s.get('simple_hidden') or [])
+        for key, tb in other_toolbars(win):
+            if tb.isVisible():
+                was.add(key)
+                tb.setVisible(False)
+        s['simple_hidden'] = sorted(was)
+    else:
+        keys = set(s.get('simple_hidden') or [])
+        for key, tb in other_toolbars(win):
+            if key in keys or not keys:
+                tb.setVisible(True)
+        s['simple_hidden'] = []
+    if save:
+        s['simple_view'] = bool(on)
+    save_settings(s)
+    bars = [t for _bid, t in all_toolbars(win)]
+    st = _steps_bar(win, make=False)
+    if st is not None:
+        bars.append(st)
+    for t in bars:                              # keep the button's tick in step on every toolbar
+        for a in t.actions():
+            if getattr(a, '_simple', False):
+                a.blockSignals(True)
+                a.setChecked(bool(on))
+                a.blockSignals(False)
+
+
+def _show_for_close(win):
+    """As IngeTrazo closes: put its toolbars back for a moment, so it doesn't save them hidden.
+    If the close is cancelled (say, you pressed Cancel on 'save changes?'), Simple view goes back on."""
+    from PySide6.QtCore import QTimer
+    keys = set(load_settings().get('simple_hidden') or [])
+    for key, tb in other_toolbars(win):
+        if key in keys:
+            tb.setVisible(True)
+
+    def again():
+        try:
+            if win.isVisible() and simple_view_on():
+                set_simple_view(True, win)
+        except Exception:
+            pass
+    QTimer.singleShot(300, again)
+
+
+def _hook_close(win):
+    from PySide6.QtCore import QObject, QEvent
+    if getattr(win, '_eddy_simple_hooked', False):
+        return
+
+    class _CloseWatch(QObject):
+        def eventFilter(self, obj, ev):
+            try:
+                if obj is win and ev.type() == QEvent.Close and simple_view_on():
+                    _show_for_close(win)
+            except Exception:
+                pass
+            return False
+    win._eddy_simple_watch = _CloseWatch(win)
+    win.installEventFilter(win._eddy_simple_watch)
+    win._eddy_simple_hooked = True
+
+
+def add_simple_button(tb, win):
+    from PySide6.QtGui import QAction
+    act = QAction(make_icon("simple"), "Simple view", tb)
+    act._wf = True                              # made fresh each time the buttons are rebuilt
+    act._simple = True
+    act.setObjectName(TOOLBAR_NAME + "_simple")
+    act.setCheckable(True)
+    act.setChecked(simple_view_on())
+    act.setToolTip(SIMPLE_TIP)
+    act.toggled.connect(lambda on: set_simple_view(on, win))
+    tb.addAction(act)
+
+
+# ---------------------------------------------------------------------------
+# Step toolbar: open a plugin and its pages come up as numbered steps to click through
+# ---------------------------------------------------------------------------
+STEPS_NAME = TOOLBAR_NAME + "_steps"
+# maroon and gold, like the works plate: big round buttons that are easy to see and click
+STEPS_BAR_CSS = ("QToolBar#%s { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8e1d33, "
+                 "stop:1 #650e20); border: none; border-top: 2px solid #d4a83c; "
+                 "border-bottom: 2px solid #d4a83c; padding: 3px 6px; spacing: 5px; }" % STEPS_NAME)
+_PILL = "border-radius: 13px; padding: 3px 10px; font-size: 10pt; "
+STEP_CSS = ("QToolButton { color: #fff6e0; background: rgba(255,255,255,0.12); "
+            "border: 1px solid rgba(255,255,255,0.35); " + _PILL + "} "
+            "QToolButton:hover { background: rgba(255,255,255,0.28); border-color: #f0c85a; }")
+HERE_CSS = ("QToolButton { color: #4a0a16; background: #f0c85a; border: 2px solid #fff3c0; "
+            + _PILL + "font-weight: bold; }")
+SEEN_CSS = ("QToolButton { color: #ffffff; background: #2e7d32; border: 1px solid #a5d6a7; " + _PILL + "} "
+            "QToolButton:hover { background: #3d9a42; }")
+NEXT_STEP_CSS = ("QToolButton { color: #4a0a16; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+                 "stop:0 #ffe08a, stop:1 #e0b040); border: 2px solid #fff3c0; " + _PILL +
+                 "font-weight: bold; font-size: 10pt; padding: 3px 14px; } "
+                 "QToolButton:hover { background: #fff0b0; } "
+                 "QToolButton:disabled { color: #b89aa0; background: rgba(255,255,255,0.08); "
+                 "border: 1px solid rgba(255,255,255,0.2); }")
+SIMPLE_STEP_CSS = ("QToolButton { color: #fff6e0; background: rgba(0,0,0,0.25); "
+                   "border: 1px solid #d4a83c; " + _PILL + "} "
+                   "QToolButton:hover { background: rgba(0,0,0,0.4); } "
+                   "QToolButton:checked { color: #4a0a16; background: #f0c85a; font-weight: bold; }")
+TITLE_CSS = "color: #f0c85a; font-weight: bold; font-size: 11pt; padding: 0 8px 0 4px; background: transparent;"
+_STEPS = {'dlg': None}
+
+
+def steps_on():
+    return bool(load_settings().get('steps_bar', True))
+
+
+def plugin_window_name(w):
+    """The plugin's name if w is the main window of one of these plugins (with pages), else None."""
+    try:
+        title = w.windowTitle() or ""
+        tabs = getattr(w, 'tabs', None)
+        if tabs is None or not hasattr(tabs, 'setCurrentIndex') or tabs.count() < 2:
+            return None
+    except Exception:
+        return None
+    for name, _sc, _lab, _ic in PLUGINS:
+        if title == name or title.startswith(name + "  (version"):
+            return name
+    return None
+
+
+def _steps_bar(win, make=True):
+    from PySide6.QtWidgets import QToolBar
+    from PySide6.QtCore import Qt, QSize
+    tb = win.findChild(QToolBar, STEPS_NAME)
+    if tb is None and make:
+        win.addToolBarBreak(Qt.TopToolBarArea)
+        tb = QToolBar("3D Plugins - Steps", win)
+        tb.setObjectName(STEPS_NAME)
+        tb.setIconSize(QSize(20, 20))
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setStyleSheet(STEPS_BAR_CSS)
+        tb.setMinimumHeight(42)
+        win.addToolBar(Qt.TopToolBarArea, tb)
+        tb.setContextMenuPolicy(Qt.CustomContextMenu)
+        tb.customContextMenuRequested.connect(lambda pos, tb=tb: choose_buttons(tb, tb.mapToGlobal(pos)))
+    return tb
+
+
+def _big(w, size=10, bold=False, height=30):
+    """Makes a toolbar button big: its own height and font, whatever IngeTrazo's style says."""
+    if w is None:
+        return
+    from PySide6.QtGui import QFont
+    f = QFont(w.font())
+    f.setPointSize(size)
+    f.setBold(bold)
+    w.setFont(f)
+    w.setMinimumHeight(height)
+    w.setMinimumWidth(height)
+
+
+def _version_label(dark=False):
+    from PySide6.QtWidgets import QLabel
+    lab = QLabel("v" + VERSION)
+    lab.setToolTip("%s, version %s" % (PLUGIN_NAME, VERSION))
+    lab.setStyleSheet("color: %s; font-size: 9pt; padding: 0 6px; background: transparent;"
+                      % ("#f0c85a" if dark else "#777777"))
+    return lab
+
+
+def _style_steps(tb, dlg):
+    try:
+        cur = dlg.tabs.currentIndex()
+    except Exception:
+        return
+    seen = getattr(dlg, '_eddy_seen', set())
+    seen.add(cur)
+    dlg._eddy_seen = seen
+    for a in tb.actions():
+        k = getattr(a, '_page', None)
+        if k is None:
+            continue
+        a.setText(("\u2713 " if (k in seen and k != cur) else "") + a._label)
+        w = tb.widgetForAction(a)
+        if w is not None:
+            w.setStyleSheet(HERE_CSS if k == cur else (SEEN_CSS if k in seen else STEP_CSS))
+            _big(w, 10, k == cur)
+    for a in tb.actions():
+        if getattr(a, '_next', False):
+            last = cur >= dlg.tabs.count() - 1
+            a.setEnabled(not last)
+            a.setText("All done \u2713" if last else "Next step \u25b6")
+            _big(tb.widgetForAction(a), 10, True, 32)
+
+
+def _go_page(dlg, k):
+    try:
+        if k == 'next':
+            k = min(dlg.tabs.currentIndex() + 1, dlg.tabs.count() - 1)
+        dlg.tabs.setCurrentIndex(k)
+        dlg.raise_()
+        dlg.activateWindow()
+    except Exception:
+        pass
+
+
+def show_steps(dlg, win=None):
+    """Puts up the step toolbar for this plugin window (any problem goes in IngeTrazo's log)."""
+    try:
+        _show_steps(dlg, win)
+    except Exception:
+        import traceback
+        print("%s: step toolbar problem:\n%s" % (PLUGIN_NAME, traceback.format_exc()))
+
+
+def _alive(w):
+    try:
+        return w is not None and w.isVisible()
+    except Exception:                  # the window has been deleted
+        return False
+
+
+def _poll_steps(win):
+    """Every half second: is a plugin open? Put its steps up (or take them away)."""
+    try:
+        if not steps_on():
+            return
+        from PySide6.QtWidgets import QApplication
+        cur = _STEPS['dlg']
+        act = QApplication.activeWindow()
+        pick = None
+        if _alive(act) and plugin_window_name(act):
+            pick = act
+        elif _alive(cur):
+            pick = cur
+        else:
+            for w in QApplication.topLevelWidgets():
+                if _alive(w) and plugin_window_name(w):
+                    pick = w
+                    break
+        tb = _steps_bar(win, make=False)
+        if pick is None:
+            if cur is not None or (tb is not None and tb.isVisible()):
+                _STEPS['dlg'] = None
+                if tb is not None:
+                    tb.setVisible(False)
+            return
+        if pick is not cur or tb is None or not tb.isVisible():
+            show_steps(pick, win)
+    except Exception:
+        import traceback
+        print("%s: step toolbar check:\n%s" % (PLUGIN_NAME, traceback.format_exc()))
+
+
+def _show_steps(dlg, win=None):
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QLabel
+    win = win or _main_window()
+    name = plugin_window_name(dlg)
+    if win is None or name is None or not steps_on():
+        return
+    tb = _steps_bar(win)
+    if _STEPS['dlg'] is dlg and tb.isVisible() and tb.actions():
+        _style_steps(tb, dlg)
+        return
+    _STEPS['dlg'] = dlg
+    for a in list(tb.actions()):
+        tb.removeAction(a)
+        a.deleteLater()
+    tb.setStyleSheet(STEPS_BAR_CSS)
+    # Simple view first: hide IngeTrazo's other toolbars from right here
+    sv = QAction(make_icon("simple"), "Simple view", tb)
+    sv._simple = True
+    sv.setCheckable(True)
+    sv.setChecked(simple_view_on())
+    sv.setToolTip(SIMPLE_TIP)
+    sv.toggled.connect(lambda on: set_simple_view(on, win))
+    tb.addAction(sv)
+    w = tb.widgetForAction(sv)
+    if w is not None:
+        w.setStyleSheet(SIMPLE_STEP_CSS)
+        _big(w, 9)
+    title = QLabel(name.replace("3D ", "", 1) + ":")
+    title.setStyleSheet(TITLE_CSS)
+    _big(title, 11, True, 30)
+    tb.addWidget(title)
+    tabs = dlg.tabs
+    for k in range(tabs.count()):
+        text = (tabs.tabText(k) or "").replace("&&", "&")      # 'Base & top' as written on the page
+        a = QAction("", tb)
+        a._page = k
+        a._label = "%d  %s" % (k + 1, text.replace("&", "&&"))  # && shows one & on a button
+        a.setToolTip("Step %d: go to the '%s' page" % (k + 1, text))
+        a.triggered.connect(lambda checked=False, d=dlg, k=k: _go_page(d, k))
+        tb.addAction(a)
+    nxt = QAction("Next step \u25b6", tb)
+    nxt._next = True
+    nxt.setToolTip("Go on to the next page")
+    nxt.triggered.connect(lambda checked=False, d=dlg: _go_page(d, 'next'))
+    tb.addAction(nxt)
+    w = tb.widgetForAction(nxt)
+    if w is not None:
+        w.setStyleSheet(NEXT_STEP_CSS)
+    if VIDEOS.get(name):                        # this plugin has a video: a button to watch it
+        va = QAction("\u25b6  Watch the video", tb)
+        va.setToolTip("Opens the %s video on YouTube" % name.replace("3D ", "", 1))
+        va.triggered.connect(lambda checked=False, n=name: open_video(n))
+        tb.addAction(va)
+        w = tb.widgetForAction(va)
+        if w is not None:
+            w.setStyleSheet(SIMPLE_STEP_CSS)
+            _big(w, 9)
+    ver = tb.addWidget(_version_label(dark=True))
+    ver._wf = True
+    if not getattr(dlg, '_eddy_steps_hooked', False):
+        try:
+            tabs.currentChanged.connect(lambda _i, d=dlg: _STEPS['dlg'] is d and _style_steps(_steps_bar(win), d))
+        except Exception:
+            pass
+        dlg._eddy_steps_hooked = True
+    tb.setVisible(True)
+    _style_steps(tb, dlg)
+
+
+def hide_steps(dlg=None, win=None):
+    """Takes the step toolbar away (when its plugin closes), or moves it to another open plugin."""
+    from PySide6.QtWidgets import QApplication
+    win = win or _main_window()
+    if win is None:
+        return
+    if dlg is not None and _STEPS['dlg'] is not dlg:
+        return
+    _STEPS['dlg'] = None
+    tb = _steps_bar(win, make=False)
+    if tb is None:
+        return
+    for w in QApplication.instance().topLevelWidgets():       # another plugin still open: show its steps
+        try:
+            if w is not dlg and w.isVisible() and plugin_window_name(w):
+                show_steps(w, win)
+                return
+        except Exception:
+            continue
+    tb.setVisible(False)
+
+
+def _hook_steps(win):
+    from PySide6.QtCore import QObject, QEvent, QTimer
+    from PySide6.QtWidgets import QApplication
+    if getattr(win, '_eddy_steps_watch', None) is not None:
+        return
+    wanted = (QEvent.Show, QEvent.Hide, QEvent.Close, QEvent.WindowActivate)
+
+    class _StepWatch(QObject):
+        def eventFilter(self, obj, ev):
+            try:
+                t = ev.type()
+                if t in wanted and obj.isWidgetType() and obj.isWindow() and plugin_window_name(obj):
+                    if t in (QEvent.Show, QEvent.WindowActivate):
+                        QTimer.singleShot(0, lambda o=obj: o.isVisible() and show_steps(o, win))
+                    else:
+                        QTimer.singleShot(0, lambda o=obj: (not o.isVisible()) and hide_steps(o, win))
+            except Exception:
+                pass
+            return False
+    win._eddy_steps_watch = _StepWatch(win)
+    QApplication.instance().installEventFilter(win._eddy_steps_watch)
+    # and a check every half second, in case IngeTrazo opens a plugin without the window noticing
+    t = QTimer(win)
+    t.setObjectName(STEPS_NAME + "_timer")
+    t.setInterval(500)
+    t.timeout.connect(lambda: _poll_steps(win))
+    t.start()
+    win._eddy_steps_timer = t
+    print("%s %s: step toolbar ready" % (PLUGIN_NAME, VERSION))
+
+
+def set_steps_on(on, win=None):
+    s = load_settings()
+    s['steps_bar'] = bool(on)
+    save_settings(s)
+    win = win or _main_window()
+    if win is None:
+        return
+    if not on:
+        _STEPS['dlg'] = None
+        tb = _steps_bar(win, make=False)
+        if tb is not None:
+            tb.setVisible(False)
+        return
+    from PySide6.QtWidgets import QApplication
+    for w in QApplication.instance().topLevelWidgets():
+        try:
+            if w.isVisible() and plugin_window_name(w):
+                show_steps(w, win)
+                break
+        except Exception:
+            continue
+
+
+# ---------------------------------------------------------------------------
+# What do you want to make? - a job's steps across the plugins, one at a time
+# ---------------------------------------------------------------------------
+PROJECT_NAME = TOOLBAR_NAME + "_project"
+
+# EssexBrick Model Works videos on YouTube: add each plugin's link here as its video comes out
+VIDEOS = {
+    "Getting started": "https://youtu.be/ho2iT4jlClQ",
+    "3D Floor Plan": "https://youtu.be/PPgYvw2RL8I",
+}
+
+
+def open_video(key):
+    url = VIDEOS.get(key) or ""
+    if not url:
+        return
+    try:
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(url))
+    except Exception as e:
+        print("%s: couldn't open the video (%s): %s" % (PLUGIN_NAME, e, url))
+# a step can be a choice: [(plugin, what it's called)] - you pick one when you get to it
+ROOF_CHOICE = [("3D Roof Tiles", "Roof tiles"), ("3D Corrugated Iron", "Roof sheets")]
+# (what it's called, [(plugin or a choice, the step's name)]) - the building follows Eddy's build order
+PROJECTS = [
+    ("Make a building", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
+        (ROOF_CHOICE, "Roof"), ("3D Brick & Block Studio", "Bricks"),
+        ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a bridge or arches", [
+        ("3D Bridges & Arches", "Bridge"), ("3D Brick & Block Studio", "Bricks"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a station canopy", [
+        ("3D Station Canopies", "Canopy"), (ROOF_CHOICE, "Roof"),
+        ("3D Gutters & Downpipes", "Gutters"), ("3D Layers & Colours", "Colours"),
+        ("3D Scale Studio", "Scale & print")]),
+    ("Make fences and gates", [
+        ("3D Fences & Gates", "Fences"), ("3D Layers & Colours", "Colours"),
+        ("3D Scale Studio", "Scale & print")]),
+    ("Get a model ready to print", [
+        ("3D Layers & Colours", "Check parts"), ("3D Scale Studio", "Scale & pieces"),
+        ("3D Print Scaler", "Fit the bed")]),
+]
+MAKE_CSS = ("QToolButton { color: #4a0a16; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+            "stop:0 #ffe08a, stop:1 #e0b040); border: 2px solid #8e1d33; border-radius: 13px; "
+            "padding: 3px 12px; font-weight: bold; } QToolButton:hover { background: #fff0b0; } "
+            "QToolButton::menu-indicator { subcontrol-position: right center; right: 6px; }")
+SMALL_CSS = ("QToolButton { color: #fff6e0; background: rgba(0,0,0,0.25); border: 1px solid #d4a83c; "
+             "border-radius: 12px; padding: 2px 9px; } QToolButton:hover { background: rgba(0,0,0,0.4); }")
+
+
+def _project():
+    """The job you're on: (its name, its steps, the steps done) - or None."""
+    st = load_settings()
+    pj = st.get('project')
+    for name, steps in PROJECTS:
+        if name == pj:
+            try:
+                done = set(int(i) for i in st.get('project_done') or [])
+            except Exception:
+                done = set()
+            known = {p[0] for p in PLUGINS}
+            out = []
+            for plug, label in steps:
+                if isinstance(plug, list):
+                    opts = [o for o in plug if o[0] in known]
+                    if opts:
+                        out.append((opts, label))
+                elif plug in known:
+                    out.append((plug, label))
+            return name, out, done
+    return None
+
+
+def _save_project(name, done=(), cur=None):
+    s = load_settings()
+    s['project'] = name
+    s['project_done'] = sorted(int(i) for i in done)
+    s['project_cur'] = cur
+    save_settings(s)
+
+
+def _project_cur():
+    """The step you're on (lit up), or None before you've started."""
+    try:
+        c = load_settings().get('project_cur')
+        return None if c is None else int(c)
+    except Exception:
+        return None
+
+
+def add_make_button(tb, win):
+    """The big 'What do you want to make?' button, with the list of jobs."""
+    from PySide6.QtWidgets import QToolButton, QMenu
+    from PySide6.QtCore import Qt, QSize
+    btn = QToolButton(tb)
+    btn.setText("Make...")
+    btn.setIcon(make_icon("make"))
+    btn.setIconSize(tb.iconSize() if tb.iconSize().width() > 0 else QSize(28, 28))
+    btn.setToolButtonStyle(tb.toolButtonStyle())
+    btn.setAutoRaise(True)
+    btn.setToolTip("What do you want to make? Pick a building, a bridge... and a toolbar takes you "
+                   "through the plugins for it, one step at a time.")
+    btn.setStatusTip("Pick what you want to make - a building, a bridge... - and a toolbar takes you "
+                   "through the plugins for it, one step at a time.")
+    btn.setPopupMode(QToolButton.InstantPopup)
+    menu = QMenu(btn)
+    menu.setObjectName(TOOLBAR_NAME + "_makemenu")
+    for name, steps in PROJECTS:
+        a = menu.addAction("%s   (%d steps)" % (name, len(steps)))
+        a.triggered.connect(lambda checked=False, n=name: start_project(n, win))
+    menu.addSeparator()
+    if VIDEOS.get("Getting started"):
+        menu.addSeparator()
+        vid = menu.addAction("\u25b6  Watch: Getting started (video)")
+        vid.triggered.connect(lambda checked=False: open_video("Getting started"))
+    menu.addSeparator()
+    off = menu.addAction("Put the steps away")
+    off.triggered.connect(lambda checked=False: close_project(win))
+    btn.setMenu(menu)
+    tb.toolButtonStyleChanged.connect(btn.setToolButtonStyle)     # labels on/off like the others
+    act = tb.addWidget(btn)
+    act._wf = True
+    act.setObjectName(TOOLBAR_NAME + "_make")
+
+
+def _project_bar(win, make=True):
+    from PySide6.QtWidgets import QToolBar
+    from PySide6.QtCore import Qt, QSize
+    tb = win.findChild(QToolBar, PROJECT_NAME)
+    if tb is None and make:
+        win.addToolBarBreak(Qt.TopToolBarArea)
+        tb = QToolBar("3D Plugins - What you're making", win)
+        tb.setObjectName(PROJECT_NAME)
+        tb.setIconSize(QSize(28, 28))
+        tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        win.addToolBar(Qt.TopToolBarArea, tb)
+        tb.setContextMenuPolicy(Qt.CustomContextMenu)
+        tb.customContextMenuRequested.connect(lambda pos, tb=tb: choose_buttons(tb, tb.mapToGlobal(pos)))
+    return tb
+
+
+def start_project(name, win=None):
+    win = win or _main_window()
+    _save_project(name, (), None)
+    show_project(win)
+    pj = _project()
+    if pj and pj[1]:
+        project_step(win, 0)                    # straight on to step 1
+
+
+def close_project(win=None):
+    win = win or _main_window()
+    _save_project(None, ())
+    tb = _project_bar(win, make=False) if win is not None else None
+    if tb is not None:
+        tb.setVisible(False)
+
+
+def _close_plugin_windows(except_name=None):
+    """Closes the plugin you're in (as you move on to the next step)."""
+    from PySide6.QtWidgets import QApplication
+    for w in QApplication.instance().topLevelWidgets():
+        try:
+            nm = plugin_window_name(w) or (w.windowTitle() if w.isVisible() and
+                                           any(w.windowTitle() == p[0] for p in PLUGINS) else None)
+            if w.isVisible() and nm and nm != except_name:
+                w.close()
+        except Exception:
+            continue
+
+
+def _choices():
+    c = load_settings().get('project_choice')
+    return c if isinstance(c, dict) else {}
+
+
+def _chosen(name, k, opts):
+    """The covering you picked for this step before (or None)."""
+    pick = _choices().get("%s|%d" % (name, k))
+    return pick if pick in [o[0] for o in opts] else None
+
+
+def _choose(name, k, plugin):
+    s = load_settings()
+    c = s.get('project_choice') if isinstance(s.get('project_choice'), dict) else {}
+    c["%s|%d" % (name, k)] = plugin
+    s['project_choice'] = c
+    save_settings(s)
+
+
+def _choice_menu(win, tb, k, opts):
+    from PySide6.QtWidgets import QMenu
+    menu = QMenu(tb)
+    menu.setObjectName(TOOLBAR_NAME + "_choice")
+    info = {p[0]: p for p in PLUGINS}
+    for plug, label in opts:
+        a = menu.addAction(make_icon(info[plug][3]), label)
+        a.triggered.connect(lambda checked=False, plug=plug: project_step(win, k, True, plug))
+    return menu
+
+
+def _pop_choice(win, k):
+    """Next step lands on a choice you haven't made yet: show the list under its button."""
+    tb = _project_bar(win, make=False)
+    if tb is None:
+        return False
+    for a in tb.actions():
+        if getattr(a, '_pstep', None) == k and a.menu() is not None:
+            w = tb.widgetForAction(a)
+            if w is not None:
+                a.menu().popup(w.mapToGlobal(w.rect().bottomLeft()))
+                return True
+    return False
+
+
+def project_step(win, k, close_others=False, plugin=None):
+    """Opens step k: it's lit up as the one you're on; the step you were on gets its tick."""
+    pj = _project()
+    if not pj or not (0 <= k < len(pj[1])):
+        return
+    name, steps, done = pj
+    opts = steps[k][0] if isinstance(steps[k][0], list) else None
+    if opts is not None:
+        if plugin is None:
+            plugin = _chosen(name, k, opts)
+        if plugin is None:                      # not picked yet: ask which covering
+            if not _pop_choice(win, k):
+                plugin = opts[0][0]
+            else:
+                return
+        _choose(name, k, plugin)
+        pj = _project()
+        name, steps, done = pj
+    cur = _project_cur()
+    if cur is not None and cur != k:
+        done.add(cur)
+    done.discard(k)
+    if opts is None:
+        plugin = steps[k][0]
+    if close_others:
+        _close_plugin_windows(plugin)
+    _save_project(name, done, k)
+    if opts is not None:
+        show_project(win)                       # the button now shows the covering you picked
+    else:
+        _style_project(win)
+    sc = next((p[1] for p in PLUGINS if p[0] == plugin), "")
+    run_plugin(win, plugin, sc)
+
+
+def project_next(win):
+    """Ticks the step you're on and opens the next one."""
+    pj = _project()
+    if not pj:
+        return
+    name, steps, done = pj
+    cur = _project_cur()
+    after = [k for k in range(len(steps)) if (cur is None or k > cur) and k not in done]
+    nxt = after[0] if after else next((k for k in range(len(steps)) if k not in done and k != cur), None)
+    if nxt is None:                             # that was the last one
+        if cur is not None:
+            done.add(cur)
+        _save_project(name, done, None)
+        _style_project(win)
+        return
+    project_step(win, nxt, close_others=True)
+
+
+def show_project(win=None):
+    """Puts up the toolbar for the job you're on (or takes it away if there isn't one)."""
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QLabel
+    win = win or _main_window()
+    if win is None:
+        return
+    pj = _project()
+    if not pj:
+        tb = _project_bar(win, make=False)
+        if tb is not None:
+            tb.setVisible(False)
+        return
+    name, steps, done = pj
+    tb = _project_bar(win)
+    for a in list(tb.actions()):
+        tb.removeAction(a)
+        a.deleteLater()
+    title = QLabel("  %s:  " % name.replace("Make ", "Making ", 1).replace("Get ", "Getting ", 1))
+    title.setStyleSheet("font-weight: bold;")
+    tb.addWidget(title)
+    info = {p[0]: p for p in PLUGINS}
+    for k, (plugin, label) in enumerate(steps):
+        if isinstance(plugin, list):            # a choice: roof tiles or roof sheets...
+            pick = _chosen(name, k, plugin)
+            plabel = next((l for p_, l in plugin if p_ == pick), None)
+            a = QAction(make_icon(info[pick or plugin[0][0]][3]), "", tb)
+            a._pstep = k
+            a._label = "%d  %s \u25be" % (k + 1, (plabel or label).replace("&", "&&"))
+            a.setToolTip("Step %d: %s - pick %s" % (k + 1, label, " or ".join(l for _p, l in plugin)))
+            a.setMenu(_choice_menu(win, tb, k, plugin))
+            tb.addAction(a)
+            try:
+                from PySide6.QtWidgets import QToolButton
+                w = tb.widgetForAction(a)
+                if w is not None:
+                    w.setPopupMode(QToolButton.InstantPopup)
+            except Exception:
+                pass
+            continue
+        icon = info[plugin][3]
+        a = QAction(make_icon(icon), "", tb)
+        a._pstep = k
+        a._label = "%d  %s" % (k + 1, label.replace("&", "&&"))
+        a.setToolTip("Step %d: %s - opens %s" % (k + 1, label, plugin))
+        a.triggered.connect(lambda checked=False, k=k: project_step(win, k, close_others=True))
+        tb.addAction(a)
+    tb.addSeparator()
+    nxt = QAction(make_icon("next"), "Next step", tb)
+    nxt._pnext = True
+    nxt.setToolTip("Closes the plugin you're in and opens the next step")
+    nxt.triggered.connect(lambda checked=False: project_next(win))
+    tb.addAction(nxt)
+    for icon, text, tip, fn in (
+            ("again", "Start again", "Clears the ticks, back to step 1", lambda: start_again(win)),
+            ("openlast", "Open last", "Opens the model you last had open", lambda: open_last(win)),
+            ("close", "Close", "Puts these steps away (pick again from Make...)", lambda: close_project(win))):
+        a = QAction(make_icon(icon), text, tb)
+        a.setToolTip(tip)
+        a.triggered.connect(lambda checked=False, fn=fn: fn())
+        tb.addAction(a)
+    tb.setVisible(True)
+    _style_project(win)
+
+
+def start_again(win):
+    pj = _project()
+    if pj:
+        _save_project(pj[0], (), None)
+        _style_project(win)
+
+
+def _style_project(win):
+    tb = _project_bar(win, make=False)
+    pj = _project()
+    if tb is None or not pj:
+        return
+    _name, steps, done = pj
+    cur = _project_cur()
+    if cur is None:                             # not started yet: the first one not done is lit
+        cur = next((k for k in range(len(steps)) if k not in done), None)
+    left = [k for k in range(len(steps)) if k not in done and k != cur]
+    for a in tb.actions():
+        k = getattr(a, '_pstep', None)
+        w = tb.widgetForAction(a)
+        if k is not None:
+            a.setText(("\u2713 " if k in done else "") + a._label)
+            if w is not None:                   # the step you're on lit up, done ones in green
+                w.setStyleSheet(NEXT_CSS if k == cur else (DONE_CSS if k in done else ""))
+        elif getattr(a, '_pnext', False):
+            a.setEnabled(cur is not None)
+            a.setText("Finish" if cur is not None and not left else
+                      ("All done" if cur is None else "Next step"))
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +2118,7 @@ def arrange_buttons(tb=None):
             it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)      # steps always show: no tick
         else:
             it = QTreeWidgetItem([entry])
-            it.setIcon(0, make_icon(info[entry][3]))
+            it.setIcon(0, item_icon(entry))
             it.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
             it.setCheckState(0, Qt.Checked if shown else Qt.Unchecked)
         it.setData(0, ROLE, ('item', entry))
@@ -1307,6 +2249,10 @@ def arrange_buttons(tb=None):
                                     "toolbars each button is only once: use 'Move to toolbar'.")
             return
         if it.data(0, ROLE)[1] == DIVIDER:
+            return
+        if it.data(0, ROLE)[1] in SPECIAL:
+            QMessageBox.information(dlg, PLUGIN_NAME, "Simple view and Make... can be moved to any ordinary "
+                                    "toolbar, but they aren't steps, so they don't go on workflows.")
             return
         new = as_item(it, True)
         if dest is par:
@@ -1445,7 +2391,8 @@ def arrange_buttons(tb=None):
     b_bar_up.clicked.connect(lambda: move_bar(-1))
     b_bar_down.clicked.connect(lambda: move_bar(1))
     b_one.clicked.connect(lambda: fill([{'id': MAIN_ID, 'name': "3D Plugins", 'visible': True,
-                                         'items': [p[0] for p in PLUGINS]}], set(), keep_workflows=True))
+                                         'items': [SIMPLE_ITEM, MAKE_ITEM, DIVIDER] + [p[0] for p in PLUGINS]}],
+                                       set(), keep_workflows=True))
     b_grp.clicked.connect(lambda: fill(grouped_bars(), set(), keep_workflows=True))
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
@@ -1494,6 +2441,21 @@ def install_toolbar(win=None):
         pass
     # the other plugins may still be loading: check which ones are there a little later
     QTimer.singleShot(3000, lambda: [refresh_buttons(t) for _b, t in all_toolbars(win)])
+    # Simple view left on last time: hide IngeTrazo's toolbars again once it has put them up
+    try:
+        _hook_close(win)
+    except Exception:
+        pass
+    try:
+        _hook_steps(win)                    # step toolbar when a plugin opens
+        QTimer.singleShot(200, lambda: show_project(win))   # the job you were on, where you'd got to
+        QTimer.singleShot(0, lambda: (_steps_bar(win, make=False) is not None
+                                      and _STEPS['dlg'] is None and _steps_bar(win, make=False).setVisible(False)))
+    except Exception as e:
+        print("%s: step toolbar not set up (%s)" % (PLUGIN_NAME, e))
+    if simple_view_on():
+        for ms in (1500, 4000):
+            QTimer.singleShot(ms, lambda: simple_view_on() and set_simple_view(True, win))
     return tb
 
 
@@ -1601,6 +2563,15 @@ def choose_buttons(tb, where=None):
     arrange = menu.addAction("Arrange toolbars... (move buttons, small toolbars, workflows)")
     arrange.triggered.connect(lambda: QTimer.singleShot(0, lambda: arrange_buttons(tb)))
     menu.addSeparator()
+    simple = menu.addAction("Simple view (hide IngeTrazo's other toolbars)")
+    simple.setCheckable(True)
+    simple.setChecked(simple_view_on())
+    simple.toggled.connect(lambda on: set_simple_view(on, tb.parent()))
+    steps = menu.addAction("Step toolbar when a plugin opens (its pages, 1, 2, 3...)")
+    steps.setCheckable(True)
+    steps.setChecked(steps_on())
+    steps.toggled.connect(lambda on: set_steps_on(on, tb.parent()))
+    menu.addSeparator()
     hide = menu.addAction("Hide this toolbar")
     hide.triggered.connect(lambda: tb.setVisible(False))
     hide_all = menu.addAction("Hide all the 3D Plugins toolbars (Ctrl+Alt+B brings them back)")
@@ -1619,6 +2590,7 @@ def _install_when_ready(tries=0):
                 QTimer.singleShot(500, lambda: _install_when_ready(tries + 1))
             return
         install_toolbar(win)
+        _hook_steps(win)                    # (does nothing if it's already set up)
     except Exception as e:
         print("%s: could not add the toolbar (%s). Press Ctrl+Alt+B to try again." % (PLUGIN_NAME, e))
 
