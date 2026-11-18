@@ -11,7 +11,7 @@
 # PURPOSE. See the LICENSE file or <https://www.gnu.org/licenses/> for details.
 
 """
-3D Plugins Toolbar (version 3.4) - one-click icons for your IngeTrazo plugins
+3D Plugins Toolbar (version 3.5) - one-click icons for your IngeTrazo plugins
 A toolbar along the top of the IngeTrazo window with a button for each of the
 3D plugins (Print Scaler, Part Splitter, Brick & Block Studio, Loft, Gutters & Downpipes,
 Soil & Waste Pipes, Scale Studio, Period Windows, Roof Tiles, Notepad). Click a button to start
@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.4"   # 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.5"   # 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -68,7 +68,8 @@ VERSION = "3.4"   # 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridg
                   # 3.3: Simple view and Make... are in Arrange toolbars like the other buttons, so
                   #      they can be moved, put on another toolbar, or unticked;
                   # 3.4: video links - 'Watch: Getting started' in Make..., and a 'Watch the video'
-                  #      button on the page bar of any plugin that has a video
+                  #      button on the page bar of any plugin that has a video;
+                  # 3.5: video links for Openings and Subframe
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Plugins Toolbar"
@@ -1427,6 +1428,8 @@ PROJECT_NAME = TOOLBAR_NAME + "_project"
 VIDEOS = {
     "Getting started": "https://youtu.be/ho2iT4jlClQ",
     "3D Floor Plan": "https://youtu.be/PPgYvw2RL8I",
+    "3D Openings": "https://youtu.be/2Y94tA5ecPQ",
+    "3D Subframe": "https://youtu.be/HjO3KEXHdlY",
 }
 
 
