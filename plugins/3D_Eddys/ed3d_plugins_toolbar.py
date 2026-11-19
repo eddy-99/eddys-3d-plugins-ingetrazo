@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.9"   # 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.10"  # 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -108,6 +108,7 @@ PLUGINS = [
     ("3D Openings", "Ctrl+Shift+O", "Openings", "openings"),
     ("3D Show / Hide", "Ctrl+Alt+Shift+H", "Show/hide", "eye"),
     ("3D Bridges & Arches", "Ctrl+Alt+Shift+B", "Bridges", "bridge"),
+    ("3D Check for Updates", "Ctrl+Alt+Shift+U", "Updates", "update"),
 ]
 
 
@@ -633,6 +634,20 @@ def make_icon(kind):
             ring.arcMoveTo(QRectF(x0 - 1.5, 13.5, 11, 15), 180)
             ring.arcTo(QRectF(x0 - 1.5, 13.5, 11, 15), 180, -180)
             p.drawPath(ring)
+    elif kind == "update":
+        # a green arrow coming down into a tray, under a blue circling arrow
+        p.setPen(QPen(QColor(40, 110, 180), 2.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(5, 3, 22, 22), 30 * 16, 300 * 16)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(40, 110, 180))
+        p.drawPolygon(QPolygonF([QPointF(25.5, 4), QPointF(27.5, 11.5), QPointF(20.5, 10)]))
+        p.setBrush(QColor(60, 160, 70))
+        p.drawRect(QRectF(13.5, 7, 5, 9))
+        p.drawPolygon(QPolygonF([QPointF(9.5, 15), QPointF(22.5, 15), QPointF(16, 22)]))
+        p.setPen(dark)
+        p.setBrush(QColor(225, 225, 220))
+        p.drawRect(QRectF(5, 25, 22, 4))
     p.end()
     return QIcon(pm)
 
@@ -804,7 +819,7 @@ GROUPS = [
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In"]),
-    ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar"]),
+    ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar", "3D Check for Updates"]),
 ]
 MAIN_ID = "main"
 
@@ -2611,7 +2626,8 @@ EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil
               "loft", "print_scaler", "part_splitter", "scale_converter", "roof_tiles", "notepad", "quick_links", "wood_planking",
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
-              "pieces_in", "blend", "subframe", "floor_plan", "openings", "plugins_toolbar")
+              "pieces_in", "blend", "subframe", "floor_plan", "openings", "plugins_toolbar",
+              "update_checker")
 EDDY_EXTRA_NAMES = ()
 
 

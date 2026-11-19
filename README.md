@@ -42,6 +42,7 @@ Every part they make is a closed, watertight solid with flat faces, ready to pri
 | 3D Quick Links | Ctrl+Alt+A | A small window over the work area with your folders, files and web pages: one click opens them. Keep a set of links for each job or video, add them with the buttons or by dragging them on. |
 | 3D Plugins Toolbar | Ctrl+Alt+B | A toolbar with a button for each plugin, and a "3D Plugins by Eddy" submenu under Extensions. Split it into small toolbars of your own, and make workflow toolbars: the steps for a job (like making a building) in order, any plugin as often as you like, each step with its own note - the next step lights up and each gets a tick as you go. |
 | 3D Better Icons | Ctrl+Alt+Y | Clearer colour icons for IngeTrazo's own toolbar buttons, drawn sharp at any size, with optional names under the icons (Ctrl+Alt+Q turns the names on or off). Remove the file to get the original icons back. |
+| 3D Check for Updates | Ctrl+Alt+Shift+U | Finds new versions of these plugins, and new plugins, on this page. Tick the ones you want and they're put in for you (your old copy is kept in Documents\IngeTrazo Presets\Plugin backups). It can also check by itself when IngeTrazo starts, at most once a day, and tells you when something new is ready. |
 
 Every window has pop-up notes on its boxes when you hover over them, and opens where you last
 left it.
@@ -61,6 +62,9 @@ it's one of this set.
 **Upgrading from the loose files?** Earlier versions put each plugin straight in the extensions
 folder (`period_windows.py`, `roof_tiles.py` ...). Delete those old files when you copy the
 3D_Eddys folder in, or you'll get every tool twice.
+
+**Keeping up to date:** click **Updates** on the 3D Plugins toolbar (or Ctrl+Alt+Shift+U) to
+see what's new and put it in. Restart IngeTrazo afterwards.
 
 **Leaving one out:** rename its file inside 3D_Eddys so it no longer ends in `.py`
 (for example `ed3d_loft.py.off`).

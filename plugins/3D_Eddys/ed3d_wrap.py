@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget, QInputDialog)
 
 PLUGIN_NAME = "3D Wrap"
-VERSION = "15"
+VERSION = "2.2"   # 2.2: fixed "FACES is not defined" (2.1 wouldn't start); 2.1: level join at the springing, whole/half bricks at the faces; 2.0: skew arch faces neat (oval barrels); 1.9: arch bricks along the barrel; 1.8: remembers last setup; 1.7: arch ends cut, skew arches; 1.6: arches lying on their side (was numbered 16-19)
 SCALE = 0.001
 Z = (0.0, 0.0, 1.0)
 
@@ -1653,7 +1653,9 @@ class ArcTarget:
     """A wall that goes part way round a circle: its centre, where its two ends are, and how
     far out its outside and inside faces are, all the way up."""
 
-    def __init__(self, faces):
+    def __init__(self, faces, both_faces=False):
+        # both_faces: only trust a direction where the inside and outside faces are both seen
+        # (an arch measured without its ends: past a slanted end only one face is there)
         tris = _tris_of(faces)
         if not tris:
             raise ValueError("The target group has no faces.")
@@ -1701,6 +1703,7 @@ class ArcTarget:
             for th in self.angs:
                 dx, dy = math.cos(th), math.sin(th)
                 lo, hi = 0.0, 0.0
+                nhit = 0
                 for (ax_, ay_), (bx_, by_) in segs:
                     ex, ey = bx_ - ax_, by_ - ay_
                     den = dx * ey - dy * ex
@@ -1709,12 +1712,32 @@ class ArcTarget:
                     tt = (ax_ * ey - ay_ * ex) / den
                     ss = (ax_ * dy - ay_ * dx) / den
                     if tt > 0 and -1e-9 <= ss <= 1 + 1e-9:
+                        nhit += 1
                         hi = max(hi, tt)
                         lo = tt if lo == 0.0 else min(lo, tt)
+                if both_faces and (nhit < 2 or hi - lo < 1e-6):
+                    lo = hi = 0.0
                 ro.append(hi)
                 ri.append(lo)
             go.append(ro)
             gi.append(ri)
+        # where the inside face itself starts and stops (round from a0): on a thick arch the
+        # outside reaches a little further round than the inside does
+        seen = [k for k in range(len(self.angs)) if any(row[k] > 0.0 for row in gi)]
+        self.in_a0 = self.angs[seen[0]] if seen else self.a0
+        self.in_a1 = self.angs[seen[-1]] if seen else self.a1
+        if both_faces:
+            # an arch: the same all along it, so a miss (past a slanted end) takes the value from
+            # the same place round the curve further along, not from beside it (on a skew arch
+            # the curve is oval, so beside it is a different size)
+            for grid in (go, gi):
+                for k in range(len(self.angs)):
+                    have_z = [i for i in range(len(grid)) if grid[i][k] > 0.0]
+                    if not have_z:
+                        continue
+                    for i in range(len(grid)):
+                        if grid[i][k] == 0.0:
+                            grid[i][k] = grid[min(have_z, key=lambda j: abs(j - i))][k]
         for grid in (go, gi):
             for row in grid:                         # misses: from the neighbours
                 for k in range(len(row)):
@@ -1754,7 +1777,365 @@ class ArcTarget:
         return r0 * (1 - tz) + r1 * tz
 
 
+# ---------------------------------------------------------------------------
+# Curves that lie on their side (an arch barrel): turned upright to brick them, then back
+# ---------------------------------------------------------------------------
+def find_axis(faces):
+    """The way a curved solid's middle line runs. Faces round a curve all face away from that
+    line, so it's the direction the most face area is square to. Straight up (Z) unless
+    another way is clearly better - an arch barrel lying on its side, say."""
+    items = []
+    for o, hs in faces:
+        n = _newell3(o)
+        L = v_len(n)
+        if L > 1e-18:
+            items.append((v_mul(n, 1.0 / L), L))
+    if not items:
+        return Z
+
+    def score(a):
+        return sum(w for n, w in items if abs(v_dot(n, a)) < 0.2)
+    up_s = score(Z)
+    best, best_s = None, -1.0
+    for k in range(90):                               # every 2 degrees round, level
+        t = math.radians(2 * k)
+        a = (math.cos(t), math.sin(t), 0.0)
+        sc = score(a)
+        if sc > best_s:
+            best, best_s = a, sc
+    if best_s <= up_s * 1.2:
+        return Z
+    # then exactly: the level direction the curved faces are most nearly square to (best fit)
+    for _ in range(3):
+        sxx = sxy = syy = 0.0
+        for n, w_ in items:
+            if abs(v_dot(n, best)) < 0.35:
+                sxx += w_ * n[0] * n[0]
+                sxy += w_ * n[0] * n[1]
+                syy += w_ * n[1] * n[1]
+        t = 0.5 * math.atan2(2 * sxy, sxx - syy) + math.pi / 2   # the smaller way of the two
+        a = (math.cos(t), math.sin(t), 0.0)
+        best = a if v_dot(a, best) >= 0 else v_mul(a, -1.0)
+    return best
+
+
+def upright_frame(axis):
+    """(to, back): turns points so the axis stands straight up, and back again."""
+    if abs(axis[2]) > 0.999:
+        return None, None
+    e3 = v_norm(axis)
+    e1 = v_norm(v_sub(Z, v_mul(e3, v_dot(Z, e3))))     # what was up stays up-ish (the arch's crown)
+    e2 = v_cross(e3, e1)
+
+    def to(p):
+        return (v_dot(p, e1), v_dot(p, e2), v_dot(p, e3))
+
+    def back(p):
+        return (e1[0] * p[0] + e2[0] * p[1] + e3[0] * p[2],
+                e1[1] * p[0] + e2[1] * p[1] + e3[1] * p[2],
+                e1[2] * p[0] + e2[2] * p[1] + e3[2] * p[2])
+    return to, back
+
+
+def stand_up(faces):
+    """(faces turned upright, back function or None if they already stand up)."""
+    to, back = upright_frame(find_axis(faces))
+    if to is None:
+        return faces, None
+    return [([to(p) for p in o], [[to(p) for p in h] for h in hs]) for o, hs in faces], back
+
+
+
+def end_planes(faces):
+    """The two end faces of an upright curved solid (a barrel stood up), as (point, outward normal)
+    pairs - slanted on a skew arch. Faces that face mostly up or down along the middle line."""
+    zs = [p[2] for o, hs in faces for p in o]
+    if not zs:
+        return []
+    mid = (min(zs) + max(zs)) / 2.0
+    ends = {False: [], True: []}
+    for o, hs in faces:
+        n = _newell3(o)
+        L = v_len(n)
+        if L < 1e-18 or abs(n[2]) / L < 0.3:
+            continue
+        c = v_mul(tuple(sum(p[i] for p in o) for i in range(3)), 1.0 / len(o))
+        ends[c[2] > mid].append((v_mul(n, 1.0 / L), L, c))
+    out = []
+    for hi, lst in ends.items():
+        if not lst:
+            continue
+        sgn = 1.0 if hi else -1.0
+        N = [0.0, 0.0, 0.0]
+        C = [0.0, 0.0, 0.0]
+        W = 0.0
+        for n, w_, c in lst:
+            if n[2] * sgn < 0:
+                n = v_mul(n, -1.0)
+            for i in range(3):
+                N[i] += n[i] * w_
+                C[i] += c[i] * w_
+            W += w_
+        out.append((v_mul(tuple(C), 1.0 / W), v_norm(tuple(N))))
+    return out
+
+
+def clip_brick(bf, p0, n):
+    """A brick (its faces) cut off flat at a plane, keeping the side behind the outward normal n,
+    with the cut end closed over. [] if it's all past the plane."""
+    def d(p):
+        return v_dot(v_sub(p, p0), n)
+    allp = [p for f in bf for p in f]
+    if all(d(p) <= 1e-9 for p in allp):
+        return bf
+    if all(d(p) >= -1e-9 for p in allp):
+        return []
+    out, cut = [], []
+    for f in bf:
+        q = []
+        for i in range(len(f)):
+            a, b = f[i], f[(i + 1) % len(f)]
+            da, db = d(a), d(b)
+            if da <= 0:
+                q.append(a)
+                if abs(da) < 1e-12:
+                    cut.append(a)
+            if (da < 0 < db) or (db < 0 < da):
+                t = da / (da - db)
+                x = tuple(a[j] + t * (b[j] - a[j]) for j in range(3))
+                q.append(x)
+                cut.append(x)
+        q = clean3(q)
+        if len(q) >= 3:
+            out.append(q)
+    pts = clean3(cut, ring=False)
+    if len(pts) >= 3:
+        c = v_mul(tuple(sum(p[i] for p in pts) for i in range(3)), 1.0 / len(pts))
+        u = v_norm(v_sub(pts[0], c))
+        w = v_cross(n, u)
+        pts.sort(key=lambda p: math.atan2(v_dot(v_sub(p, c), w), v_dot(v_sub(p, c), u)))
+        cap = pts
+        # face the same way round as the brick's own faces (outwards)
+        bc = v_mul(tuple(sum(p[i] for p in allp) for i in range(3)), 1.0 / len(allp))
+        f0 = bf[0]
+        f0c = v_mul(tuple(sum(p[i] for p in f0) for i in range(3)), 1.0 / len(f0))
+        outward_ccw = v_dot(_newell3(f0), v_sub(f0c, bc)) > 0
+        if (v_dot(_newell3(cap), n) > 0) != outward_ccw:
+            cap = cap[::-1]
+        out.append(cap)
+    return out
+
+
+def curved_only(faces):
+    """An arch stood upright, without its end faces and the flat faces it sits on at the
+    springings (the curve's measured from its curved faces alone). Stood up, x is the height."""
+    xs = [p[0] for o, hs in faces for p in o]
+    x_lo = min(xs) if xs else 0.0
+    size = (max(xs) - x_lo) if xs else 1.0
+    out = []
+    for o, hs in faces:
+        n = _newell3(o)
+        L = v_len(n)
+        if L <= 1e-18 or abs(n[2]) / L >= 0.3:
+            continue
+        if abs(n[0]) / L > 0.95 and max(p[0] for p in o) - x_lo < 0.01 * size:
+            continue                                  # a flat bed at a springing
+        out.append((o, hs))
+    return out or faces
+
+
+def clean3(pts, eps=1e-9, ring=True):
+    """Points with repeats taken out (next to each other in a ring, or anywhere if not a ring)."""
+    res = []
+    for p in pts:
+        if ring:
+            if res and max(abs(p[i] - res[-1][i]) for i in range(3)) < eps:
+                continue
+        elif any(max(abs(p[i] - r[i]) for i in range(3)) < eps for r in res):
+            continue
+        res.append(p)
+    if ring and len(res) > 1 and max(abs(res[0][i] - res[-1][i]) for i in range(3)) < eps:
+        res.pop()
+    return res
+
+
+
+def _set_out(Lc, L, J, half_first):
+    """Whole and half bricks along a course Lc long, starting with a whole brick (or a half),
+    ending with whichever of a whole or half fits best, the joints evened out to finish exactly.
+    Returns [(start, end)] measured from the course's start."""
+    Lh = (L - J) / 2.0
+    s0 = Lh if half_first else L
+    if Lc <= s0 + 1e-12:
+        return [(0.0, Lc)]
+    best = None
+    for e in (L, Lh):
+        m = max(0, int(round((Lc - s0 - e - J) / (L + J))))
+        for mm in (m - 1, m, m + 1):
+            if mm < 0:
+                continue
+            tot = s0 + mm * (L + J) + J + e
+            nj = mm + 1
+            jj = J + (Lc - tot) / nj
+            if jj < 0.3 * J:
+                continue
+            bad = abs(jj - J)
+            if best is None or bad < best[0]:
+                best = (bad, mm, e, jj)
+    if best is None:                          # too short for two: one piece
+        return [(0.0, Lc)]
+    _, mm, e, jj = best
+    out = [(0.0, s0)]
+    z = s0 + jj
+    for _k in range(mm):
+        out.append((z, z + L))
+        z += L + jj
+    out.append((z, Lc))
+    return out
+
+
+def lay_barrel_bricks(tg, v):
+    """Bricks on an arch (stood upright: the barrel's middle line straight up), laid the railway
+    way: each brick's length runs along the barrel, a course is a row along the barrel, and the
+    courses step round the curve from one springing to the other, spaced evenly so they finish at
+    both. Each brick stands square to the arch's surface (so where the arch meets an upright wall
+    the joint is level). Each course is set out from the arch's face with a whole or half brick
+    (in turn), finishing with a whole or half, the joints evened out; the end bricks run long to be
+    cut to a slanted (skew) face. Optionally carries on down the walls to the floor.
+    Returns (list of bricks, each a list of faces), info."""
+    L = max(10.0, v['brick_l']) * SCALE
+    H = max(5.0, v['brick_h']) * SCALE
+    D = max(1.0, v['brick_d']) * SCALE
+    J = max(0.2, v['joint']) * SCALE
+    lift = v['lift'] * SCALE
+    Jb = 0.0 if v.get('no_bed') else J
+    sides = {'outside': ['out'], 'inside': ['in'], 'both': ['out', 'in']}[v.get('faces', 'inside')]
+    zlo, zhi = tg.z0, tg.z0 + tg.h
+    zm = (zlo + zhi) / 2.0
+    cx, cy = tg.cx, tg.cy
+    planes = v.get('_planes') or []
+    lo_pl = [(p0, n) for p0, n in planes if n[2] < 0]
+    hi_pl = [(p0, n) for p0, n in planes if n[2] > 0]
+
+    def z_on(pl, x, y, dflt):
+        if not pl:
+            return dflt
+        p0, n = pl[0]
+        if abs(n[2]) < 1e-9:
+            return dflt
+        return p0[2] - (n[0] * (x - p0[0]) + n[1] * (y - p0[1])) / n[2]
+    out = []
+    n_c = 0
+
+    def course(c, pts, mid):
+        """One course along the barrel: pts = its section's four corners [(x, y)] as
+        (bottom front, top front, bottom back, top back); mid = its middle on the face."""
+        za = z_on(lo_pl, mid[0], mid[1], zlo)
+        zb = z_on(hi_pl, mid[0], mid[1], zhi)
+        if zb - za < 1e-9:
+            return
+        # how far a slanted face runs past the middle at the brick's corners
+        ext_a = max(0.0, max(za - z_on(lo_pl, p[0], p[1], za) for p in pts))
+        ext_b = max(0.0, max(z_on(hi_pl, p[0], p[1], zb) - zb for p in pts))
+        pieces = _set_out(zb - za, L, J, c % 2 == 1)
+        for i, (u0, u1) in enumerate(pieces):
+            z0_ = za + u0 - (ext_a + 1e-6 if i == 0 else 0.0)
+            z1_ = za + u1 + (ext_b + 1e-6 if i == len(pieces) - 1 else 0.0)
+            q = {}
+            for iu, zz in enumerate((z0_, z1_)):
+                for (ih, iw), p in zip(((0, 0), (1, 0), (0, 1), (1, 1)), pts):
+                    q[(iu, ih, iw)] = (p[0], p[1], zz)
+            bf = _box6(q)
+            bc = v_mul(tuple(sum(p[k] for p in q.values()) for k in range(3)), 1.0 / 8)
+            f0 = bf[0]
+            f0c = v_mul(tuple(sum(p[k] for p in f0) for k in range(3)), 0.25)
+            if v_dot(_newell3(f0), v_sub(f0c, bc)) < 0:
+                bf = [f[::-1] for f in bf]
+            out.append(bf)
+
+    for side in sides:
+        sg = -1.0 if side == 'in' else 1.0
+        # from springing to springing of this face
+        a0, a1 = (getattr(tg, 'in_a0', tg.a0), getattr(tg, 'in_a1', tg.a1)) if side == 'in' else (tg.a0, tg.a1)
+
+        def front(th, side=side, sg=sg):
+            r_ = tg.r(th, zm, side) + sg * lift
+            return (cx + r_ * math.cos(th), cy + r_ * math.sin(th))
+
+        def back_dir(th, side=side, sg=sg):
+            """Square to the surface, into the brick (towards the middle for the inside face)."""
+            # over a short stretch (a degree or so), so the measuring grid's steps don't tilt it;
+            # at a springing, from the arch's side of it only
+            e = max(1e-4, 1.5 * (a1 - a0) / max(1, tg.na - 1))
+            ta, tb = max(a0, th - e), min(a1, th + e)
+            if tb - ta < 1e-6:
+                ta, tb = th - e, th + e
+            pa, pb = front(ta), front(tb)
+            t = (pb[0] - pa[0], pb[1] - pa[1])
+            Lt = math.hypot(t[0], t[1]) or 1.0
+            n = (t[1] / Lt, -t[0] / Lt)
+            rad_ = (math.cos(th), math.sin(th))
+            if (n[0] * rad_[0] + n[1] * rad_[1]) * sg < 0:
+                n = (-n[0], -n[1])
+            return n
+        N = 600
+        angs = [a0 + (a1 - a0) * k / N for k in range(N + 1)]
+        ss = [0.0]
+        for k in range(N):
+            pa, pb = front(angs[k]), front(angs[k + 1])
+            ss.append(ss[-1] + math.hypot(pb[0] - pa[0], pb[1] - pa[1]))
+        S = ss[-1]
+        if S < H:
+            continue
+
+        def th_at(sv):
+            sv = min(max(sv, 0.0), S)
+            lo_, hi_ = 0, N
+            while hi_ - lo_ > 1:
+                m = (lo_ + hi_) // 2
+                if ss[m] <= sv:
+                    lo_ = m
+                else:
+                    hi_ = m
+            t = (sv - ss[lo_]) / ((ss[hi_] - ss[lo_]) or 1.0)
+            return angs[lo_] + t * (angs[hi_] - angs[lo_])
+        n = max(1, int(S / (H + Jb) + 0.5))
+        if S / n < H:
+            n = max(1, int(S / H))
+        step = S / n
+        gap = step - H
+        n_c = max(n_c, n)
+        for c in range(n):
+            t0, t1 = th_at(c * step + gap / 2.0), th_at(c * step + gap / 2.0 + H)
+            f0_, f1_ = front(t0), front(t1)
+            n0, n1 = back_dir(t0), back_dir(t1)
+            pts = [f0_, f1_, (f0_[0] + D * n0[0], f0_[1] + D * n0[1]), (f1_[0] + D * n1[0], f1_[1] + D * n1[1])]
+            course(c, pts, front(th_at(c * step + gap / 2.0 + H / 2.0)))
+        if side == 'in' and v.get('to_floor') and v.get('_floor_x') is not None:
+            # carry on down the walls under each side: straight down (-x, stood up) to the floor
+            fx = v['_floor_x']
+            for th_s, cs, dirn in ((a0, -1, -1), (a1, n, 1)):
+                sx, sy = front(th_s)
+                nd = back_dir(th_s)
+                into = 1.0 if nd[1] > 0 else -1.0             # into the opening
+                for k_ in range(1, 100000):
+                    c = cs + dirn * (k_ - 1)
+                    top_ = sx - gap / 2.0 - (k_ - 1) * step
+                    if top_ <= fx + 1e-7:
+                        break
+                    bot_ = max(top_ - H, fx)
+                    pts = [(bot_, sy), (top_, sy), (bot_, sy + into * D), (top_, sy + into * D)]
+                    course(c, pts, ((bot_ + top_) / 2.0, sy))
+                    if bot_ <= fx:
+                        break
+    if not out:
+        raise ValueError("The arch is too small for one course of bricks.")
+    return out, {'courses': n_c, 'bricks': len(out), 'span': math.degrees(tg.a1 - tg.a0), 'radius': tg.R,
+                 'bed': Jb, 'fit': True}
+
+
 FACES = [("outside", "Outside"), ("inside", "Inside"), ("both", "Outside and inside")]
+ARCH_LAY = [("along", "Along the barrel (railway arch)"), ("round", "Round the arch")]
 WALL_ENDS = [("stopped", "Stopped (whole and half bricks)"), ("toothed", "Toothed (every other course out)"),
              ("return", "Return round the end")]
 
@@ -1999,13 +2380,13 @@ DEFAULTS = dict(target='round', bottom=1200.0, top=800.0, height=6000.0, add_cor
                 joint=10.0, header_every=0, lay_h=0.0, height_fit='true', raise_=0.0, start=0.0, lift=0.01, detail=50.0, flat_max=300.0,
                 flip=False, scale_depth=False, level=True, no_bed=False, bevel=0.0, cant_corner=0.0,
                 cant_where='none', cant_course=30.0, corner='squint', faces='outside', ends='stopped',
-                fit_height=True)
+                fit_height=True, arch_lay='along', to_floor=False, floor=0.0)
 CANT_WHERE = [("none", "None"), ("top", "Top course"), ("bottom", "Bottom course"), ("both", "Top and bottom")]
 COURSE_LAY = [(True, "Level (step in up a taper)"), (False, "Lean back with the taper")]
 CORNERS = [("squint", "Special corner bricks"), ("bonded", "Bonded (run past the corner)")]
 # what a 'Bricks only' preset keeps
 BRICK_KEYS = ('brick_l', 'brick_h', 'brick_d', 'joint', 'header_every', 'level', 'no_bed', 'bevel',
-              'cant_corner', 'cant_where', 'cant_course', 'corner', 'faces', 'ends', 'fit_height')
+              'cant_corner', 'cant_where', 'cant_course', 'corner', 'faces', 'ends', 'fit_height', 'arch_lay', 'to_floor')
 
 # ---------------------------------------------------------------------------
 # Presets: your own setups, saved as files, and one of them as the default
@@ -2936,6 +3317,25 @@ class WrapDialog(QDialog):
         lab = QLabel("Wall ends")
         lab.setToolTip(self.cb_ends.toolTip())
         pages["Bricks"].addRow(lab, self.cb_ends)
+        self.cb_arch = QComboBox()
+        for k, t_ in ARCH_LAY:
+            self.cb_arch.addItem(t_, k)
+        self.cb_arch.setToolTip("Under an arch (a barrel lying on its side): Along the barrel - each brick's "
+                                "length runs through the arch and the courses step round the curve, like a "
+                                "railway arch. Round the arch - the bricks run round the curve, from one side "
+                                "to the other.")
+        _narrow(self.cb_arch, 16)
+        lab = QLabel("Arch bricks run")
+        lab.setToolTip(self.cb_arch.toolTip())
+        pages["Bricks"].addRow(lab, self.cb_arch)
+        self.cb_floor = QCheckBox("Arch: carry on down the walls to the floor")
+        self.cb_floor.setToolTip("Under an arch: the courses carry on straight down the walls below each "
+                                 "side of the arch (the piers) to the floor, in the same bond. The last course "
+                                 "is cut down to finish right at the floor.")
+        self.cb_floor.setChecked(bool(cur.get('to_floor', False)))
+        pages["Bricks"].addRow(self.cb_floor)
+        num("Bricks", 'floor', "Floor level", -100000.0, 100000.0, 0, " mm",
+            "How high the floor is (real mm; 0 = the model's ground). The walls' bricks stop here.")
         self.cb_cant = QComboBox()
         for k, t_ in CANT_WHERE:
             self.cb_cant.addItem(t_, k)
@@ -2981,7 +3381,7 @@ class WrapDialog(QDialog):
         pages["Pattern"].addRow(self.cb_depth)
         for cb, key in ((self.cb_target, 'target'), (self.cb_fit, 'fit'), (self.cb_hfit, 'height_fit'),
                         (self.cb_cant, 'cant_where'), (self.cb_corner, 'corner'), (self.cb_faces, 'faces'),
-                        (self.cb_ends, 'ends')):
+                        (self.cb_ends, 'ends'), (self.cb_arch, 'arch_lay')):
             for i in range(cb.count()):
                 if cb.itemData(i) == cur.get(key, DEFAULTS[key]):
                     cb.setCurrentIndex(i)
@@ -3031,9 +3431,9 @@ class WrapDialog(QDialog):
         for s_ in list(self.sp.values()) + [self.sp_hdr]:
             s_.valueChanged.connect(lambda *_: self._redraw.start(150))
         for cb_ in (self.cb_target, self.cb_source, self.cb_level, self.cb_cant, self.cb_corner, self.cb_faces,
-                    self.cb_ends):
+                    self.cb_ends, self.cb_arch):
             cb_.currentIndexChanged.connect(lambda *_: self._redraw.start(150))
-        for ck_ in (self.cb_nobed, self.cb_core, self.cb_fith):
+        for ck_ in (self.cb_nobed, self.cb_core, self.cb_fith, self.cb_floor):
             ck_.toggled.connect(lambda *_: self._redraw.start(150))
         self.cb_nobed.toggled.connect(self.changed)
         self.views.currentChanged.connect(lambda *_: self._redraw.start(0))
@@ -3080,6 +3480,9 @@ class WrapDialog(QDialog):
         self.cb_corner.setEnabled(bricks and self.cb_target.currentData() != 'round')
         self.cb_faces.setEnabled(bricks and self.cb_target.currentData() == 'mesh')
         self.cb_ends.setEnabled(bricks and self.cb_target.currentData() == 'mesh')
+        self.cb_arch.setEnabled(bricks and self.cb_target.currentData() == 'mesh')
+        self.cb_floor.setEnabled(bricks and self.cb_target.currentData() == 'mesh')
+        self.sp['floor'].setEnabled(bricks and self.cb_target.currentData() == 'mesh' and self.cb_floor.isChecked())
         try:
             name = self.cb_preset.currentData()
             self.b_psave.setEnabled(bool(name))
@@ -3175,7 +3578,7 @@ class WrapDialog(QDialog):
             self.sp_hdr.setValue(int(cur['header_every']))
         for cb, key in ((self.cb_target, 'target'), (self.cb_fit, 'fit'), (self.cb_hfit, 'height_fit'),
                         (self.cb_cant, 'cant_where'), (self.cb_corner, 'corner'), (self.cb_faces, 'faces'),
-                        (self.cb_ends, 'ends'), (self.cb_source, 'source')):
+                        (self.cb_ends, 'ends'), (self.cb_source, 'source'), (self.cb_arch, 'arch_lay')):
             if key in cur:
                 i = cb.findData(cur[key])
                 if i >= 0:
@@ -3183,7 +3586,7 @@ class WrapDialog(QDialog):
         if 'level' in cur:
             self.cb_level.setCurrentIndex(0 if cur['level'] else 1)
         for cb, key in ((self.cb_core, 'add_core'), (self.cb_flip, 'flip'), (self.cb_depth, 'scale_depth'),
-                        (self.cb_nobed, 'no_bed'), (self.cb_fith, 'fit_height')):
+                        (self.cb_nobed, 'no_bed'), (self.cb_fith, 'fit_height'), (self.cb_floor, 'to_floor')):
             if key in cur:
                 cb.setChecked(bool(cur[key]))
         self.changed()
@@ -3292,9 +3695,9 @@ class WrapDialog(QDialog):
             return cache[1]
         tg = None
         try:
-            tf = group_faces(g)
+            tf, _back = stand_up(group_faces(g))
             if is_open_wall(tf):
-                tg = ArcTarget(tf)
+                tg = (ArcTarget(curved_only(tf), both_faces=True) if _back is not None else ArcTarget(tf))
         except Exception:
             tg = None
         self._arc_cache = (g, tg)
@@ -3323,14 +3726,22 @@ class WrapDialog(QDialog):
                  source=self.cb_source.currentData(), header_every=int(self.sp_hdr.value()),
                  height_fit=self.cb_hfit.currentData(), add_core=self.cb_core.isChecked(),
                  flip=self.cb_flip.isChecked(), scale_depth=self.cb_depth.isChecked(),
-                 level=bool(self.cb_level.currentData()), no_bed=self.cb_nobed.isChecked(),
+                 level=bool(self.cb_level.currentData()), no_bed=self.cb_nobed.isChecked(), to_floor=self.cb_floor.isChecked(),
                  cant_where=self.cb_cant.currentData(), corner=self.cb_corner.currentData(),
                  faces=self.cb_faces.currentData(), ends=self.cb_ends.currentData(),
+                 arch_lay=self.cb_arch.currentData(),
                  fit_height=self.cb_fith.isChecked())
         for k, s in self.sp.items():
             v[k] = float(s.value())
         v['raise'] = v['raise_']
         return v
+
+
+def remember_setup(v):
+    """Keeps the setup (in memory and in the settings file) so Wrap opens with it next time."""
+    keep = {k: val for k, val in v.items() if not k.startswith('_') and isinstance(val, (int, float, str, bool))}
+    WrapTool._saved = dict(keep)
+    _ui_settings_save(last_setup=keep)
 
 
 class VertexWrapper(QVector3D):
@@ -3364,11 +3775,18 @@ class WrapTool(Tool):
         if dflt:
             start.update(preset_values(dflt))
             start['_preset'] = dflt
-        start.update(WrapTool._saved or {})
+        # the setup you had last time (kept in the settings file, so it's there after a restart)
+        last = WrapTool._saved or _ui_settings().get('last_setup') or {}
+        if isinstance(last, dict):
+            start.update(last)
         dlg = WrapDialog(viewport, self, start)
         WrapTool._dialog = dlg
 
         def closed(*_):
+            try:
+                remember_setup(dlg.values())
+            except Exception:
+                pass
             WrapTool._dialog = None
         dlg.finished.connect(closed)
         eddy_window(dlg, PLUGIN_NAME, EDDY_TIPS, place=True)  # eddy-window
@@ -3379,7 +3797,7 @@ class WrapTool(Tool):
 
     def do_wrap(self, dlg):
         v = dlg.values()
-        WrapTool._saved = dict(v)
+        remember_setup(v)
         if v['source'] == 'bricks':
             return self.do_bricks(dlg, v)
         if dlg.pattern is None:
@@ -3454,14 +3872,41 @@ class WrapTool(Tool):
             if v['target'] == 'mesh':
                 if dlg.need_target() is None:
                     return
-                tf = group_faces(dlg.target)
+                # a curve lying on its side (an arch barrel) is turned upright, bricked, turned back
+                tf, back = stand_up(group_faces(dlg.target))
                 name = "Brickwork - " + group_label(dlg.target)
                 if is_open_wall(tf):
                     # a wall that goes only part way round: along it, end to end
-                    target = dlg.arc_target() or ArcTarget(tf)
-                    faces, info = lay_arc_bricks(target, v)
+                    target = dlg.arc_target() or (ArcTarget(curved_only(tf), both_faces=True) if back is not None else ArcTarget(tf))
+                    if back is not None:
+                        # an arch: every brick cut off at the barrel's ends (slanted on a skew arch)
+                        if v.get('arch_lay', 'along') == 'along':
+                            v2 = dict(v)
+                            v2['_floor_x'] = v.get('floor', 0.0) * SCALE    # stood up, x is the height
+                            v2['_planes'] = end_planes(tf)                    # set out from the faces
+                            each, info = lay_barrel_bricks(target, v2)
+                        else:
+                            v2 = dict(v)
+                            v2['_bricks_out'] = each = []
+                            faces, info = lay_arc_bricks(target, v2)
+                        planes = end_planes(tf)
+                        kept = []
+                        for bf in each:
+                            for p0, n in planes:
+                                bf = clip_brick(bf, p0, n)
+                                if not bf:
+                                    break
+                            if bf:
+                                kept.append(bf)
+                        faces = [[back(p) for p in q] for bf in kept for q in bf]
+                        info['bricks'] = len(kept)
+                        info['on_side'] = v.get('arch_lay', 'along')
                     return self._bricks_done(dlg, v, name, faces, info, None)
                 target = MeshTarget(tf, ignore=v['ignore'] * SCALE)
+                if back is not None:
+                    faces, info = lay_bricks(target, v)
+                    faces = [[back(p) for p in q] for q in faces]
+                    return self._bricks_done(dlg, v, name, faces, info, None)
             else:
                 # a chimney made to size: beside a picked pattern if there is one, else at the origin
                 cx = cy = 0.0
@@ -3500,6 +3945,11 @@ class WrapTool(Tool):
         else:
             msg = "Laid %d bricks in %d courses, %d faces. Every course is a whole number of bricks, so there's " \
                   "no seam." % (info['bricks'], info['courses'], nf)
+        if info.get('on_side'):
+            msg += (" It's an arch (lying on its side): \"inside\" is the underside, the bricks %s, and they're "
+                    "cut off at the arch's two faces (slanted on a skew arch)." % (
+                        "run along the barrel with the courses stepping round the curve"
+                        if info['on_side'] == 'along' else "run round the curve"))
         if info.get('fit'):
             msg += " Bed joints %.1f mm, so the courses finish at the top." % (info.get('bed', 0.0) / SCALE)
         warn = bool(self._errors[0])
