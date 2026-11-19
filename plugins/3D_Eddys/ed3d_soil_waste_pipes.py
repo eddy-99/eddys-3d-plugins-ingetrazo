@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Soil & Waste Pipes"
-VERSION = "3"             # shown in the window title, so you can tell which file is loaded
+VERSION = "4.1"           # 4.1: both sides of each pipe clip show (one side was inside out); 4.0: the sink waste meets the boss again (3.9 pushed its end off the wall); 3.9: clips all the way up the stack and along the waste (they were going on the wrong wall); 3.7: clips all the way up a stack stood off on quoins; 3.6: bigger clips you can see, clips come back (only left off where the stack stands right out past the eaves), and the report counts them; 3.5: saddle pipe clips (strap round the pipe, fixed to the wall each side); 3.4: no clips on the stack above the wall top; 3.3: the vent stands right out past the eaves; 3.2: a stack stepping out round the eaves stays out and vents just above them; 3.1: a waste marked from a stack gets a boss and dog-legs into it; shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -129,7 +129,7 @@ BUILTIN_PRESETS = {
 }
 
 SOCKET_LEN = 40.0        # straight ends on bends
-CLIP_LEN = 25.0
+CLIP_LEN = 45.0
 BRACKET_LEN = 25.0
 SOCKET_COUPLER_LEN = 70.0
 BOSS_LEN = 80.0
@@ -584,7 +584,7 @@ def _build_part(key, s):
     elif kind in ('socket', 'clip', 'boss'):
         L = {'socket': SOCKET_COUPLER_LEN, 'clip': CLIP_LEN * (1 + (m - 1) / 2), 'boss': BOSS_LEN}[kind]
         g = fit_gap(s, 0.3 if kind == 'clip' else 0.5)
-        t = {'socket': v['p_wall'] * 1.5 * m, 'clip': 3.0 * m, 'boss': v['p_wall'] * 1.5 * m}[kind]
+        t = {'socket': v['p_wall'] * 1.5 * m, 'clip': 5.0 * m, 'boss': v['p_wall'] * 1.5 * m}[kind]
         if kind == 'socket' and detailed(s):
             L = 2 * socket_dims(size)[2]
         x0, x1 = -L / 2 - s['offset'], L / 2 - s['offset']
@@ -602,20 +602,30 @@ def _build_part(key, s):
         r_out = size / 2 + g + t
         d, e = roll_dirs(s['bend_dir'])
         if kind == 'clip':
-            hw = 8 * m
-            pt = 4 * m
+            # a saddle clip: a strap round the pipe, both sides running straight back to the
+            # wall, with a fixing foot on each side flat on the wall
             reach = s.get('reach')           # pipe middle to the wall, when it is known
-            back = max(r_out + pt + 2.0, reach) if reach else r_out + 35 + pt
-            sol.append(rect_sweep(x0, x1, d, e, r_out - 1, back - pt, hw))
-            sol.append(rect_sweep(x0 - 10, x1 + 10, d, e, back - pt, back, 25 + hw))
-            if detailed(s):
-                # hinged clip: a hinge knuckle on one side, bolt ears on the other
-                ee = (0.0, e[0], e[1])
-                rk = 3.0 * m
-                kc = v_mul(ee, r_out + rk * 0.6)
-                sol.append(revolve_profile(kc, X, [(x0, 0.6), (x0, rk), (x1, rk), (x1, 0.6)], n=12))
-                me = (-e[0], -e[1])
-                sol.append(rect_sweep(x0, x1, me, (d[0], d[1]), r_out - 1, r_out + 9 * m, 3.0 * m))
+            back = max(r_out + 4.0 * m, reach) if reach else r_out + 35 + 4 * m
+            tl = 5.0 * m                     # strap thickness
+            tf = 5.0 * m                     # foot thickness
+            fw = 25.0 * m                    # how far each foot reaches out sideways
+
+            def P(dd, ee, sg):
+                return (d[0] * dd + e[0] * ee * sg, d[1] * dd + e[1] * ee * sg)
+            for sg in (1.0, -1.0):
+                # the far side is a mirror image, so its corners go round the other way
+                # (or its faces would point inwards and it wouldn't show)
+                strap = [P(0.0, r_out - tl, sg), P(back, r_out - tl, sg), P(back, r_out, sg), P(0.0, r_out, sg)]
+                foot = [P(back - tf, r_out, sg), P(back, r_out, sg), P(back, r_out + fw, sg), P(back - tf, r_out + fw, sg)]
+                if sg < 0:
+                    strap, foot = strap[::-1], foot[::-1]
+                sol.append(block(x0, x1, strap))
+                sol.append(block(x0, x1, foot))
+                if detailed(s):
+                    # a screw head on each foot
+                    sc = v_add((xc_ := (x0 + x1) / 2, 0.0, 0.0), (0.0, *P(back - tf, r_out + fw * 0.55, sg)))
+                    sol.append(revolve_profile(sc, (0.0, -d[0], -d[1]),
+                                               [(0.0, 0.3), (0.0, 5.0 * m), (2.0 * m, 5.0 * m), (2.0 * m, 0.3)], n=12))
         if kind == 'boss':
             # a waste-size spigot out of the side of the soil pipe
             wv = view(s, 'waste')
@@ -1341,6 +1351,14 @@ def route_lines(scene, selection):
 
 
 ROUTE_STATS = {'limit': False}
+DEBUG_LOG = []
+
+
+def _dbg(*a):
+    try:
+        DEBUG_LOG.append(" ".join(str(x) for x in a))
+    except Exception:
+        pass
 
 
 def route_faces(scene, selection, near=None, limit=3000000, upright_only=True):
@@ -1808,6 +1826,74 @@ def wall_top_at(p, w, faces, near=0.15):
     return top
 
 
+def _r_branches(chains, tol=0.25):
+    """Splits marked soil runs into stacks and branches. A branch is a run along the wall
+    (no real rise or fall) with one end on an upright stretch of another run - a sink
+    waste going into the stack. Returns (stack chains, [(branch points from the stack end,
+    stack chain, segment index)])."""
+    def flat(pts):
+        segs = list(zip(pts[:-1], pts[1:]))
+        return segs and all(abs(b[2] - a[2]) < 0.3 * max(v_len(v_sub(b, a)), 1e-9) for a, b in segs)
+
+    def upright(a, b):
+        L = v_len(v_sub(b, a))
+        return L > 1e-6 and abs(b[2] - a[2]) > 0.9 * L
+
+    stacks, branches = [], []
+    flags = [(not closed) and len(pts) >= 2 and flat([tuple(p) for p in pts]) for pts, closed in chains]
+    for ci, (pts, closed) in enumerate(chains):
+        if not flags[ci]:
+            stacks.append((pts, closed))
+            continue
+        P = [tuple(p) for p in pts]
+        hit = None
+        for E, rev in ((P[0], False), (P[-1], True)):
+            for cj, (qts, qc) in enumerate(chains):
+                if cj == ci or flags[cj]:
+                    continue
+                Q = [tuple(q) for q in qts]
+                for k, (a, b) in enumerate(zip(Q[:-1], Q[1:])):
+                    if not upright(a, b):
+                        continue
+                    lo, hi = min(a[2], b[2]), max(a[2], b[2])
+                    if not (lo - 0.05 <= E[2] <= hi + 0.05):
+                        continue
+                    if math.hypot(E[0] - a[0], E[1] - a[1]) < tol:
+                        hit = (list(reversed(P)) if rev else P, Q, k)
+                        break
+                if hit:
+                    break
+            if hit:
+                break
+        if hit:
+            branches.append(hit)
+        else:
+            stacks.append((pts, closed))
+    return stacks, branches
+
+
+def _r_vent_out(Q, walls, wb, zcap, clear=0.3):
+    """A stack that steps out round the eaves stays out: straight up from there a little way
+    to clear them, with the vent on top - no bending back in over the roof.
+    Q is top first; walls[i] goes with the stretch Q[i]-Q[i+1]."""
+    if len(Q) < 3 or zcap is None or Q[0][2] < zcap + 0.05:
+        return Q, walls
+    n, d = wb
+    us = [v_dot(n, q) - d for q in Q]
+    base = us[0]
+    k = next((i for i in range(1, len(Q)) if us[i] > base + 0.02), None)
+    if k is None or k >= len(Q) - 1 or Q[k][2] < zcap - 0.05:
+        return Q, walls                     # not stepping out round the eaves at the top
+    j = k                                   # the outermost point of that step (fully out)
+    while j + 1 < len(Q) - 1 and us[j + 1] > base + 0.02:
+        j += 1
+    umax = max(us[k:j + 1])
+    k = next(i for i in range(k, j + 1) if us[i] > umax - 0.003)
+    top = (Q[k][0], Q[k][1], max(Q[k][2] + clear, zcap + 0.45))      # clear of the eaves
+    nw = ([walls[k]] if k < len(walls) else []) + list(walls[k:])
+    return [top] + list(Q[k:]), nw
+
+
 def build_soil_route(chains, faces, s, all_faces=None):
     """Soil or waste pipe runs along the lines (each line a run, top first), with bends where
     the line turns, socket collars, clips to the wall and the ends finished off.
@@ -1833,6 +1919,10 @@ def build_soil_route(chains, faces, s, all_faces=None):
         bot_k = 'none'
     parts, notes, nruns, nowall = [], [], 0, 0
     navoid = 0
+    branches = []
+    if system == 'soil':
+        # a waste marked from the stack: a boss on the stack, the waste dog-legging into it
+        chains, branches = _r_branches(chains)
     for pts, closed in chains:
         P = [tuple(p) for p in pts] + ([tuple(pts[0])] if closed else [])
         if len(P) < 2:
@@ -1840,8 +1930,18 @@ def build_soil_route(chains, faces, s, all_faces=None):
         if P[-1][2] > P[0][2] + 1e-6:
             P = list(reversed(P))                         # top first
         walls = [segment_wall(a, b, faces, flip=flip) for a, b in zip(P[:-1], P[1:])]
+        zw_run = None                               # top of the wall the run is on
+        if system == 'soil':
+            try:
+                w0 = next((w for w in reversed(walls) if w), None)
+                zw_run = wall_top_at(P[-1], w0, faces) if w0 else None
+            except Exception:
+                zw_run = None
         if not any(walls):
             nowall += 1
+        wall0 = next((w for w in walls if w), None) or s.get('_wall')   # the real wall the run was drawn on
+        if wall0 is not None and system == 'soil' and '_stack_wall' not in s:
+            s = dict(s, _stack_wall=wall0)
         Q = []
         for j in range(len(P)):
             cons = [(walls[k][0], sp * MM) for k in (j - 1, j) if 0 <= k < len(walls) and walls[k]]
@@ -1866,12 +1966,17 @@ def build_soil_route(chains, faces, s, all_faces=None):
                             u_ = v_dot(wb_[0], a_) - wb_[1]
                             walls.append((wb_[0], wb_[1] + u_ - sp * MM))
                         navoid += 1
+                        if system == 'soil' and top_k == 'vent':
+                            Q, walls = _r_vent_out(Q, walls, wb_, sa.get('_zcap'))
                     elif why:
                         notes.append(why)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 print("%s: stepping round things: %s" % (PLUGIN_NAME, e))
+        # how far out the run hugs its wall (stepped round quoins or not); clips go on anything
+        # near that, and are left off only where it stands right out (past the eaves)
+        dhug = min((v_dot(wall0[0], q) - wall0[1]) / MM for q in Q) if wall0 is not None else 0.0
         pieces = split_lengths(route_pieces(Q, R, lead), maxlen)
         if not pieces:
             notes.append("a line was too short for a pipe")
@@ -1917,12 +2022,30 @@ def build_soil_route(chains, faces, s, all_faces=None):
                 parts.append(("%s length - %s x %g mm" % ("Soil pipe" if system == 'soil' else "Waste pipe",
                                                           sname, round(L)), sols, tags))
                 w = wall_of(pc[2])
-                if s.get('auto_fix', True) and w and abs(v_dot(T0, w[0])) < 0.5:
+                if wall0 is not None and abs(v_dot(T0, wall0[0])) < 0.5 and \
+                        (v_dot(wall0[0], pc[1][0]) - wall0[1]) / MM <= dhug + 100.0:
+                    w = wall0                           # hugging the wall it was drawn on: clip to that
+                _dbg(system, "piece seg", pc[2], "L", round(L), "z", round(pc[1][0][2], 3), round(pc[1][-1][2], 3),
+                     "wall", w and (tuple(round(c, 3) for c in w[0]), round(w[1], 4)),
+                     "Tn", w and round(v_dot(T0, w[0]), 3),
+                     "reach", w and round((v_dot(w[0], pc[1][0]) - w[1]) / MM, 1),
+                     "real", wall0 and round((v_dot(wall0[0], pc[1][0]) - wall0[1]) / MM, 1), "dhug", round(dhug, 1),
+                     "fix", fixing_positions(L, s['s_spacing'] if system == 'soil' else s['w_spacing']))
+                if not (s.get('auto_fix', True) and w and abs(v_dot(T0, w[0])) < 0.5):
+                    ROUTE_STATS['clip_nowall'] = ROUTE_STATS.get('clip_nowall', 0) + 1
+                if s.get('auto_fix', True) and w and abs(v_dot(T0, w[0])) < 0.5 and L >= 150.0:
                     reach = (v_dot(w[0], pc[1][0]) - w[1]) / MM
+                    if reach <= size / 2:
+                        ROUTE_STATS['clip_close'] = ROUTE_STATS.get('clip_close', 0) + 1
                     if reach > size / 2:
                         tgt = end_target(pc[1][-1], T0, route_up(T0, v_mul(w[0], -1.0)), 'out', system)
                         spacing = s['s_spacing'] if system == 'soil' else s['w_spacing']
                         for x in fixing_positions(L, spacing):
+                            f_ = (x / L) if L else 0.0
+                            pt = v_add(pc[1][0], v_mul(v_sub(pc[1][-1], pc[1][0]), f_))
+                            if wall0 is not None and (v_dot(wall0[0], pt) - wall0[1]) / MM > dhug + 100.0:
+                                ROUTE_STATS['clip_out'] = ROUTE_STATS.get('clip_out', 0) + 1
+                                continue                    # stood right out (past the eaves): nothing to fix to
                             cw, _ = plan_part(pre + 'clip', dict(s, offset=L - x, bend_dir=0.0, reach=reach), tgt)
                             clips += cw
                             nclip += 1
@@ -1939,13 +2062,73 @@ def build_soil_route(chains, faces, s, all_faces=None):
             parts.append(("%s - %s" % (PART_INFO[pre + bot_k][0], sname), w, {}))
         if clips:
             parts.append(("Pipe clips x%d - %s" % (nclip, sname), clips, {}))
+    nboss = 0
+    for P, Q, k in branches:
+        try:
+            got = _r_boss_waste(P, Q, k, faces, s, sp, sname, flip)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            got = None
+            notes.append("a waste into the stack could not be built (%s)" % e)
+        if got:
+            parts += got
+            nboss += 1
+        elif got is not None:
+            notes.append("a waste was too short to reach the stack's boss")
     if nowall:
         notes.append("%d line%s had no wall face under it, so the pipe runs right on the line, "
                      "with no clips" % (nowall, "" if nowall == 1 else "s"))
     what = "%d %s run%s" % (nruns, SYSTEM_NAMES[system], "" if nruns == 1 else "s")
+    ncl = sum(int(p_[0].split(' x', 1)[1].split(' ')[0]) for p_ in parts
+              if p_[0].startswith("Pipe clips x") and p_[0].split(' x', 1)[1].split(' ')[0].isdigit())
+    what += ", %d clip%s" % (ncl, "" if ncl == 1 else "s")
     if navoid:
         what += ", %d stepped round something in the way" % navoid
+    if nboss:
+        what += ", %d waste%s into %s boss" % (nboss, "" if nboss == 1 else "s", "a" if nboss == 1 else "its")
     return parts, what, notes
+
+
+def _r_boss_waste(P, Q, k, faces, s, sp, sname, flip):
+    """A boss on the stack where a marked waste starts on it, and the waste pipe from the far
+    end along the wall on its own clips, dog-legging out into the boss outlet.
+    P: the waste line from the stack end; Q, k: the stack line and the stretch it meets.
+    Returns the parts, [] if the waste is too short, or None if it can't be placed."""
+    E, F = P[0], P[-1]
+    a, b = Q[k], Q[k + 1]
+    t = (E[2] - a[2]) / (b[2] - a[2]) if abs(b[2] - a[2]) > 1e-9 else 0.0
+    J = v_add(a, v_mul(v_sub(b, a), max(0.0, min(1.0, t))))
+    w = segment_wall(a, b, faces, flip=flip)
+    Jc = v_add(J, _r_offset([(w[0], sp * MM)])) if w else J
+    Fh = (F[0], F[1], J[2])                               # the waste runs level
+    D = v_norm((Fh[0] - J[0], Fh[1] - J[1], 0.0))
+    if v_len(D) < 0.5:
+        return None
+    bw, btags = plan_part('s_boss', dict(s, offset=0.0, bend_dir=0.0), end_target(Jc, Z, D, 'out', 'soil'))
+    out = [("Boss connector - %s" % sname, bw, {})]
+    if 'boss' not in btags:
+        return out
+    B = tuple(btags['boss']['c'])                         # the boss outlet, where the waste goes in
+    wsz = s['w_size']
+    into = max(60.0, 1.5 * wsz) * MM                      # straight into the boss
+    dog = max(120.0, 3.0 * wsz) * MM                      # the dog leg out from the wall
+    reach = v_dot(v_sub(B, J), D)
+    dist = v_dot(v_sub(Fh, J), D)
+    if dist < reach + into + dog + 0.05:
+        return []
+    M = v_add(B, v_mul(D, into))
+    K = v_add(Fh, v_mul(D, (reach + into + dog) - dist))
+    s2 = dict(s, r_system='waste', r_top='none', r_bot='none', r_avoid=False)
+    wn = w or s.get('_stack_wall')
+    if wn:
+        s2['_wall'] = (wn[0], v_dot(wn[0], F))            # the wall the waste was drawn on (for its clips)
+        # the waste stands off that wall on its clips; the dog leg takes it out to the boss
+        off = v_mul(wn[0], (clip_standoff(s, 'waste') + s['wall_gap']) * MM)
+        Fh, K = v_add(Fh, off), v_add(K, off)
+    # the points are placed already, so no wall faces: the end has to land right in the boss
+    wparts, _w, _n = build_soil_route([([Fh, K, M, B], False)], [], s2, None)
+    return out + wparts
 
 
 # ---------------------------------------------------------------------------
@@ -4020,6 +4203,9 @@ class SoilWastePipesTool(Tool):
                                     "for a soil stack, out of the wall and down for a waste.")
             return
         ROUTE_STATS['limit'] = False
+        for k_ in ('clip_out', 'clip_nowall', 'clip_close'):
+            ROUTE_STATS[k_] = 0
+        del DEBUG_LOG[:]
         box = _r_box(chains, pad=2.5)
         all_faces = []
         try:

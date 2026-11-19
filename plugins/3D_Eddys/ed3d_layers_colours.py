@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPu
                                QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "5"
+VERSION = "5.5"   # 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -225,8 +225,8 @@ def _pick_row(palette, names, plugin):
         low = (nm or "").lower()
         for row in palette:
             only = _words(row[4])
-            if only and (plugin or "").lower() not in only:
-                continue
+            if only and plugin and plugin.lower() not in only:
+                continue                # (when it isn't known which plugin made it, any row will do)
             if any(re.search(r"\b%s(s|es)?\b" % re.escape(w), low) for w in _words(row[3])):
                 return row
     fb = PLUGIN_FALLBACK.get(plugin or "")
@@ -241,13 +241,35 @@ def colour_group(scene, group, plugin, palette, repaint=False):
     a colour or material are left alone unless `repaint`. Returns the number of faces painted."""
     cache = {}
     count = 0
+    by_mat = {MAT_PREFIX + r[0]: r for r in palette} if repaint else {}
+    if repaint:
+        mats = getattr(scene, 'materials', None) or {}
+        for r in palette:                    # the document's own materials take the new colours too
+            if MAT_PREFIX + r[0] in mats:
+                _paint_attrs(scene, r, True)
 
-    def walk(g, names):
+    def walk(g, names, pl):
         nonlocal count
         names = [getattr(g, 'name', '') or ''] + names
+        # a house built by several plugins: each part goes by the plugin its own group came
+        # from (a window's group, a door's group...), not just the group that was selected
+        if not plugin:                     # (a plugin building its own work says which it is)
+            pl = pl or _plugin_of(g)
         faces = _faces(g)
+        if faces and repaint and by_mat:
+            # faces already wearing one of our colours (a window built into a wall, say) take
+            # the new colour of that material, whatever their group is called
+            for f in faces:
+                a = getattr(f, 'attrs', None) or {}
+                r = by_mat.get(a.get('mat'))
+                if r is not None:
+                    a = dict(a)
+                    a['color'] = tuple(c / 255.0 for c in r[1])
+                    a['opacity'] = float(r[2])
+                    f.attrs = a
+                    count += 1
         if faces:
-            row = _pick_row(palette, names, plugin)
+            row = _pick_row(palette, names, pl)
             if row is not None:
                 if row[0] not in cache:
                     cache[row[0]] = _paint_attrs(scene, row, repaint)
@@ -257,14 +279,16 @@ def colour_group(scene, group, plugin, palette, repaint=False):
                     if not repaint and ('color' in a or 'mat' in a or 'texture' in a):
                         continue
                     if repaint:
-                        a.pop('texture', None)
+                        # the old colour has to go, or it still shows over the new material
+                        for k in ('texture', 'color', 'mat', 'opacity'):
+                            a.pop(k, None)
                     a.update(paint)
                     f.attrs = a
                     count += 1
         for c in _children(g):
-            walk(c, names)
+            walk(c, names, pl)
 
-    walk(group, [])
+    walk(group, [], plugin)
     return count
 
 
@@ -297,6 +321,64 @@ def _plugin_of(group):
         if word in low:
             return plugin
     return ""
+
+
+def _paint_command(mutate, meshes):
+    """One undo step for recolouring faces already in the model. It keeps the meshes as they
+    were and as they end up (like IngeTrazo's own tools do), and tells the view the model has
+    changed so the new colours show straight away."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = None
+    if Command is None or not all(hasattr(m, 'capture_state') for m in meshes):
+        return SnapshotImport(mutate)
+
+    class PaintCommand(Command):
+        def __init__(self):
+            self.before = self.after = None
+
+        @staticmethod
+        def _bump(scene):
+            # colours changed outside IngeTrazo's own mesh edits: tell the view to re-read them
+            # (what IngeTrazo's Paint tool does too), or the old colours stay on screen
+            try:
+                from core.history import _dirty_group_chunks
+                _dirty_group_chunks(scene)
+            except Exception:
+                for g in getattr(scene, 'groups', None) or []:
+                    m = getattr(g, 'mesh', None)
+                    for flag in ('_chunk_dirty', '_attrs_dirty'):
+                        try:
+                            setattr(m, flag, True)
+                        except Exception:
+                            pass
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def do(self, scene):
+            if self.after is None:
+                self.before = [(m, m.capture_state()) for m in meshes]
+                try:
+                    mutate(scene)
+                except BaseException:
+                    for m, s in self.before:
+                        m.restore_state(s)
+                    raise
+                self.after = [(m, m.capture_state()) for m in meshes]
+            else:
+                for m, s in self.after:
+                    m.restore_state(s)
+            self._bump(scene)
+
+        def undo(self, scene):
+            for m, s in self.before:
+                m.restore_state(s)
+            self._bump(scene)
+
+    return PaintCommand()
 
 
 # ---------------------------------------------------------------------------
@@ -534,11 +616,22 @@ class LayersColoursDialog(QDialog):
                     ensure_layer(sc, layer)
                     g.layer = layer
                 if colour:
-                    done['faces'] += colour_group(sc, g, plugin, s['palette'], repaint=repaint)
+                    done['faces'] += colour_group(sc, g, "", s['palette'], repaint=repaint)
                 done['groups'] += 1
 
+        meshes = []
+
+        def gather(g):
+            m = getattr(g, 'mesh', None)
+            if m is not None and all(m is not x for x in meshes):
+                meshes.append(m)
+            for c in _children(g):
+                gather(c)
+
+        for g in sel:
+            gather(g)
         try:
-            vp.history.execute(SnapshotImport(mutate))
+            vp.history.execute(_paint_command(mutate, meshes))
         except Exception as e:
             QMessageBox.warning(self, PLUGIN_NAME, "Could not do it:\n%s" % e)
             return
