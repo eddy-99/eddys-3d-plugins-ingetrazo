@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.10"  # 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.12"  # 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -1449,6 +1449,8 @@ VIDEOS = {
     "3D Period Doors": "https://youtu.be/FU5quEtEPTQ",
     "3D Chimneys": "https://youtu.be/ltoIpYbRxhQ",
     "3D Roof Tiles": "https://youtu.be/atuQ2b-Nx6k",
+    "3D Brick & Block Studio": "https://youtu.be/acH3uugEmXI",
+    "3D Gutters & Downpipes": "https://youtu.be/s0yIkavaSiA",
 }
 
 
