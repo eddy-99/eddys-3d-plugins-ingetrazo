@@ -12,46 +12,62 @@
 
 """
 3D Check for Updates - new versions of Eddy's 3D plugins, and new plugins, in one click
-Looks at Eddy's plugins page on GitHub and compares it with the plugins on this computer:
-  - Updates ready: a plugin you have, with a newer version on GitHub
+Reads IngeTrazo's extension catalog (the same list the Extensions window shows) and
+compares Eddy's entries in it with the ones installed on this computer:
+  - Updates ready: a plugin you have, with a newer version in the catalog
   - New plugins: ones you haven't got yet
-Tick the ones you want and click 'Update ticked': they're downloaded and put in your plugins
-folder (your old copy is kept in Documents\\IngeTrazo Presets\\Plugin backups). Restart
-IngeTrazo to use them.
-It can also check by itself when IngeTrazo starts (at most once a day) and tell you when
-something new is ready. Ctrl+Alt+Shift+U opens it.
+Tick the ones you want and click 'Update ticked': each one is downloaded from the address
+the catalog gives, checked against the catalog's SHA-256 fingerprint (a different file is
+refused and nothing is changed), and installed by IngeTrazo's own extension installer.
+Your old copy is kept in the backups folder. Restart IngeTrazo to use them.
+It can also check by itself when IngeTrazo starts (at most once a day), but only if you
+tick that box: it is off until you do. Ctrl+Alt+Shift+U opens it.
 
-It only ever talks to GitHub (api.github.com and raw.githubusercontent.com), only to read
-Eddy's plugins page, and only changes Eddy's own ed3d_ plugin files.
+It only ever reads the catalog
+(raw.githubusercontent.com/ingelibre/ingetrazo-extensions/main/catalog.json) and the
+download addresses listed in it, and only installs Eddy's own entries.
 """
 
 import os
 import re
 import json
 import time
+import shutil
 import hashlib
 import threading
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Check for Updates"
-VERSION = "1.1"           # 1.1: old whole-number versions (15) count as renumbered (1.5); shown in the window title, so you can tell which file is loaded
+VERSION = "1.2"           # 1.2: reads IngeTrazo's catalog, checks each download's SHA-256, startup check off by default
 
 GITHUB_OWNER = "eddy-99"
 GITHUB_REPO = "eddys-3d-plugins-ingetrazo"
-GITHUB_BRANCH = "main"
-GITHUB_FOLDER = "plugins/3D_Eddys"
 PAGE_URL = "https://github.com/%s/%s" % (GITHUB_OWNER, GITHUB_REPO)
-LIST_URL = "https://api.github.com/repos/%s/%s/contents/%s?ref=%s" % (
-    GITHUB_OWNER, GITHUB_REPO, GITHUB_FOLDER, GITHUB_BRANCH)
-RAW_URL = "https://raw.githubusercontent.com/%s/%s/%s/%s/" % (
-    GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH, GITHUB_FOLDER)
-
-PRESETS_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets")
-SETTINGS_FILE = os.path.join(PRESETS_DIR, "Check for Updates.json")
-BACKUP_DIR = os.path.join(PRESETS_DIR, "Plugin backups")
+CATALOG_URL = "https://raw.githubusercontent.com/ingelibre/ingetrazo-extensions/main/catalog.json"
 PLUGIN_FOLDER = os.path.dirname(os.path.abspath(__file__))
 CHECK_EVERY = 20 * 3600       # 'once a day' (a bit less, so the same time each day still counts)
 TIMEOUT = 20
+MAX_CATALOG = 2 * 1024 * 1024
+MAX_DOWNLOAD = 64 * 1024 * 1024
+
+
+def data_dir():
+    """This plugin's own folder inside IngeTrazo's data folder (next to 'plugins')."""
+    try:
+        from core.extensions import user_plugins_dir
+        base = str(user_plugins_dir().parent)
+    except Exception:
+        from PySide6.QtCore import QStandardPaths
+        base = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+    return os.path.join(base, "ed3d_update_checker")
+
+
+def settings_file():
+    return os.path.join(data_dir(), "settings.json")
+
+
+def backup_dir():
+    return os.path.join(data_dir(), "backups")
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +75,7 @@ TIMEOUT = 20
 # ---------------------------------------------------------------------------
 def load_settings():
     try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+        with open(settings_file(), "r", encoding="utf-8") as f:
             d = json.load(f)
         return d if isinstance(d, dict) else {}
     except Exception:
@@ -68,56 +84,28 @@ def load_settings():
 
 def save_settings(d):
     try:
-        os.makedirs(PRESETS_DIR, exist_ok=True)
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(data_dir(), exist_ok=True)
+        with open(settings_file(), "w", encoding="utf-8") as f:
             json.dump(d, f, indent=1)
     except Exception:
         pass
 
 
 def auto_check_on():
-    return bool(load_settings().get('auto', True))
+    return bool(load_settings().get('auto', False))      # off until the user ticks it
 
 
 # ---------------------------------------------------------------------------
-# Versions and files (no Qt, so this can be checked on its own)
+# Versions
 # ---------------------------------------------------------------------------
-_VER_RE = re.compile(r'^\s*VERSION\s*=\s*["\']([^"\']+)["\']', re.M)
-_NAME_RE = re.compile(r'^\s*PLUGIN_NAME\s*=\s*["\']([^"\']+)["\']', re.M)
-
-
-def version_of(text):
-    """The plugin's VERSION = "x.y" line, or '' if it hasn't got one."""
-    m = _VER_RE.search(text or "")
-    return m.group(1).strip() if m else ""
-
-
-def name_of(text, stem=""):
-    m = _NAME_RE.search(text or "")
-    if m:
-        return m.group(1).strip()
-    nice = stem[5:] if stem.startswith("ed3d_") else stem
-    return "3D " + nice.replace("_", " ").title()
-
-
-def about_of(text):
-    """The first line of what the plugin says about itself, after its name."""
-    m = re.search(r'"""\s*\n?(.*?)\n', text or "", re.S)
-    line = m.group(1).strip() if m else ""
-    if " - " in line:
-        line = line.split(" - ", 1)[1].strip()
-    return line[:160]
-
-
 def version_key(v):
     """'1.12' is newer than '1.9' (each part is a number: 1.9, 1.10, 1.11, 1.12...).
     Old-style whole numbers of 10 or more count the way they were renumbered: 15 = 1.5, 16 = 1.6."""
     t = str(v or "").strip()
     if re.fullmatch(r"\d{2,}", t):
         t = "%s.%s" % (t[:-1], t[-1])
-    v = t
     parts = []
-    for p in re.split(r"[.\s]+", str(v or "").strip()):
+    for p in re.split(r"[.\s]+", t):
         m = re.match(r"\d+", p)
         parts.append(int(m.group(0)) if m else 0)
     while len(parts) > 1 and parts[-1] == 0:
@@ -125,97 +113,68 @@ def version_key(v):
     return tuple(parts)
 
 
-def blob_sha(data):
-    """The fingerprint GitHub gives every file (so we can tell if two copies are the same)."""
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+# ---------------------------------------------------------------------------
+# The catalog
+# ---------------------------------------------------------------------------
+def fetch(url, limit):
+    import urllib.request
+    if not url.startswith("https://"):
+        raise RuntimeError("Not a safe (https) address: %s" % url)
+    req = urllib.request.Request(url, headers={
+        'User-Agent': "%s/%s (IngeTrazo plugin)" % (PLUGIN_NAME.replace(" ", "-"), VERSION)})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise RuntimeError("The file is too large.")
+    return data
 
 
-def local_sha(path):
-    with open(path, "rb") as f:
-        data = f.read()
-    return blob_sha(data.replace(b"\r\n", b"\n"))      # Windows line endings count as the same
+def catalog_entries():
+    """Eddy's entries in IngeTrazo's catalog: [{id, version, download, sha256, name, ...}]."""
+    data = json.loads(fetch(CATALOG_URL, MAX_CATALOG).decode("utf-8"))
+    items = data.get("extensions") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError("The catalog sent something unexpected")
+    out = []
+    for e in items:
+        if not isinstance(e, dict) or e.get("repository") != PAGE_URL:
+            continue
+        if not all(isinstance(e.get(k), str) and e.get(k) for k in ("id", "version", "download", "sha256")):
+            continue
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", e["sha256"]):
+            continue
+        out.append(e)
+    return out
 
 
-def stem_of(filename):
-    """'ed3d_part_splitter .py.off' -> ('ed3d_part_splitter', switched_off=True)."""
-    low = filename.lower()
-    if not low.startswith("ed3d_"):
-        return None, False
-    i = low.find(".py")
-    if i < 0:
-        return None, False
-    stem = filename[:i].strip()
-    rest = low[i + 3:]
-    return stem, rest != ""
+def installed_version(ident):
+    """The version IngeTrazo's installer recorded for ``ident``, or None."""
+    try:
+        from core.extension_manager import installed_info
+        info = installed_info(ident) or {}
+    except Exception:
+        info = {}
+    v = info.get("version")
+    return str(v) if v else None
+
+
+def by_hand(entry):
+    """True when the same plugin file was put in by hand (not by the catalog)."""
+    name = entry["download"].rsplit("/", 1)[-1]
+    folders = list(plugin_folders())
+    try:
+        from core.extensions import user_plugins_dir
+        root = str(user_plugins_dir())
+        folders += [root, os.path.join(root, "3D_Eddys")]
+    except Exception:
+        pass
+    return any(os.path.isfile(os.path.join(d, name)) for d in folders)
 
 
 def plugin_folders():
-    """Where Eddy's plugins can be: this file's folder, IngeTrazo's plugins folder, and its 3D_Eddys folder."""
     here = PLUGIN_FOLDER
-    root = os.path.dirname(here) if os.path.basename(os.path.dirname(here)).lower() == "plugins" else here
-    out = []
-    for d in (here, root, os.path.join(root, "3D_Eddys")):
-        d = os.path.normpath(d)
-        if os.path.isdir(d) and d not in out:
-            out.append(d)
-    return out
-
-
-def local_plugins():
-    """{stem: {'paths': [working .py files], 'off': [switched-off files]}}"""
-    found = {}
-    for d in plugin_folders():
-        try:
-            names = os.listdir(d)
-        except Exception:
-            continue
-        for fn in names:
-            p = os.path.join(d, fn)
-            if not os.path.isfile(p):
-                continue
-            stem, off = stem_of(fn)
-            if not stem:
-                continue
-            e = found.setdefault(stem, {'paths': [], 'off': []})
-            if off:
-                e['off'].append(p)
-            elif fn.lower().endswith(".py"):
-                e['paths'].append(p)
-    return found
-
-
-def read_text(path):
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-    except Exception:
-        return ""
-
-
-# ---------------------------------------------------------------------------
-# GitHub
-# ---------------------------------------------------------------------------
-def fetch(url, accept=None):
-    import urllib.request
-    req = urllib.request.Request(url, headers={
-        'User-Agent': "%s/%s (IngeTrazo plugin)" % (PLUGIN_NAME.replace(" ", "-"), VERSION),
-        'Accept': accept or "*/*"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-        return r.read()
-
-
-def github_list():
-    """[{'name', 'sha', 'url'}] for every ed3d_*.py on Eddy's plugins page."""
-    data = json.loads(fetch(LIST_URL, "application/vnd.github+json").decode("utf-8"))
-    if not isinstance(data, list):
-        raise RuntimeError("GitHub sent something unexpected")
-    out = []
-    for f in data:
-        nm = str(f.get('name') or "")
-        if f.get('type') == "file" and nm.lower().startswith("ed3d_") and nm.lower().endswith(".py"):
-            out.append({'name': nm, 'sha': str(f.get('sha') or ""),
-                        'url': str(f.get('download_url') or (RAW_URL + nm))})
-    return out
+    root = os.path.dirname(here)
+    return [d for d in (here, root, os.path.join(root, "3D_Eddys")) if os.path.isdir(d)]
 
 
 def friendly_error(e):
@@ -223,64 +182,33 @@ def friendly_error(e):
     if "403" in t or "rate limit" in t.lower():
         return "GitHub is busy (too many checks from this internet connection). Try again in an hour."
     if "404" in t:
-        return "The plugins page wasn't found on GitHub."
+        return "The catalog wasn't found."
     if "CERTIFICATE" in t.upper() or "SSL" in t.upper():
-        return "Couldn't make a safe connection to GitHub (%s)." % t
-    return "Couldn't reach GitHub - are you online? (%s)" % t
+        return "Couldn't make a safe connection (%s)." % t
+    return "Couldn't read the catalog - are you online? (%s)" % t
 
 
 def check(progress=None):
-    """Compares the plugins here with GitHub. Returns a list of rows:
-    {'stem', 'name', 'about', 'state', 'mine', 'theirs', 'paths', 'sha', 'url', 'data'}
-    state: 'update' (newer on GitHub), 'new' (not got it), 'changed' (different, same version),
-           'newer_here' (yours is newer), 'same' (up to date), 'off' (switched off here)."""
-    remote = github_list()
-    here = local_plugins()
+    """Compares Eddy's catalog entries with what is installed. Returns a list of rows:
+    {'stem', 'name', 'about', 'state', 'mine', 'theirs', 'sha', 'url', 'entry'}
+    state: 'update' (newer in the catalog), 'new' (not got it), 'newer_here' (yours is newer),
+           'same' (up to date), 'off' (put in by hand: use IngeTrazo's Extensions window)."""
     rows = []
-    for i, f in enumerate(sorted(remote, key=lambda f: f['name'].lower())):
+    entries = sorted(catalog_entries(), key=lambda e: e["id"])
+    for i, e in enumerate(entries):
         if progress:
-            progress(i, len(remote), f['name'])
-        stem = f['name'][:-3]
-        loc = here.get(stem) or {'paths': [], 'off': []}
-        row = {'stem': stem, 'name': name_of("", stem), 'about': "", 'mine': "", 'theirs': "",
-               'paths': list(loc['paths']), 'sha': f['sha'], 'url': f['url'], 'data': None}
-        if not loc['paths'] and loc['off']:
-            row['state'] = 'off'
-            row['name'] = name_of(read_text(loc['off'][0]), stem)
-            rows.append(row)
-            continue
-        if loc['paths']:
-            mine_text = read_text(loc['paths'][0])
-            row['name'] = name_of(mine_text, stem)
-            row['mine'] = version_of(mine_text)
-            try:
-                same = all(local_sha(p) == f['sha'] for p in loc['paths'])
-            except Exception:
-                same = False
-            if same:
-                row['state'] = 'same'
-                row['theirs'] = row['mine']
-                rows.append(row)
-                continue
-        # different (or not here): fetch GitHub's copy to see its version
-        data = fetch(f['url'])
-        row['data'] = data
-        text = data.decode("utf-8", errors="replace")
-        row['theirs'] = version_of(text)
-        row['name'] = name_of(text, stem)
-        row['about'] = about_of(text)
-        if not loc['paths']:
-            row['state'] = 'new'
+            progress(i, len(entries), e["id"])
+        names = e.get("name") if isinstance(e.get("name"), dict) else {}
+        about = e.get("summary") if isinstance(e.get("summary"), dict) else {}
+        mine = installed_version(e["id"])
+        row = {'stem': e["id"], 'name': names.get("en") or e["id"], 'about': (about.get("en") or "")[:160],
+               'mine': mine or "", 'theirs': e["version"], 'sha': e["sha256"].lower(),
+               'url': e["download"], 'entry': e}
+        if mine is None:
+            row['state'] = 'off' if by_hand(e) else 'new'
         else:
-            a, b = version_key(row['theirs']), version_key(row['mine'])
-            if row['theirs'] and row['mine'] and a > b:
-                row['state'] = 'update'
-            elif row['theirs'] and row['mine'] and a < b:
-                row['state'] = 'newer_here'
-            elif row['theirs'] and not row['mine']:
-                row['state'] = 'update'          # GitHub's copy has a version number, yours hasn't
-            else:
-                row['state'] = 'changed'
+            a, b = version_key(e["version"]), version_key(mine)
+            row['state'] = 'update' if a > b else ('newer_here' if a < b else 'same')
         rows.append(row)
     return rows
 
@@ -291,46 +219,48 @@ def worth_telling(rows):
 
 
 def install(row):
-    """Puts GitHub's copy in place. Keeps the old copy in the backups folder. Returns where it went."""
-    data = row.get('data')
-    if data is None:
-        data = fetch(row['url'])
-    if row.get('sha') and blob_sha(data) != row['sha']:
-        raise RuntimeError("GitHub is still catching up with a change. Try again in a few minutes.")
-    compile(data.decode("utf-8"), row['stem'] + ".py", "exec")      # not a broken download
-    targets = list(row.get('paths') or []) or [os.path.join(PLUGIN_FOLDER, row['stem'] + ".py")]
-    stamp = time.strftime("%Y-%m-%d %H%M")
-    for t in targets:
-        if os.path.isfile(t):
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            old_v = version_of(read_text(t)) or "old"
-            with open(t, "rb") as f_old:
-                old = f_old.read()
-            bk = os.path.join(BACKUP_DIR, "%s %s (%s).py" % (row['stem'], old_v, stamp))
-            with open(bk, "wb") as f_bk:
-                f_bk.write(old)
-        tmp = t + ".downloading"
-        with open(tmp, "wb") as f_new:
-            f_new.write(data)
-        os.replace(tmp, t)
-    return targets
+    """Downloads the catalog's file, refuses it unless its SHA-256 is the catalog's, and has
+    IngeTrazo's installer put it in place. The old copy goes to the backups folder."""
+    from core.extension_manager import _parse_extension, install_extension
+    from core.extensions import user_plugins_dir
+    e = row['entry']
+    data = fetch(e["download"], MAX_DOWNLOAD)
+    if hashlib.sha256(data).hexdigest() != e["sha256"].lower():
+        raise RuntimeError("The download is not the file the catalog lists (SHA-256 differs); nothing was changed.")
+    target = os.path.join(str(user_plugins_dir()), e["id"])
+    if (os.path.lexists(target) and installed_version(e["id"]) is None) or by_hand(e):
+        raise RuntimeError("Put in by hand: use IngeTrazo's Extensions window to switch to the catalog copy.")
+    keep = None
+    if os.path.isdir(target):
+        stamp = time.strftime("%Y-%m-%d %H%M%S")
+        keep = os.path.join(backup_dir(), "%s %s (%s)" % (e["id"], row.get('mine') or "old", stamp))
+        os.makedirs(backup_dir(), exist_ok=True)
+        shutil.copytree(target, keep + ".part", ignore=shutil.ignore_patterns("__pycache__"))
+    try:
+        # Downloads again and checks the SHA-256 again: what is installed is what was checked.
+        install_extension(_parse_extension(e))
+    except Exception:
+        if keep:
+            shutil.rmtree(keep + ".part", ignore_errors=True)
+        raise
+    if keep:
+        os.replace(keep + ".part", keep)
+    return [target]
 
 
 STATE_TEXT = {
     'update': "Update ready",
     'new': "New plugin",
-    'changed': "Different from GitHub (same version number)",
     'newer_here': "Yours is newer",
     'same': "Up to date",
-    'off': "Switched off here",
+    'off': "Put in by hand - use IngeTrazo's Extensions window",
 }
-
 
 # --- Eddy's 3D plugins: hover help and remembered window places (begin) ---
 import os
 # The same in each of the plugins. Every box, tick and button gets a pop-up note when
 # you hover over it, and each window opens where (and at the size) you last left it.
-EDDY_PLACES_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_windows.json")
+EDDY_PLACES_FILE = os.path.join(data_dir(), "windows.json")
 EDDY_COMMON_TIPS = {
     "preset": "Ready-made settings. Pick one and the whole window is filled in. Your own "
               "presets are in the list too.",
@@ -551,17 +481,17 @@ def open_url(target):
 
 INFO_TEXT = (
     "<b>%s</b> (version %s)<br><br>"
-    "Looks at Eddy's plugins page on GitHub and compares it with the plugins on this computer.<br><br>"
+    "Reads IngeTrazo's extension catalog and compares Eddy's plugins in it with the ones on this computer.<br><br>"
     "<b>Update ready</b> - there's a newer version of a plugin you have.<br>"
     "<b>New plugin</b> - one you haven't got yet.<br>"
-    "<b>Different from GitHub</b> - your copy isn't the same as GitHub's but has the same version "
-    "number (you may have changed it yourself). Left unticked.<br>"
+    "<b>Put in by hand</b> - not installed from the catalog; IngeTrazo's Extensions window can switch it.<br>"
     "<b>Yours is newer</b> - nothing to do.<br><br>"
-    "Tick the ones you want and click <b>Update ticked</b>. Your old copy is kept in "
-    "Documents\\IngeTrazo Presets\\Plugin backups, so you can always go back. "
+    "Tick the ones you want and click <b>Update ticked</b>. Each download is checked against the "
+    "catalog's SHA-256 fingerprint; a different file is refused. Your old copy is kept in the "
+    "Backups folder, so you can always go back. "
     "<b>Restart IngeTrazo</b> to use the new versions.<br><br>"
-    "With <b>Check when IngeTrazo starts</b> ticked it checks by itself (at most once a day) and "
-    "only tells you when something new is ready.<br><br>"
+    "With <b>Check when IngeTrazo starts</b> ticked (it is off until you tick it) it checks by itself "
+    "(at most once a day) and only tells you when something new is ready.<br><br>"
     "Ctrl+Alt+Shift+U opens this window." % (PLUGIN_NAME, VERSION))
 
 
@@ -597,7 +527,7 @@ def make_window(parent=None):
 
             self.tree = QTreeWidget()
             self.tree.setColumnCount(4)
-            self.tree.setHeaderLabels(["Plugin", "Yours", "On GitHub", "What it is"])
+            self.tree.setHeaderLabels(["Plugin", "Yours", "In catalog", "What it is"])
             self.tree.setRootIsDecorated(True)
             self.tree.setSelectionMode(QAbstractItemView.NoSelection)
             hd = self.tree.header()
@@ -642,8 +572,8 @@ def make_window(parent=None):
             save_settings(s)
 
         def open_backups(self):
-            os.makedirs(BACKUP_DIR, exist_ok=True)
-            open_url(BACKUP_DIR)
+            os.makedirs(backup_dir(), exist_ok=True)
+            open_url(backup_dir())
 
         # -- checking
         def busy(self, on, text=""):
@@ -655,7 +585,7 @@ def make_window(parent=None):
         def start_check(self):
             if self.job is not None and not self.job.finished:
                 return
-            self.busy(True, "Looking at Eddy's plugins page on GitHub...")
+            self.busy(True, "Reading IngeTrazo's extension catalog...")
             self.job = _Job(check, self.checked, self)
 
         def checked(self, rows, error):
@@ -675,7 +605,6 @@ def make_window(parent=None):
             self.tree.clear()
             groups = [("Updates ready", ('update',), True, True),
                       ("New plugins", ('new',), True, True),
-                      ("Different from GitHub (same version number)", ('changed',), True, False),
                       ("Up to date", ('same', 'newer_here', 'off'), False, False)]
             for title, states, open_, tick in groups:
                 mine = [r for r in rows if r['state'] in states]
@@ -695,7 +624,7 @@ def make_window(parent=None):
                     it = QTreeWidgetItem([r['name'], r['mine'] or ("-" if r['state'] != 'new' else ""),
                                           r['theirs'] or "-", what])
                     it.setToolTip(3, what)
-                    if r['state'] in ('update', 'new', 'changed'):
+                    if r['state'] in ('update', 'new'):
                         it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                         it.setCheckState(0, Qt.Checked if tick else Qt.Unchecked)
                     else:
@@ -770,12 +699,11 @@ def make_window(parent=None):
                 msg += "\n\nRestart IngeTrazo to use the new versions."
             if failed:
                 msg += ("\n\n" if msg else "") + "Not done:\n" + "\n".join(
-                    "  %s: %s" % (r['name'], e if "catching up" in str(e) else friendly_error(e)) for r, e in failed)
+                    "  %s: %s" % (r['name'], e if isinstance(e, RuntimeError) else friendly_error(e)) for r, e in failed)
             QMessageBox.information(self, PLUGIN_NAME, msg)
             for r in done:
                 r['state'] = 'same'
                 r['mine'] = r['theirs']
-                r['data'] = None
             self.show_rows(self.rows)
             if done:
                 self.status.setText("Restart IngeTrazo to use the new versions.")
@@ -790,6 +718,8 @@ _STARTUP = {'job': None}
 
 
 def _startup_check(tries=0):
+    if not auto_check_on():              # off by default: nothing is read until the user ticks the box
+        return
     try:
         from PySide6.QtCore import QTimer
         win = _main_window()
@@ -798,7 +728,7 @@ def _startup_check(tries=0):
                 QTimer.singleShot(500, lambda: _startup_check(tries + 1))
             return
         s = load_settings()
-        if not s.get('auto', True) or time.time() - float(s.get('last_check') or 0) < CHECK_EVERY:
+        if not s.get('auto', False) or time.time() - float(s.get('last_check') or 0) < CHECK_EVERY:
             return
         _STARTUP['job'] = _Job(check, lambda rows, err: _startup_done(win, rows, err), win)
     except Exception as e:
@@ -896,9 +826,9 @@ def run(viewport=None):
 
 
 EDDY_TIPS = {
-    'Check now': "Looks at Eddy's plugins page on GitHub again.",
-    'Update ticked': "Downloads the ticked plugins and puts them in your plugins folder. Your old "
-                     "copies are kept in the Plugin backups folder. Restart IngeTrazo afterwards.",
+    'Check now': "Reads IngeTrazo's extension catalog again.",
+    'Update ticked': "Downloads the ticked plugins from the catalog, checks each one's SHA-256 and "
+                     "installs it. Your old copies are kept in the Backups folder. Restart IngeTrazo afterwards.",
     'Plugins page': "Opens Eddy's plugins page on GitHub in your browser.",
     'Backups': "Opens the folder your old copies are kept in, in case you want one back.",
     'Info': "What this window does.",
