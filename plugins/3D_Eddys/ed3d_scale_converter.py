@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
-VERSION = "1.12"
+VERSION = "1.14"           # 1.14: the bed list shows that size too; 1.13: an object kept whole for a resin printer is laid flat as one (its chimney pots no longer float off)
 ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
 
 
@@ -5904,6 +5904,7 @@ def colour_button_style(col):
 class StudioDialog(QDialog):
     _plan = None
     _gathered = []          # the gathered bed, kept while IngeTrazo is open (closing the window keeps it)
+    _flat_raw = {}          # 1.13: id(parts on the bed) -> (those parts, the same parts before each was laid flat)
     _taken = []             # what was taken off it, newest last, so 'Put back' can undo: [(place, item)]
 
     def __init__(self, viewport, tool, parent=None):
@@ -8502,8 +8503,12 @@ class StudioDialog(QDialog):
         if not parts:
             self.report("There's nothing to put on the bed - select the object (a group, or its faces).", bad=True)
             return False
+        raw = parts
         if self.cb_flat.isChecked():
             parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
+        # 1.13: kept as they were too, so a printer that keeps each object whole (resin) can lay the
+        # whole object flat as one - laying each piece flat on its own moves them apart
+        StudioDialog._flat_raw[id(parts)] = (parts, raw)
         self._bed.append((name or self.name(), self.describe(), parts, dests))
         self._bed_view = 0
         self._bed_split = self.split_words(dests)
@@ -8530,7 +8535,7 @@ class StudioDialog(QDialog):
         last.triggered.connect(lambda _=False: self.take_off(len(self._bed) - 1))
         m.addSeparator()
         for i, (name, sc, parts, _d) in enumerate(self._bed):
-            sz = tris_size([t for _n, _c, tr in parts for t in tr])
+            sz = self.object_size(parts, _d)
             act = m.addAction("%d. %s - %s, %s mm" % (i + 1, name, sc, " x ".join(_fmt_mm(v) for v in sz)))
             act.triggered.connect(lambda _=False, i=i: self.take_off(i))
         try:
@@ -8663,6 +8668,7 @@ class StudioDialog(QDialog):
         default = self.ed_slicer.text().strip() if default is None else default
         items = []
         for k, (name, _sc, parts, dests) in enumerate(self._bed):
+            whole = parts
             if dest is not None:
                 want = self.norm_target(dest)
                 parts = [p for p, d in zip(parts, dests) if self.norm_target(d) == want]
@@ -8673,6 +8679,15 @@ class StudioDialog(QDialog):
             if not keep and len(parts) > 1:
                 # resin: each object stays in one piece, laid out with the others, all in one STL
                 allt = [t for _n, _c, tr in parts for t in tr]
+                rr = StudioDialog._flat_raw.get(id(whole))
+                if rr and rr[0] is whole and len(rr[1]) == len(whole):
+                    # 1.13: the pieces as they were (in place), laid flat together as one object
+                    raw = rr[1]
+                    if dest is not None:
+                        raw = [p for p, d in zip(raw, dests) if self.norm_target(d) == want]
+                    allt = [t for _n, _c, tr in raw for t in tr]
+                    if self.cb_flat.isChecked():
+                        allt = lay_flat(allt)
                 parts = [(name, parts[0][1], allt)]
             for n, c, tr in parts:
                 items.append((n if len(parts) == 1 else "%s - %s" % (name, n), c, tr))
@@ -9217,7 +9232,7 @@ class StudioDialog(QDialog):
         self.pn_list.clear()
         many = len(self.bed_slicers()) > 1 or len(self._pn_targets or []) > 1
         for k, (name, sc, parts, dests) in enumerate(self._bed):
-            sz = tris_size([t for _n, _c, tr in parts for t in tr])
+            sz = self.object_size(parts, dests)
             where = ""
             if many:
                 where = "  -  " + ", ".join(sorted(set(self.target_name(d).split(" - ")[0] for d in dests)))
@@ -9252,6 +9267,23 @@ class StudioDialog(QDialog):
         else:
             self.pn_lbl_fit.setText("<b>The bed's empty.</b>")
 
+    def object_size(self, parts, dests):
+        """1.13: an object's size on the bed - laid flat as one when its printer keeps it whole (resin)."""
+        tris = [t for _n, _c, tr in parts for t in tr]
+        try:
+            keys = set(self.norm_target(d) for d in dests)
+            if len(parts) > 1 and len(keys) == 1:
+                _path, pr = self.target(dests[0])
+                if not self.printer_settings(pr)[4]:
+                    rr = StudioDialog._flat_raw.get(id(parts))
+                    if rr and rr[0] is parts:
+                        tris = [t for _n, _c, tr in rr[1] for t in tr]
+                        if self.cb_flat.isChecked():
+                            tris = lay_flat(tris)
+        except Exception:
+            pass
+        return tris_size(tris)
+
     def pn_ghost(self):
         """The object selected now, scaled and laid flat the way 'Add to bed' would put it: [(name,
         colour, tris)] - or [] when nothing new is selected."""
@@ -9264,13 +9296,16 @@ class StudioDialog(QDialog):
         ck = (key, self.describe(), self.unit_mm(), self.cb_flat.isChecked(), len(self._marks),
               id(self.plan), self.cb_split.currentData())
         if self._pn_cache and self._pn_cache[0] == ck:
+            self._pn_ghost_raw = self._pn_cache[2] if len(self._pn_cache) > 2 else None
             return self._pn_cache[1]
         parts, _n, _w = self.make_parts({'use_scale': True, 'layout': 'keep', 'apply_fixes': False,
                                          'per_piece': True})
+        raw = [(n, self.PN_NEW_COLOUR, tr) for n, _c, tr in parts]
         if self.cb_flat.isChecked():
             parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
         parts = [(n, self.PN_NEW_COLOUR, tr) for n, _c, tr in parts]
-        self._pn_cache = (ck, parts)
+        self._pn_ghost_raw = raw          # 1.13: as they were, for a printer that keeps the object whole
+        self._pn_cache = (ck, parts, raw)
         return parts
 
     def preview_print_next(self):
@@ -9287,7 +9322,15 @@ class StudioDialog(QDialog):
             ghost = []
             self.report("Couldn't read the selected object: %s" % e, bad=True)
         if ghost and not keep and len(ghost) > 1:
-            ghost = [(ghost[0][0], self.PN_NEW_COLOUR, [t for _n, _c, tr in ghost for t in tr])]
+            raw = getattr(self, '_pn_ghost_raw', None)
+            if raw and len(raw) == len(ghost):
+                # 1.13: the whole object laid flat as one, the way it will be sent
+                allt = [t for _n, _c, tr in raw for t in tr]
+                if self.cb_flat.isChecked():
+                    allt = lay_flat(allt)
+            else:
+                allt = [t for _n, _c, tr in ghost for t in tr]
+            ghost = [(ghost[0][0], self.PN_NEW_COLOUR, allt)]
         many = max(1, int(self.pn_sp_copies.value())) if ghost else 0
         ghost = [("NEW: " + n, c, tr) for n, c, tr in ghost] * many
         allp = items + ghost
