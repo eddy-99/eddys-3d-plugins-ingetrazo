@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Find & Replace"
-VERSION = "6"
+VERSION = "6.1"  # 6.1: version number in the standard x.y style (was 6)
 MM = 1000.0                       # IngeTrazo works in metres; the window shows mm
 
 

@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QDoubleSpinBox, QPushButton, QLabel, QMessageBox, QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Station Canopies"
-VERSION = "2"
+VERSION = "2.1"  # 2.1: version number in the standard x.y style (was 2)
 
 
 def _ed3d_organise(scene, group):

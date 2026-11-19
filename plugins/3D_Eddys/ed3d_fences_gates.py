@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Fences & Gates"
-VERSION = "2"
+VERSION = "2.1"  # 2.1: version number in the standard x.y style (was 2)
 
 
 def _ed3d_organise(scene, group):

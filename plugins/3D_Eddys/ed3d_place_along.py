@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Place Along Line"
-VERSION = "4"
+VERSION = "4.1"  # 4.1: version number in the standard x.y style (was 4)
 MM = 1000.0                       # IngeTrazo works in metres; the window shows mm
 EXT_TAG = "eddy_place_along"      # on a row this plugin made: the line and settings, to edit it again
 EXT_KEY = "eddy_parts"            # tags a part from the Find & Replace parts library

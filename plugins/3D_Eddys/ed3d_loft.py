@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Loft"
+VERSION = "1.0"  # shown in the window title, so you can tell which file is loaded
 
 PATHS = [("Smooth S-curve (sides meet each profile square-on)", "scurve"),
          ("Straight between profiles", "straight"),
@@ -617,7 +618,7 @@ EDDY_TIPS_END = None
 class LoftDialog(QDialog):
     def __init__(self, cur, counts, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(PLUGIN_NAME)
+        self.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
         self.counts = counts
         lay = QVBoxLayout(self)
         form = QFormLayout()

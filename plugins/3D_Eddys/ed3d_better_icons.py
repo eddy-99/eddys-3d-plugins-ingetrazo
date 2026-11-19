@@ -30,6 +30,7 @@ import json
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Better Icons"
+VERSION = "1.0"  # shown in the window title, so you can tell which file is loaded
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_better_icons.json")
 LIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ed3d_better_icons_buttons.txt")
 # Eddy's own toolbars keep their icons
@@ -822,7 +823,7 @@ def open_settings(win=None):
             pass
     s = load_settings()
     dlg = QDialog(win)
-    dlg.setWindowTitle(PLUGIN_NAME)
+    dlg.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
     dlg.setObjectName("EddyBetterIcons_dialog")
     top = QVBoxLayout(dlg)
     top.addWidget(QLabel("Changes show straight away and are remembered."))

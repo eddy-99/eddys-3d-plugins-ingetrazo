@@ -43,6 +43,7 @@ import time
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Timeline"
+VERSION = "1.0"  # shown in the window title, so you can tell which file is loaded
 DOCK_NAME = "EddyTimelineDock"
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_timeline.json")
 POLL_MS = 300                 # how often the strip checks for new steps

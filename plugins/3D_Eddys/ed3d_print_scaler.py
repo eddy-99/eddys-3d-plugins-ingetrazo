@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Print Scaler"
+VERSION = "1.0"  # shown in the window title, so you can tell which file is loaded
 
 SCALE_PRESETS = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 500, 1000]
 
@@ -2349,7 +2350,7 @@ def _mm(x):
 class ScaleDialog(QDialog):
     def __init__(self, cur, size, unit_key, count_text, parent=None, tool=None, viewport=None):
         super().__init__(parent)
-        self.setWindowTitle(PLUGIN_NAME)
+        self.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
         self.setModal(False)
         self.size = size
         self.tool = tool

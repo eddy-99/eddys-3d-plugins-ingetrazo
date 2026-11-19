@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Corrugated Iron"
-VERSION = "4"
+VERSION = "4.1"  # 4.1: version number in the standard x.y style (was 4)
 
 
 def _ed3d_organise(scene, group):

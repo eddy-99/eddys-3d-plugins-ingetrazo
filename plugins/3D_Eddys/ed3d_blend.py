@@ -34,7 +34,7 @@ from core.history import SnapshotImport
 from PySide6.QtGui import QVector3D
 
 PLUGIN_NAME = "3D Blend"
-VERSION = "1"
+VERSION = "1.1"  # 1.1: version number in the standard x.y style (was 1)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_blend.json")
 
 UNITS = [("Metres (m)", 1000.0, "m"), ("Centimetres (cm)", 10.0, "cm"),

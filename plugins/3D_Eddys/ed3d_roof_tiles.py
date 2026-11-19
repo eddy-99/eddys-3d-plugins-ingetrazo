@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "12"  # 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
+VERSION = "1.3"  # 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
 
 
 def _ed3d_organise(scene, group):

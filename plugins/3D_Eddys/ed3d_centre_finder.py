@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Centre Finder"
-VERSION = "1"
+VERSION = "1.1"  # 1.1: version number in the standard x.y style (was 1)
 MM = 1000.0                       # IngeTrazo works in metres; the window shows mm
 
 

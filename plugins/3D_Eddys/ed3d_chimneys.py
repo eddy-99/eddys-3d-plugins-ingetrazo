@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Chimneys"
-VERSION = "6"
+VERSION = "6.1"  # 6.1: version number in the standard x.y style (was 6)
 
 
 def _ed3d_organise(scene, group):

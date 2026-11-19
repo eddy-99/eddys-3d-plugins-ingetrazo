@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Gutters & Downpipes"
-VERSION = "14"            # shown in the window title, so you can tell which file is loaded
+VERSION = "1.5"            # 1.5: version number in the standard x.y style (was 14); shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):

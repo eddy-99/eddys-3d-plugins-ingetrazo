@@ -25,6 +25,7 @@ import json
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Notepad"
+VERSION = "1.0"  # shown in the window title, so you can tell which file is loaded
 NOTES_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Notes")
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_notepad.json")
 FIRST_NOTE = "Scale notes"
@@ -164,7 +165,7 @@ def make_window(parent):
     class NotepadWindow(QDialog):
         def __init__(self, parent):
             super().__init__(parent)
-            self.setWindowTitle(PLUGIN_NAME)
+            self.setWindowTitle("%s  (version %s)" % (PLUGIN_NAME, VERSION))
             self.setModal(False)
             # floats over IngeTrazo and never gets lost behind it
             self.setWindowFlags(Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
