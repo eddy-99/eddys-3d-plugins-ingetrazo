@@ -34,7 +34,7 @@ import json
 import math
 
 PLUGIN_NAME = "3D Card Kit"
-VERSION = "2.4"   # 2.4: a roof slope comes out as one clean shape (no slot or notch where the chimney goes through - the chimney sits on it); every piece has its main colour under its faces, so no gaps show through; 2.3: the choice of program comes up as a proper box in the middle of the Card Kit window, with big buttons; 2.2: Open PDF with... (and Ask me each time) shows a short list - Edge, Chrome, the usual program, or show it in its folder - as Windows' own Open with box did nothing; 2.1: "Open in" sits next to Make card kit; Open PDF with... works straight after making it (or makes it first); 2.0: bricks back (only parts set back behind the wall's own face are left out, like the frame behind a window); choose which program opens the PDF; 1.11: what's seen through a window with no glass (parts set back at the back of the wall) is left out, and the openings get the glass look you pick; 1.10: window glass is drawn whichever way its face points (some panes were missing, showing the frame behind as green); joint lines on dark colours (slates) are drawn lighter so they show; 1.9: the piece choices set by accident with the mouse wheel are cleared once; roof slates and tiles (and cladding) are printed on the roof piece under them, as one piece; 1.8: scrolling the Parts list with the mouse wheel no longer changes a drop-down it passes over; 1.7: click a piece in the preview to pick it in the Parts list (it's outlined in blue); narrower colour boxes, wider names; "&" shows in the page names; 1.6: glass never hidden behind the frame colour (faces only grouped when they can't cover each other); glass: cut out, plain white, the model's glass colour or pale blue; 1.5: switches to Sharp once, as 1.2 had saved "picture" as your setting; 1.4: leaves out Subframe's frame (studs, plates, trusses, glazing frames) but keeps the fascia, barge and soffit boards; 1.3: sharp shapes in the PDF, joined up by colour, so it prints crisp and still opens quickly; 1.2: piece names cut short to fit under small pieces; 1.1: the faces go into the PDF as a picture (opens fast in LibreOffice and the like); cut and fold lines stay sharp
+VERSION = "2.5"   # 2.5: a material picked for a brick wall goes on the bricks (it was going on the bare wall behind them); 2.4: a roof slope comes out as one clean shape (no slot or notch where the chimney goes through - the chimney sits on it); every piece has its main colour under its faces, so no gaps show through; 2.3: the choice of program comes up as a proper box in the middle of the Card Kit window, with big buttons; 2.2: Open PDF with... (and Ask me each time) shows a short list - Edge, Chrome, the usual program, or show it in its folder - as Windows' own Open with box did nothing; 2.1: "Open in" sits next to Make card kit; Open PDF with... works straight after making it (or makes it first); 2.0: bricks back (only parts set back behind the wall's own face are left out, like the frame behind a window); choose which program opens the PDF; 1.11: what's seen through a window with no glass (parts set back at the back of the wall) is left out, and the openings get the glass look you pick; 1.10: window glass is drawn whichever way its face points (some panes were missing, showing the frame behind as green); joint lines on dark colours (slates) are drawn lighter so they show; 1.9: the piece choices set by accident with the mouse wheel are cleared once; roof slates and tiles (and cladding) are printed on the roof piece under them, as one piece; 1.8: scrolling the Parts list with the mouse wheel no longer changes a drop-down it passes over; 1.7: click a piece in the preview to pick it in the Parts list (it's outlined in blue); narrower colour boxes, wider names; "&" shows in the page names; 1.6: glass never hidden behind the frame colour (faces only grouped when they can't cover each other); glass: cut out, plain white, the model's glass colour or pale blue; 1.5: switches to Sharp once, as 1.2 had saved "picture" as your setting; 1.4: leaves out Subframe's frame (studs, plates, trusses, glazing frames) but keeps the fascia, barge and soffit boards; 1.3: sharp shapes in the PDF, joined up by colour, so it prints crisp and still opens quickly; 1.2: piece names cut short to fit under small pieces; 1.1: the faces go into the PDF as a picture (opens fast in LibreOffice and the like); cut and fold lines stay sharp
 
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_card_kit.json")
 PRESET_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Card Kit")
@@ -691,8 +691,10 @@ def flatten_piece(raw, centre, flip=False, materials=None, outline_fn=None):
             # glass counts whichever way its face points: a pane built as a single face can point
             # into the building, and leaving it out showed the frame behind it instead
             if d > 0.05 or (glass and d < -0.3):
+                at = fr['attrs'] or {}
+                plain = at.get('color') is None and not at.get('mat') and not at.get('texture')
                 draw.append({'outer': o2, 'holes': h2, 'depth': dep, 'shade': abs(d), 'rgb': rgb,
-                             'glass': glass, 'tex': tex, 'mat': mname, 'rec': fr})
+                             'glass': glass, 'tex': tex, 'mat': mname, 'rec': fr, 'plain': plain})
     if not draw:
         return None
     # a window built into a wall has no glass (glazing frames go in later), so through its panes
@@ -741,11 +743,17 @@ def flatten_piece(raw, centre, flip=False, materials=None, outline_fn=None):
     draw.sort(key=lambda f: f['depth'])            # far ones first, near ones over them
     # the main colour: the one covering most of the piece (what a material picked on the Parts
     # page replaces - the windows and doors keep theirs)
-    area_by = {}
+    # faces with no colour of their own (the bare wall behind bricks) only count if nothing else
+    # has a colour, or a brick wall's main colour came out as that grey and a picked material
+    # went on the wall behind instead of the bricks
+    area_by, plain_by = {}, {}
     for f in draw:
         if not f['glass']:
             k = colour_key(f['rgb'])
-            area_by[k] = area_by.get(k, 0.0) + abs(area2(f['outer'])) * f['shade']
+            tgt = plain_by if f.get('plain') else area_by
+            tgt[k] = tgt.get(k, 0.0) + abs(area2(f['outer'])) * f['shade']
+    if not area_by:
+        area_by = plain_by
     main = max(area_by, key=area_by.get) if area_by else None
     cls = classify_loops(loops)
     outers = []
