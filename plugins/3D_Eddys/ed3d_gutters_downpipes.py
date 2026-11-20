@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Gutters & Downpipes"
-VERSION = "1.5"            # 1.5: version number in the standard x.y style (was 14); shown in the window title, so you can tell which file is loaded
+VERSION = "1.8"            # 1.8: soft edges really work (from the edges themselves - 1.7 softened none); 1.7: the edges are softened once the pipes are in the model (as 3D Blend does); 1.6: pipes and gutters look smooth - the lines round and along them are softened, so they show their real colour from a distance; 1.5: version number in the standard x.y style (was 14); shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -2239,6 +2239,78 @@ VIEW_DIR = v_norm((-0.55, 0.8, -0.5))          # looking from the front right, a
 LIGHT = v_norm((0.35, -0.55, 0.8))
 
 
+
+def _soften_pipe_edges(mesh, made_faces, max_angle=30.0):
+    """Softens (hides and smooths) the edges between faces that meet at less than max_angle
+    degrees - round the pipes and along the bends - so a pipe looks smooth and shows its
+    real colour from a distance (all its lines made it look black). Sharp edges stay.
+    made_faces: [(face, normal)] as they were added. (As 3D Blend does it.)"""
+    def items(x):
+        if x is None:
+            return []
+        if isinstance(x, dict):
+            return list(x.values())
+        try:
+            return list(x)
+        except Exception:
+            return []
+
+    def val(o, name):
+        x = getattr(o, name, None)
+        if callable(x):
+            try:
+                x = x()
+            except Exception:
+                return None
+        return x
+
+    def xyz(p):
+        if p is None:
+            return None
+        try:
+            if callable(getattr(p, 'x', None)):
+                return (float(p.x()), float(p.y()), float(p.z()))
+            if hasattr(p, 'x'):
+                return (float(p.x), float(p.y), float(p.z))
+            return (float(p[0]), float(p[1]), float(p[2]))
+        except Exception:
+            return None
+
+    normals = {}
+
+    def normal_of(f):
+        k = id(f)
+        if k not in normals:
+            nrm = None
+            pts = [xyz(v) for v in items(val(f, 'vertices'))]
+            pts = [q for q in pts if q is not None]
+            if len(pts) >= 3:
+                nrm = v_norm(_newell(pts))
+            if nrm is None or v_len(nrm) < 0.5:
+                nrm = xyz(val(f, 'normal'))
+                nrm = v_norm(nrm) if nrm else None
+            normals[k] = nrm
+        return normals[k]
+
+    # IngeTrazo's edges know their faces and have a 'soft' setting (like SketchUp's)
+    cos_lim = math.cos(math.radians(max_angle))
+    soft = 0
+    for e in items(val(mesh, 'edges')):
+        fs = items(val(e, 'faces'))
+        if len(fs) != 2:
+            continue
+        n1, n2 = normal_of(fs[0]), normal_of(fs[1])
+        if n1 is None or n2 is None:
+            continue
+        if v_dot(n1, n2) >= cos_lim:
+            try:
+                e.soft = True
+                soft += 1
+            except Exception:
+                pass
+    return soft
+
+
 def _newell(pts):
     nx = ny = nz = 0.0
     for i in range(len(pts)):
@@ -4369,8 +4441,10 @@ class GuttersDownpipesTool(Tool):
             from core.mesh import Mesh
             from core.group import Group
             made = []
+            to_soften = []
             for name, world, tags in parts:
                 mesh = Mesh()
+                soft_faces = []
                 for so in world:
                     verts = {}
 
@@ -4384,6 +4458,10 @@ class GuttersDownpipesTool(Tool):
                         try:
                             f = mesh.add_face([vx(p) for p in pts])
                             stats['faces'] += 1
+                            try:
+                                soft_faces.append((f, v_norm(_newell(pts))))
+                            except Exception:
+                                pass
                         except Exception as e:
                             stats['errors'] += 1
                             stats['err'] = e
@@ -4396,6 +4474,7 @@ class GuttersDownpipesTool(Tool):
                                 pass
                 if stats['faces'] == 0:
                     raise RuntimeError("No faces could be created (%s)." % stats['err'])
+                to_soften.append((mesh, soft_faces))
                 g = Group(name)
                 g.mesh = mesh
                 _ed3d_organise(scene, g)
@@ -4432,6 +4511,39 @@ class GuttersDownpipesTool(Tool):
                     scene.groups.append(g)
                 else:
                     raise RuntimeError("Could not add the part to the scene.")
+            soft_log = []
+            for mesh, soft_faces in to_soften:
+                for fn_ in ('recompute_normals', 'update_normals', 'rebuild', 'invalidate'):
+                    m_ = getattr(mesh, fn_, None)
+                    if callable(m_):
+                        try:
+                            m_()
+                        except Exception:
+                            pass
+                try:
+                    soft_log.append(_soften_pipe_edges(mesh, soft_faces))
+                except Exception as e:
+                    soft_log.append("error %s" % e)
+            try:                                   # what happened, for sorting out problems
+                m0 = to_soften[0][0] if to_soften else None
+                info = {'mesh': type(m0).__name__, 'find_edge': callable(getattr(m0, 'find_edge', None)),
+                        'edges': type(getattr(m0, 'edges', None)).__name__}
+                es = getattr(m0, 'edges', None)
+                es = es() if callable(es) else es
+                e0 = None
+                try:
+                    e0 = next(iter(es.values() if isinstance(es, dict) else es))
+                except Exception:
+                    pass
+                info['edge_attrs'] = sorted(a for a in dir(e0) if not a.startswith('__'))[:60] if e0 is not None else None
+                f0 = to_soften[0][1][0][0] if to_soften and to_soften[0][1] else None
+                info['face_attrs'] = sorted(a for a in dir(f0) if not a.startswith('__'))[:60] if f0 is not None else None
+                info['mesh_attrs'] = sorted(a for a in dir(m0) if not a.startswith('__'))[:80] if m0 is not None else None
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ed3d_soften_debug.txt"),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("%s %s\nsoftened per part: %s\n%s\n" % (PLUGIN_NAME, VERSION, soft_log, info))
+            except Exception as e:
+                print("%s: soften log: %s" % (PLUGIN_NAME, e))
 
         try:
             viewport.history.execute(SnapshotImport(mutate))

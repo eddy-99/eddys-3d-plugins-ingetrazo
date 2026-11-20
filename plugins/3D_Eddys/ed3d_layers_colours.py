@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPu
                                QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "5.5"   # 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
+VERSION = "5.7"   # 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -272,7 +272,12 @@ def colour_group(scene, group, plugin, palette, repaint=False):
             row = _pick_row(palette, names, pl)
             if row is not None:
                 if row[0] not in cache:
-                    cache[row[0]] = _paint_attrs(scene, row, repaint)
+                    pa = dict(_paint_attrs(scene, row, repaint))
+                    # the colour set here wins, even if the model's material of that name is an
+                    # older colour (new pipework kept coming out black)
+                    pa['color'] = tuple(c / 255.0 for c in row[1])
+                    pa['opacity'] = float(row[2])
+                    cache[row[0]] = pa
                 paint = cache[row[0]]
                 for f in faces:
                     a = dict(getattr(f, 'attrs', None) or {})
@@ -583,8 +588,26 @@ class LayersColoursDialog(QDialog):
         return s
 
     def _save_close(self):
+        old = {r[0]: (tuple(r[1]), float(r[2])) for r in self.s.get('palette', [])}
         self.s = self._read()
         save_settings(self.s)
+        # a colour changed here: the open model's own material of that name takes it too,
+        # or the next build would still come out in the model's old colour
+        try:
+            scene = getattr(self.viewport, 'scene', None)
+            mats = getattr(scene, 'materials', None) or {}
+            changed = 0
+            for r in self.s['palette']:
+                if old.get(r[0]) != (tuple(r[1]), float(r[2])) and (MAT_PREFIX + r[0]) in mats:
+                    _paint_attrs(scene, r, True)
+                    changed += 1
+            if changed:
+                try:
+                    scene.version += 1
+                except Exception:
+                    pass
+        except Exception as e:
+            print("%s: updating the model's colours: %s" % (PLUGIN_NAME, e))
         self.accept()
 
     # apply to selected ---------------------------------------------------

@@ -34,7 +34,7 @@ import json
 import math
 
 PLUGIN_NAME = "3D Card Kit"
-VERSION = "2.5"   # 2.5: a material picked for a brick wall goes on the bricks (it was going on the bare wall behind them); 2.4: a roof slope comes out as one clean shape (no slot or notch where the chimney goes through - the chimney sits on it); every piece has its main colour under its faces, so no gaps show through; 2.3: the choice of program comes up as a proper box in the middle of the Card Kit window, with big buttons; 2.2: Open PDF with... (and Ask me each time) shows a short list - Edge, Chrome, the usual program, or show it in its folder - as Windows' own Open with box did nothing; 2.1: "Open in" sits next to Make card kit; Open PDF with... works straight after making it (or makes it first); 2.0: bricks back (only parts set back behind the wall's own face are left out, like the frame behind a window); choose which program opens the PDF; 1.11: what's seen through a window with no glass (parts set back at the back of the wall) is left out, and the openings get the glass look you pick; 1.10: window glass is drawn whichever way its face points (some panes were missing, showing the frame behind as green); joint lines on dark colours (slates) are drawn lighter so they show; 1.9: the piece choices set by accident with the mouse wheel are cleared once; roof slates and tiles (and cladding) are printed on the roof piece under them, as one piece; 1.8: scrolling the Parts list with the mouse wheel no longer changes a drop-down it passes over; 1.7: click a piece in the preview to pick it in the Parts list (it's outlined in blue); narrower colour boxes, wider names; "&" shows in the page names; 1.6: glass never hidden behind the frame colour (faces only grouped when they can't cover each other); glass: cut out, plain white, the model's glass colour or pale blue; 1.5: switches to Sharp once, as 1.2 had saved "picture" as your setting; 1.4: leaves out Subframe's frame (studs, plates, trusses, glazing frames) but keeps the fascia, barge and soffit boards; 1.3: sharp shapes in the PDF, joined up by colour, so it prints crisp and still opens quickly; 1.2: piece names cut short to fit under small pieces; 1.1: the faces go into the PDF as a picture (opens fast in LibreOffice and the like); cut and fold lines stay sharp
+VERSION = "2.6"   # 2.6: the piece numbers go on a glue tab, not on the wall itself, so they don\'t show on the finished model; 2.5: a material picked for a brick wall goes on the bricks (it was going on the bare wall behind them); 2.4: a roof slope comes out as one clean shape (no slot or notch where the chimney goes through - the chimney sits on it); every piece has its main colour under its faces, so no gaps show through; 2.3: the choice of program comes up as a proper box in the middle of the Card Kit window, with big buttons; 2.2: Open PDF with... (and Ask me each time) shows a short list - Edge, Chrome, the usual program, or show it in its folder - as Windows' own Open with box did nothing; 2.1: "Open in" sits next to Make card kit; Open PDF with... works straight after making it (or makes it first); 2.0: bricks back (only parts set back behind the wall's own face are left out, like the frame behind a window); choose which program opens the PDF; 1.11: what's seen through a window with no glass (parts set back at the back of the wall) is left out, and the openings get the glass look you pick; 1.10: window glass is drawn whichever way its face points (some panes were missing, showing the frame behind as green); joint lines on dark colours (slates) are drawn lighter so they show; 1.9: the piece choices set by accident with the mouse wheel are cleared once; roof slates and tiles (and cladding) are printed on the roof piece under them, as one piece; 1.8: scrolling the Parts list with the mouse wheel no longer changes a drop-down it passes over; 1.7: click a piece in the preview to pick it in the Parts list (it's outlined in blue); narrower colour boxes, wider names; "&" shows in the page names; 1.6: glass never hidden behind the frame colour (faces only grouped when they can't cover each other); glass: cut out, plain white, the model's glass colour or pale blue; 1.5: switches to Sharp once, as 1.2 had saved "picture" as your setting; 1.4: leaves out Subframe's frame (studs, plates, trusses, glazing frames) but keeps the fascia, barge and soffit boards; 1.3: sharp shapes in the PDF, joined up by colour, so it prints crisp and still opens quickly; 1.2: piece names cut short to fit under small pieces; 1.1: the faces go into the PDF as a picture (opens fast in LibreOffice and the like); cut and fold lines stay sharp
 
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_card_kit.json")
 PRESET_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Card Kit")
@@ -1180,11 +1180,18 @@ def piece_steps(it, X, Y, turn, f, opts, choices, materials):
         rows, cols, r, c = it['tiles']
         steps.append(('poly', [[(X, Y), (X + bw, Y), (X + bw, Y + bh), (X, Y + bh)]], None,
                       (0.55, 0.55, 0.55), 0.15, True))
-    # number on the piece, and its name underneath
-    if opts.get('numbers', True):
-        p = number_spot(pc, f)
-        if p is not None:
-            q = go(p)
+    # the piece's number on one of its glue tabs (hidden once it's glued, so it never shows on
+    # the finished model), near one end of the longest tab, clear of the "glue to" words;
+    # a piece with no tabs just has its number in the name underneath
+    if opts.get('numbers', True) and it['tabs']:
+        e, poly, _lab = max(it['tabs'], key=lambda tb: tb[0]['len'])
+        a, b, c, d = poly
+        s_ = go(((a[0] + d[0]) / 2.0, (a[1] + d[1]) / 2.0))     # the tab's two ends, half way out
+        t_ = go(((b[0] + c[0]) / 2.0, (b[1] + c[1]) / 2.0))
+        ln = math.hypot(t_[0] - s_[0], t_[1] - s_[1])
+        if ln > 7.0:
+            k_ = min(0.5, 3.8 / ln)
+            q = (s_[0] + (t_[0] - s_[0]) * k_, s_[1] + (t_[1] - s_[1]) * k_)
             if (not it.get('clip')) or (X <= q[0] <= X + bw and Y <= q[1] <= Y + bh):
                 steps.append(('badge', q[0], q[1], str(i + 1)))
     lab = "%d%s  %s" % (i + 1, it.get('tile') or "", pc['name'])
@@ -1818,8 +1825,8 @@ EDDY_TIPS = {
     "lines between faces": "A thin darker line round every face, so bricks, tiles and planks show up.",
     "shading": "Faces that don't face straight out (reveals, sills, a roof seen from the gable) are "
                "drawn a little darker, for depth.",
-    "number on each piece": "A small numbered circle on each piece, so you know which is which once "
-                            "it's cut out.",
+    "number on each piece": "A small numbered circle on one of each piece's glue tabs, so you know "
+                            "which is which once it's cut out - and it's hidden once it's glued.",
     "instructions sheet first": "A first sheet with how to build it, the key and the list of parts.",
     "cut line": "Thickness of the cut lines and fold lines.",
     "pieces in the pdf": "Sharp: the bricks and colours are drawn as shapes, joined up by colour, so "

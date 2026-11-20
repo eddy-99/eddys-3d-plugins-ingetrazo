@@ -25,6 +25,9 @@ ends; arrow keys lock it to an axis; Esc or right-click ends a line (again: fini
 window hides while you mark. Everything built along lines goes into one group, and pipes
 going down to the ground step out round anything in the way (a plinth, a sill, a lean-to).
 Smaller preview.
+Version 4.2: like the downpipes - mark a stack from the fascia (or gutter) straight down to the
+ground and it gets a swan neck (two 45 degree bends) back to the wall under the eaves, the vent
+above the eaves, down the wall on its clips, and out round the plinth at the bottom.
 """
 
 import os
@@ -40,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Soil & Waste Pipes"
-VERSION = "4.1"           # 4.1: both sides of each pipe clip show (one side was inside out); 4.0: the sink waste meets the boss again (3.9 pushed its end off the wall); 3.9: clips all the way up the stack and along the waste (they were going on the wrong wall); 3.7: clips all the way up a stack stood off on quoins; 3.6: bigger clips you can see, clips come back (only left off where the stack stands right out past the eaves), and the report counts them; 3.5: saddle pipe clips (strap round the pipe, fixed to the wall each side); 3.4: no clips on the stack above the wall top; 3.3: the vent stands right out past the eaves; 3.2: a stack stepping out round the eaves stays out and vents just above them; 3.1: a waste marked from a stack gets a boss and dog-legs into it; shown in the window title, so you can tell which file is loaded
+VERSION = "5.1"           # 5.1: the drain adaptor\'s spigot finishes level with the bottom of the plinth (it hung below); 5.0: the stack stops at the bottom of the plinth it comes down in front of (the drain adaptor at the ground), not where the line was marked below it; 4.9: soft edges really work (from the edges themselves - 4.8 softened none); 4.8: the edges are softened once the pipes are in the model (as 3D Blend does); 4.7: pipes look smooth - the lines round and along them are softened, so they show their real colour from a distance; 4.6: on a gable wall the vent goes just above the verge at the pipe (not above the ridge), and a stack marked below the ground stops at the bottom of the wall/plinth; 4.5: choose what goes on the end of a waste into the stack (left open, into the wall, or a tee into the wall with the run carrying on), and a tee at each corner clicked along it for another sink; 4.4: the vent goes just above the eaves (not up a roof slope or gable beside it), and the stack's clips sit on the front of the bricks; 4.3: the swan-necked stack's vent stops just above the eaves (Vent above the eaves setting), and a 40 mm waste marked into it gets its boss on the stack at the wall; 4.2: a stack marked straight down from the fascia gets a swan neck back to the wall under the eaves (like the downpipes), then steps round the plinth; 4.1: both sides of each pipe clip show (one side was inside out); 4.0: the sink waste meets the boss again (3.9 pushed its end off the wall); 3.9: clips all the way up the stack and along the waste (they were going on the wrong wall); 3.7: clips all the way up a stack stood off on quoins; 3.6: bigger clips you can see, clips come back (only left off where the stack stands right out past the eaves), and the report counts them; 3.5: saddle pipe clips (strap round the pipe, fixed to the wall each side); 3.4: no clips on the stack above the wall top; 3.3: the vent stands right out past the eaves; 3.2: a stack stepping out round the eaves stays out and vents just above them; 3.1: a waste marked from a stack gets a boss and dog-legs into it; shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -107,14 +110,14 @@ DEFAULTS = {
     'chunky': False, 'chunk_mult': 3.0, 'detail': True, 'pipe_socket': True,
     'ears': False, 'swan_len': 150.0,
     'r_system': 'soil', 'r_top': 'vent', 'r_bot': 'drain', 's_maxlen': 3000.0, 'w_maxlen': 3000.0,
-    'r_flip': False, 'r_avoid': True,
+    'r_flip': False, 'r_avoid': True, 'r_swan': True, 'vent_above': 150.0, 'w_end': 'none',
 }
 WALL_SIDES = [("Behind the part (+Y)", 0.0), ("On the left (-X)", 90.0),
               ("In front (-Y)", 180.0), ("On the right (+X)", 270.0)]
 PRESET_KEYS = ('s_size', 's_wall', 'w_size', 'w_wall', 'length', 'bend_turn', 'branch_len',
                'solid', 'along', 'drop', 'below', 'w_height', 'wall_gap',
                's_spacing', 'w_spacing', 'chunky', 'chunk_mult', 'detail', 'pipe_socket',
-               'ears', 'swan_len', 's_maxlen', 'w_maxlen', 'r_avoid')
+               'ears', 'swan_len', 's_maxlen', 'w_maxlen', 'r_avoid', 'r_swan', 'vent_above', 'w_end')
 SYSTEM_KEYS = {'soil': ('s_size', 's_wall', 'solid'), 'waste': ('w_size', 'w_wall', 'solid')}
 OVERLAY = ('socket', 'clip', 'boss', 'adaptor')          # sit over a joint or along a pipe
 CLOSERS = ('vent', 'drain', 'gully', 'shoe', 'bigully')          # finish a run
@@ -1593,6 +1596,8 @@ def end_target(c, n, u, role, system, **extra):
 # Soil and waste pipes along drawn lines
 # ---------------------------------------------------------------------------
 ROUTE_SYSTEMS = [("Soil pipe", 'soil'), ("Waste pipe", 'waste')]
+W_ENDS = [("Left open", 'none'), ("Into the wall", 'wall'),
+          ("Tee - into the wall, carry on to the next sink", 'tee')]
 ROUTE_TOPS = {'soil': [("Left open", 'none'), ("Vent cowl", 'vent')],
               'waste': [("Left open", 'none'), ("Hopper head", 'hopper')]}
 ROUTE_BOTS = {'soil': [("Left open", 'none'), ("Drain adaptor (into the ground)", 'drain')],
@@ -1820,7 +1825,9 @@ def wall_top_at(p, w, faces, near=0.15):
         xs = [v_dot(a_, q) for q in P]
         if min(xs) - 0.01 > x or max(xs) + 0.01 < x:
             continue
-        hz = f[3][1][2]
+        # the top of this face right at p along the wall (a gable's top there, not its ridge)
+        C = _clip_slab([(v_dot(a_, q) - x, 0.0, q[2]) for q in P], -0.06, 0.06)
+        hz = max(c[2] for c in C) if C else f[3][1][2]
         if top is None or hz > top:
             top = hz
     return top
@@ -1894,6 +1901,162 @@ def _r_vent_out(Q, walls, wb, zcap, clear=0.3):
     return [top] + list(Q[k:]), nw
 
 
+def _r_brick_front(top, bottom, n, faces):
+    """The plane (d along n) of the front of the bricks behind a pipe line going down: the
+    nearest face found at many heights, taking the front fifth (bricks stand proud of the
+    mortar; a sill, quoin or band sticking out at a few heights is left out)."""
+    hits = []
+    for i in range(40):
+        f_ = 0.2 + 0.65 * i / 39.0
+        q = v_add(top, v_mul(v_sub(bottom, top), f_))
+        near = None
+        for face in faces:
+            lo, hi = face[3]
+            if q[2] < lo[2] - 0.003 or q[2] > hi[2] + 0.003:
+                continue
+            fn, fd = face[0], face[1]
+            c = v_dot(fn, n)
+            if c < -0.94:
+                fn, fd = v_mul(fn, -1.0), -fd
+            elif c < 0.94:
+                continue
+            tt = v_dot(fn, q) - fd
+            if tt < 0.005 or tt > 2.5:
+                continue
+            if near is not None and tt >= near:
+                continue
+            if _r_on_face(v_sub(q, v_mul(fn, tt)), face, 0.003):
+                near = tt
+        if near is not None:
+            hits.append(v_dot(n, q) - near)          # the plane's d along n
+    if len(hits) < 5:
+        return None
+    hits.sort(reverse=True)                          # furthest out first
+    return hits[len(hits) // 5]
+
+
+def _r_stack_swan(P, Q, walls, faces, s, sp, R, lead, top_k, size, all_faces=None):
+    """A soil stack marked straight down from the fascia (or the gutter) to the ground, like a
+    downpipe: out past the eaves at the top (clear of the fascia, gutter and roof edge, with the
+    vent above them), two 45 degree bends back in to the wall under the eaves, then down the
+    wall on its clips. P is the marked line and Q the pipe line (top first).
+    Returns (new Q, walls, the wall) or None to build it as marked."""
+    if len(P) < 2 or len(_r_clean(P)) != 2:
+        return None                                  # only one straight line down
+    top, bot = P[0], P[-1]
+    if math.hypot(top[0] - bot[0], top[1] - bot[1]) > 0.003 or top[2] - bot[2] < 1.0:
+        return None
+    # which way the wall faces: the face the line is on (fascia or gutter), or look all round
+    cands = [walls[0][0]] if walls and walls[0] else [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
+                                                       (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)]
+    best = None
+    for n_ in cands:
+        w = wall_behind(Q[0], Q[-1], n_, faces)
+        if w is None:
+            continue
+        u = v_dot(w[0], Q[0]) - w[1]
+        if u > 0.005 and (best is None or u < best[0]):
+            best = (u, w)
+    if best is None:
+        return None
+    n, dw = best[1]
+    fb = _r_brick_front(Q[0], Q[-1], n, faces)
+    if fb is not None and abs(fb - dw) < 0.06:
+        dw = fb                                      # the front of the bricks, not the mortar behind
+        best = (v_dot(n, Q[0]) - dw, (n, dw))
+    ps = sp * MM
+    r = size * 0.5 * MM
+    try:                                             # what's behind the pipe at a few heights (debug file)
+        _dbg("swan: wall", tuple(round(c, 3) for c in n), round(dw, 4), "line out", round(best[0], 4),
+             "upright faces", len(faces))
+        for f_ in (0.3, 0.5, 0.7):
+            q = v_add(Q[0], v_mul(v_sub(Q[-1], Q[0]), f_))
+            ts = []
+            for face in faces:
+                lo, hi = face[3]
+                if q[2] < lo[2] - 0.003 or q[2] > hi[2] + 0.003:
+                    continue
+                fn, fd = face[0], face[1]
+                c = v_dot(fn, n)
+                if c < -0.94:
+                    fn, fd = v_mul(fn, -1.0), -fd
+                elif c < 0.94:
+                    continue
+                tt = v_dot(fn, q) - fd
+                if 0.0 < tt < 2.5 and _r_on_face(v_sub(q, v_mul(fn, tt)), face, 0.003):
+                    ts.append(round(tt, 4))
+            _dbg("swan: z", round(q[2], 2), "faces behind (m from line)", sorted(set(ts))[:8])
+        _dbg("swan: brick front", round(dw, 4))
+    except Exception as e:
+        _dbg("swan: debug failed", e)
+    if best[0] - ps < 0.025:
+        return None                                  # marked on the wall already: build as marked
+    zcap = wall_top_at(Q[-1], (n, dw), faces)        # top of the wall (under the eaves)
+    if zcap is None:
+        return None
+    # what's at the eaves around the pipe: fascia, soffit, gutter, roof edge
+    a_ = (-n[1], n[0], 0.0)
+    x0 = v_dot(a_, Q[0])
+    hw = r + 0.03
+    low, out_u, high = None, None, None
+    cut = []                                         # each face cut down to the pipe's own column
+    for f in (all_faces or faces):
+        lo, hi = f[3]
+        if hi[2] < zcap - 0.3 or lo[2] > max(Q[0][2], zcap) + 3.0:
+            continue
+        if abs(f[0][2]) <= 0.35 and lo[2] < zcap - 0.6:
+            continue                                 # an upright face running down the wall
+        C = _clip_slab([(v_dot(a_, p) - x0, v_dot(n, p) - dw, p[2]) for p in f[2]], -hw, hw)
+        if not C:
+            continue
+        us = [c[1] for c in C]
+        if max(us) < 0.03 or min(us) > best[0] + 0.6:
+            continue                                 # the wall or its bricks, or well out in front
+        cut.append(C)
+        low = lo[2] if low is None else min(low, max(min(c[2] for c in C), zcap - 0.6))
+        out_u = max(us) if out_u is None else max(out_u, max(us))
+    for C in cut:                                    # the top of the eaves at their outer edge
+        for c in C:
+            if c[1] > out_u - 0.15 and c[2] <= zcap + 0.8:   # not the roof slope or a gable going up
+                high = c[2] if high is None else max(high, c[2])
+    eaves_low = min(zcap, low) if low is not None else zcap
+    u_pipe = best[0]
+    if top_k == 'vent' or Q[0][2] > eaves_low:
+        if out_u is not None:
+            u_pipe = max(u_pipe, out_u + r + 0.015)  # out past the gutter and roof edge
+    t0 = v_add(Q[0], v_mul(n, u_pipe - best[0]))
+    if top_k == 'vent':
+        above = s.get('vent_above', 150.0) * MM
+        zt = (high if high is not None else zcap) + above
+        if top[2] > zt + 0.02 and top[2] > Q[-1][2]:
+            zt = top[2]                              # marked higher on purpose: go up to there
+        t0 = (t0[0], t0[1], max(zt, zcap + 0.05))    # the vent just above the eaves
+    off = u_pipe - ps                                # how far in the pipe has to come
+    drop = lead + R + 0.06
+    za = min(t0[2] - drop, eaves_low - 2.0 * r - 0.42 * R - 0.02)   # below the eaves
+    a = (t0[0], t0[1], za)
+    b = v_add(v_sub(a, v_mul(n, off)), (0.0, 0.0, -off))          # 45 degrees in to the wall
+    g = v_sub(Q[-1], v_mul(n, best[0] - ps))         # down the wall to the ground
+    base = None                                      # the bottom of the wall / plinth behind it
+    for f in faces:
+        if f[3][0][2] > g[2] + 1.5:
+            continue
+        us = [v_dot(n, p) - dw for p in f[2]]
+        if max(us) < -0.05 or min(us) > ps + 0.4:
+            continue
+        C = _clip_slab([(v_dot(a_, p) - x0, 0.0, p[2]) for p in f[2]], -r, r)
+        if C:
+            zb = min(c[2] for c in C)
+            base = zb if base is None else min(base, zb)
+    if base is not None and g[2] < base - 0.01:
+        _dbg("swan: stack bottom", round(g[2], 3), "up to the bottom of the wall", round(base, 3))
+        g = (g[0], g[1], base)                       # the drain adaptor sits at the ground
+    if b[2] < g[2] + lead + R + 0.3 or t0[2] < a[2] + lead + R:
+        return None                                  # too short for the bends
+    out = [t0, a, b, g]
+    return out, [(n, dw)] * (len(out) - 1), (n, dw)
+
+
 def build_soil_route(chains, faces, s, all_faces=None):
     """Soil or waste pipe runs along the lines (each line a run, top first), with bends where
     the line turns, socket collars, clips to the wall and the ends finished off.
@@ -1919,6 +2082,8 @@ def build_soil_route(chains, faces, s, all_faces=None):
         bot_k = 'none'
     parts, notes, nruns, nowall = [], [], 0, 0
     navoid = 0
+    nswan = 0
+    swung = {}
     branches = []
     if system == 'soil':
         # a waste marked from the stack: a boss on the stack, the waste dog-legging into it
@@ -1946,6 +2111,24 @@ def build_soil_route(chains, faces, s, all_faces=None):
         for j in range(len(P)):
             cons = [(walls[k][0], sp * MM) for k in (j - 1, j) if 0 <= k < len(walls) and walls[k]]
             Q.append(v_add(P[j], _r_offset(cons)))
+        did_swan = False
+        # a stack marked straight down from the fascia: swan neck back to the wall under the eaves
+        if system == 'soil' and s.get('r_swan', True):
+            try:
+                sw = _r_stack_swan(P, Q, walls, faces, s, sp, R, lead, top_k, size, all_faces)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print("%s: swan neck: %s" % (PLUGIN_NAME, e))
+                sw = None
+            if sw:
+                if not any(walls):
+                    nowall -= 1                     # it found the wall after all
+                Q, walls, wall0 = sw
+                did_swan = True
+                s = dict(s, _stack_wall=wall0)
+                nswan += 1
+                swung[_r_key(P)] = wall0                # wastes into this stack go to the wall too
         # going down to the ground: step out round anything in the way (plinth, sill, lean-to)
         if s.get('r_avoid', True) and all_faces and len(Q) >= 2:
             try:
@@ -1974,6 +2157,37 @@ def build_soil_route(chains, faces, s, all_faces=None):
                 import traceback
                 traceback.print_exc()
                 print("%s: stepping round things: %s" % (PLUGIN_NAME, e))
+        # the stack ends at the bottom of what it comes down in front of (the plinth), where the
+        # drain adaptor goes into the ground - not below it, where it was marked
+        if did_swan and len(Q) >= 2 and walls and walls[-1]:
+            try:
+                a_, b_ = Q[-2], Q[-1]
+                if math.hypot(a_[0] - b_[0], a_[1] - b_[1]) < 0.003 and a_[2] > b_[2]:
+                    pn, pd = walls[-1]
+                    pn = v_norm((pn[0], pn[1], 0.0))
+                    plane = pd                                # the face the pipe runs down in front of
+                    ax = (-pn[1], pn[0], 0.0)
+                    x0_ = v_dot(ax, b_)
+                    rr = size * 0.5 * MM
+                    base = None
+                    for f in faces:
+                        if abs(v_dot(v_norm((f[0][0], f[0][1], 0.0)), pn)) < 0.94:
+                            continue
+                        if max(abs(v_dot(pn, p) - plane) for p in f[2]) > 0.006:
+                            continue
+                        C = _clip_slab([(v_dot(ax, p) - x0_, 0.0, p[2]) for p in f[2]], -rr, rr)
+                        if C:
+                            zb = min(c[2] for c in C)
+                            base = zb if base is None else min(base, zb)
+                    _dbg("stack bottom: marked", round(b_[2], 3), "face bottom", base)
+                    if base is not None:
+                        # a drain adaptor's spigot (150 mm into the drain) mustn't hang below it either
+                        want = base + (0.150 if bot_k == 'drain' else 0.0)
+                        if b_[2] < want - 0.005 and want < a_[2] - 0.1:
+                            Q = Q[:-1] + [(b_[0], b_[1], want)]
+                            _dbg("stack bottom: raised to", round(want, 3))
+            except Exception as e:
+                print("%s: stack bottom: %s" % (PLUGIN_NAME, e))
         # how far out the run hugs its wall (stepped round quoins or not); clips go on anything
         # near that, and are left off only where it stands right out (past the eaves)
         dhug = min((v_dot(wall0[0], q) - wall0[1]) / MM for q in Q) if wall0 is not None else 0.0
@@ -2065,7 +2279,7 @@ def build_soil_route(chains, faces, s, all_faces=None):
     nboss = 0
     for P, Q, k in branches:
         try:
-            got = _r_boss_waste(P, Q, k, faces, s, sp, sname, flip)
+            got = _r_boss_waste(P, Q, k, faces, s, sp, sname, flip, swung.get(_r_key(Q)))
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -2083,6 +2297,8 @@ def build_soil_route(chains, faces, s, all_faces=None):
     ncl = sum(int(p_[0].split(' x', 1)[1].split(' ')[0]) for p_ in parts
               if p_[0].startswith("Pipe clips x") and p_[0].split(' x', 1)[1].split(' ')[0].isdigit())
     what += ", %d clip%s" % (ncl, "" if ncl == 1 else "s")
+    if nswan:
+        what += ", %d swan neck%s back to the wall" % (nswan, "" if nswan == 1 else "s")
     if navoid:
         what += ", %d stepped round something in the way" % navoid
     if nboss:
@@ -2090,7 +2306,13 @@ def build_soil_route(chains, faces, s, all_faces=None):
     return parts, what, notes
 
 
-def _r_boss_waste(P, Q, k, faces, s, sp, sname, flip):
+def _r_key(P):
+    """Which marked line a run came from (either way round)."""
+    a, b = tuple(round(c, 5) for c in P[0]), tuple(round(c, 5) for c in P[-1])
+    return (a, b) if a <= b else (b, a)
+
+
+def _r_boss_waste(P, Q, k, faces, s, sp, sname, flip, stack_wall=None):
     """A boss on the stack where a marked waste starts on it, and the waste pipe from the far
     end along the wall on its own clips, dog-legging out into the boss outlet.
     P: the waste line from the stack end; Q, k: the stack line and the stretch it meets.
@@ -2099,7 +2321,15 @@ def _r_boss_waste(P, Q, k, faces, s, sp, sname, flip):
     a, b = Q[k], Q[k + 1]
     t = (E[2] - a[2]) / (b[2] - a[2]) if abs(b[2] - a[2]) > 1e-9 else 0.0
     J = v_add(a, v_mul(v_sub(b, a), max(0.0, min(1.0, t))))
-    w = segment_wall(a, b, faces, flip=flip)
+    if stack_wall:
+        # the stack was marked out on the fascia and taken back to the wall (swan neck): the
+        # boss and the waste go on the wall, not out where the lines were marked
+        n_, d_ = stack_wall
+        J = v_sub(J, v_mul(n_, v_dot(n_, J) - d_))
+        F = v_sub(F, v_mul(n_, v_dot(n_, F) - d_))
+        w = stack_wall
+    else:
+        w = segment_wall(a, b, faces, flip=flip)
     Jc = v_add(J, _r_offset([(w[0], sp * MM)])) if w else J
     Fh = (F[0], F[1], J[2])                               # the waste runs level
     D = v_norm((Fh[0] - J[0], Fh[1] - J[1], 0.0))
@@ -2121,14 +2351,45 @@ def _r_boss_waste(P, Q, k, faces, s, sp, sname, flip):
     K = v_add(Fh, v_mul(D, (reach + into + dog) - dist))
     s2 = dict(s, r_system='waste', r_top='none', r_bot='none', r_avoid=False)
     wn = w or s.get('_stack_wall')
+    wsoff = clip_standoff(s, 'waste') + s['wall_gap']      # waste pipe middle to the wall (mm)
     if wn:
         s2['_wall'] = (wn[0], v_dot(wn[0], F))            # the wall the waste was drawn on (for its clips)
         # the waste stands off that wall on its clips; the dog leg takes it out to the boss
-        off = v_mul(wn[0], (clip_standoff(s, 'waste') + s['wall_gap']) * MM)
+        off = v_mul(wn[0], wsoff * MM)
         Fh, K = v_add(Fh, off), v_add(K, off)
+    end_k = s.get('w_end', 'none') if wn else 'none'
+    into_wall = (wsoff + 40.0) * MM                       # how far a waste goes into the wall
+    path = [Fh, K, M, B]
+    if end_k == 'wall':
+        path = [v_sub(Fh, v_mul(wn[0], into_wall))] + path   # bends and goes into the wall
     # the points are placed already, so no wall faces: the end has to land right in the boss
-    wparts, _w, _n = build_soil_route([([Fh, K, M, B], False)], [], s2, None)
-    return out + wparts
+    wparts, _w, _n = build_soil_route([(path, False)], [], s2, None)
+    out += wparts
+
+    def tee_at(d, keep_end):
+        """A tee on the waste, its branch at distance d from the stack going into the wall
+        (another sink), the run carrying on past it. keep_end: leave its far end open."""
+        C = v_add(Fh, v_mul(D, d - dist))                 # on the pipe's middle line
+        st = dict(s, bend_dir=0.0, branch_len=max(10.0, wsoff + 40.0 - wsz / 2.0))
+        _x, tg = plan_part('w_tee', st, end_target(C, D, v_mul(wn[0], -1.0), 'out', 'waste'))
+        if 'branch' in tg:                                # slide it so the branch is right at d
+            shift = v_dot(v_sub(C, tuple(tg['branch']['c'])), D)
+            C = v_add(C, v_mul(D, shift))
+        tw, tg = plan_part('w_tee', st, end_target(C, D, v_mul(wn[0], -1.0), 'out', 'waste'))
+        tags = {'out': tg['out']} if keep_end and 'out' in tg else {}
+        _dbg("waste tee at", round(d, 3), "branch", tg.get('branch', {}).get('c'), "out", tg.get('out', {}).get('c'))
+        return ("Tee (90 deg) - %s x %g mm" % ("Waste", wsz), tw, tags)
+
+    if wn:
+        # a corner clicked along the waste (level, along the wall) is another sink: a tee there
+        for S in P[1:-1]:
+            Sw = v_sub(S, v_mul(wn[0], v_dot(wn[0], S) - v_dot(wn[0], J))) if stack_wall else S
+            dS = v_dot(v_sub((Sw[0], Sw[1], J[2]), J), D)
+            if reach + into + dog + 0.08 < dS < dist - 0.06:
+                out.append(tee_at(dS, False))
+        if end_k == 'tee':
+            out.append(tee_at(dist, True))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2136,6 +2397,78 @@ def _r_boss_waste(P, Q, k, faces, s, sp, sname, flip):
 # ---------------------------------------------------------------------------
 VIEW_DIR = v_norm((-0.55, 0.8, -0.5))          # looking from the front right, above
 LIGHT = v_norm((0.35, -0.55, 0.8))
+
+
+
+def _soften_pipe_edges(mesh, made_faces, max_angle=30.0):
+    """Softens (hides and smooths) the edges between faces that meet at less than max_angle
+    degrees - round the pipes and along the bends - so a pipe looks smooth and shows its
+    real colour from a distance (all its lines made it look black). Sharp edges stay.
+    made_faces: [(face, normal)] as they were added. (As 3D Blend does it.)"""
+    def items(x):
+        if x is None:
+            return []
+        if isinstance(x, dict):
+            return list(x.values())
+        try:
+            return list(x)
+        except Exception:
+            return []
+
+    def val(o, name):
+        x = getattr(o, name, None)
+        if callable(x):
+            try:
+                x = x()
+            except Exception:
+                return None
+        return x
+
+    def xyz(p):
+        if p is None:
+            return None
+        try:
+            if callable(getattr(p, 'x', None)):
+                return (float(p.x()), float(p.y()), float(p.z()))
+            if hasattr(p, 'x'):
+                return (float(p.x), float(p.y), float(p.z))
+            return (float(p[0]), float(p[1]), float(p[2]))
+        except Exception:
+            return None
+
+    normals = {}
+
+    def normal_of(f):
+        k = id(f)
+        if k not in normals:
+            nrm = None
+            pts = [xyz(v) for v in items(val(f, 'vertices'))]
+            pts = [q for q in pts if q is not None]
+            if len(pts) >= 3:
+                nrm = v_norm(_newell(pts))
+            if nrm is None or v_len(nrm) < 0.5:
+                nrm = xyz(val(f, 'normal'))
+                nrm = v_norm(nrm) if nrm else None
+            normals[k] = nrm
+        return normals[k]
+
+    # IngeTrazo's edges know their faces and have a 'soft' setting (like SketchUp's)
+    cos_lim = math.cos(math.radians(max_angle))
+    soft = 0
+    for e in items(val(mesh, 'edges')):
+        fs = items(val(e, 'faces'))
+        if len(fs) != 2:
+            continue
+        n1, n2 = normal_of(fs[0]), normal_of(fs[1])
+        if n1 is None or n2 is None:
+            continue
+        if v_dot(n1, n2) >= cos_lim:
+            try:
+                e.soft = True
+                soft += 1
+            except Exception:
+                pass
+    return soft
 
 
 def _newell(pts):
@@ -2563,6 +2896,12 @@ INFO_TEXT = ("<b>Mark the run (easy to see)</b><br>"
              "line; again when you've finished marking. It snaps to the ends of your marked lines and onto "
              "them. Then 'Build along lines' - everything goes into one group, and pipes going down to the "
              "ground step out round a plinth, a sill or a lean-to.<br><br>"
+             "<b>Soil stack like a downpipe</b><br>"
+             "Mark the stack from the fascia (or the gutter) straight down to the ground - one line. "
+             "The vent stays out above the eaves, two 45 degree bends take it back to the wall under the "
+             "eaves, it runs down the wall on its clips and steps out round the plinth at the bottom. "
+             "For a sink waste into it, mark the waste from the stack line (it snaps on) level along "
+             "the wall: it gets a boss on the stack and dog-legs into it.<br><br>"
              "<b>Follow lines (the quick way)</b><br>"
              "Draw a line where each pipe run goes, corner to corner - down the wall for a soil stack, or out "
              "of the wall and down for a waste. Select the lines, go to the Follow lines page, pick soil or "
@@ -3005,6 +3344,25 @@ class SoilWasteDialog(QDialog):
         self.cb_ravoid.setToolTip("On the way down to the ground, the pipe steps out (bends) over anything "
                                   "that sticks out in its way, and back in below it where there's wall.")
         rf.addRow(self.cb_ravoid)
+        self.cb_rswan = QCheckBox("Stack marked from the fascia: swan neck back to the wall under the eaves")
+        self.cb_rswan.setChecked(bool(cur.get('r_swan', True)))
+        self.cb_rswan.setToolTip("Mark a soil stack from the fascia (or the gutter) straight down to the "
+                                 "ground, like a downpipe: the vent stays out above the eaves, two 45 degree "
+                                 "bends take it back to the wall, and it runs down the wall on its clips.")
+        rf.addRow(self.cb_rswan)
+        self.sp_vabove = mm_spin(cur.get('vent_above', 150.0), 0.0)
+        self.sp_vabove.setToolTip("How far the vent goes up above the top of the gutter and roof edge, "
+                                  "on a stack marked from the fascia. Mark the top higher if you want it taller.")
+        rf.addRow("Vent above the eaves", self.sp_vabove)
+        self.cb_wend = QComboBox()
+        for label, key in W_ENDS:
+            self.cb_wend.addItem(label, key)
+            if key == cur.get('w_end', 'none'):
+                self.cb_wend.setCurrentIndex(self.cb_wend.count() - 1)
+        self.cb_wend.setToolTip("What goes on the far end of a waste marked into the stack (it gets a boss "
+                                "on the stack). Each corner you click along the waste on the way gets a tee "
+                                "into the wall too - one for each sink.")
+        rf.addRow("End of a waste into the stack", self.cb_wend)
         rn = QLabel("Lines drawn on a wall stand the pipe off it on its clips (plus N). Lines in mid-air "
                     "are the middle of the pipe. Uses the sizes, Fittings and Clips pages too.")
         rn.setWordWrap(True)
@@ -3884,7 +4242,8 @@ class SoilWasteDialog(QDialog):
              'r_system': self.cb_rsys.currentData(), 'r_top': self.cb_rtop.currentData(),
              'r_bot': self.cb_rbot.currentData(), 's_maxlen': self.sp_smax.value(),
              'w_maxlen': self.sp_wmax.value(), 'r_flip': self.cb_rflip.isChecked(),
-             'r_avoid': self.cb_ravoid.isChecked()}
+             'r_avoid': self.cb_ravoid.isChecked(), 'r_swan': self.cb_rswan.isChecked(),
+             'vent_above': self.sp_vabove.value(), 'w_end': self.cb_wend.currentData()}
         for k, w in self.sp.items():
             v[k] = w.value()
         return v
@@ -3892,16 +4251,22 @@ class SoilWasteDialog(QDialog):
     def set_values(self, d):
         for c, key in ((self.cb_solid, 'solid'), (self.cb_chunky, 'chunky'), (self.cb_detail, 'detail'),
                        (self.cb_psock, 'pipe_socket'), (self.cb_ears, 'ears'), (self.cb_fit, 'fit_wall'),
-                       (self.cb_fix, 'auto_fix'), (self.cb_rflip, 'r_flip'), (self.cb_ravoid, 'r_avoid')):
+                       (self.cb_fix, 'auto_fix'), (self.cb_rflip, 'r_flip'), (self.cb_ravoid, 'r_avoid'),
+                       (self.cb_rswan, 'r_swan')):
             if key in d:
                 c.setChecked(bool(d[key]))
         for w, key in ((self.sp_ss, 's_size'), (self.sp_st, 's_wall'), (self.sp_ws, 'w_size'),
                        (self.sp_wt, 'w_wall'), (self.sp_along, 'along'), (self.sp_drop, 'drop'),
                        (self.sp_below, 'below'), (self.sp_wh, 'w_height'), (self.sp_wgap, 'wall_gap'),
                        (self.sp_ssp, 's_spacing'), (self.sp_wsp, 'w_spacing'),
-                       (self.sp_chunk, 'chunk_mult'), (self.sp_smax, 's_maxlen'), (self.sp_wmax, 'w_maxlen')):
+                       (self.sp_chunk, 'chunk_mult'), (self.sp_smax, 's_maxlen'), (self.sp_wmax, 'w_maxlen'),
+                       (self.sp_vabove, 'vent_above')):
             if d.get(key) is not None:
                 w.setValue(float(d[key]))
+        if d.get('w_end') is not None:
+            i = self.cb_wend.findData(d['w_end'])
+            if i >= 0:
+                self.cb_wend.setCurrentIndex(i)
         for k, w in self.sp.items():
             if d.get(k) is not None:
                 w.setValue(float(d[k]))
@@ -4225,6 +4590,13 @@ class SoilWastePipesTool(Tool):
             traceback.print_exc()
             QMessageBox.warning(dlg, PLUGIN_NAME, "Could not build along the lines:\n%s" % e)
             return
+        try:                                   # what it found, for sorting out problems
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ed3d_soil_debug.txt"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("version %s\n%s\n%s\n" % (VERSION, what if parts else "nothing built",
+                                                    "\n".join(DEBUG_LOG)))
+        except Exception:
+            pass
         if not parts:
             QMessageBox.information(dlg, PLUGIN_NAME, "Nothing could be built along those lines.\n\n" +
                                     "\n".join(notes))
@@ -4276,8 +4648,10 @@ class SoilWastePipesTool(Tool):
             from core.mesh import Mesh
             from core.group import Group
             made = []
+            to_soften = []
             for name, world, tags in parts:
                 mesh = Mesh()
+                soft_faces = []
                 for so in world:
                     verts = {}
 
@@ -4291,6 +4665,10 @@ class SoilWastePipesTool(Tool):
                         try:
                             f = mesh.add_face([vx(p) for p in pts])
                             stats['faces'] += 1
+                            try:
+                                soft_faces.append((f, v_norm(_newell(pts))))
+                            except Exception:
+                                pass
                         except Exception as e:
                             stats['errors'] += 1
                             stats['err'] = e
@@ -4303,6 +4681,7 @@ class SoilWastePipesTool(Tool):
                                 pass
                 if stats['faces'] == 0:
                     raise RuntimeError("No faces could be created (%s)." % stats['err'])
+                to_soften.append((mesh, soft_faces))
                 g = Group(name)
                 g.mesh = mesh
                 _ed3d_organise(scene, g)
@@ -4339,6 +4718,39 @@ class SoilWastePipesTool(Tool):
                     scene.groups.append(g)
                 else:
                     raise RuntimeError("Could not add the part to the scene.")
+            soft_log = []
+            for mesh, soft_faces in to_soften:
+                for fn_ in ('recompute_normals', 'update_normals', 'rebuild', 'invalidate'):
+                    m_ = getattr(mesh, fn_, None)
+                    if callable(m_):
+                        try:
+                            m_()
+                        except Exception:
+                            pass
+                try:
+                    soft_log.append(_soften_pipe_edges(mesh, soft_faces))
+                except Exception as e:
+                    soft_log.append("error %s" % e)
+            try:                                   # what happened, for sorting out problems
+                m0 = to_soften[0][0] if to_soften else None
+                info = {'mesh': type(m0).__name__, 'find_edge': callable(getattr(m0, 'find_edge', None)),
+                        'edges': type(getattr(m0, 'edges', None)).__name__}
+                es = getattr(m0, 'edges', None)
+                es = es() if callable(es) else es
+                e0 = None
+                try:
+                    e0 = next(iter(es.values() if isinstance(es, dict) else es))
+                except Exception:
+                    pass
+                info['edge_attrs'] = sorted(a for a in dir(e0) if not a.startswith('__'))[:60] if e0 is not None else None
+                f0 = to_soften[0][1][0][0] if to_soften and to_soften[0][1] else None
+                info['face_attrs'] = sorted(a for a in dir(f0) if not a.startswith('__'))[:60] if f0 is not None else None
+                info['mesh_attrs'] = sorted(a for a in dir(m0) if not a.startswith('__'))[:80] if m0 is not None else None
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ed3d_soften_debug.txt"),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("%s %s\nsoftened per part: %s\n%s\n" % (PLUGIN_NAME, VERSION, soft_log, info))
+            except Exception as e:
+                print("%s: soften log: %s" % (PLUGIN_NAME, e))
 
         try:
             viewport.history.execute(SnapshotImport(mutate))

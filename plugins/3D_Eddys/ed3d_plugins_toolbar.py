@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.19"  # 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.20"  # 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -110,6 +110,7 @@ PLUGINS = [
     ("3D Bridges & Arches", "Ctrl+Alt+Shift+B", "Bridges", "bridge"),
     ("3D Check for Updates", "Ctrl+Alt+Shift+U", "Updates", "update"),
     ("3D Card Kit", "Ctrl+Alt+Shift+K", "Card kit", "cardkit"),
+    ("3D Realistic Wall", "Ctrl+Shift+W", "Stone face", "realwall"),
 ]
 
 
@@ -674,6 +675,17 @@ def make_icon(kind):
         p.setPen(dark)
         p.setBrush(QColor(225, 225, 220))
         p.drawRect(QRectF(5, 25, 22, 4))
+    elif kind == "realwall":
+        # a wall of rough stones, carved in
+        p.setPen(QPen(QColor(70, 60, 50), 1.0))
+        p.setBrush(QColor(95, 85, 72))
+        p.drawRect(QRectF(2, 3, 28, 26))
+        stones = [(3, 4, 9, 6), (13, 4, 7, 6), (21, 4, 8, 6), (3, 11, 6, 6), (10, 11, 10, 6), (21, 11, 8, 6),
+                  (3, 18, 10, 5), (14, 18, 6, 5), (21, 18, 8, 5), (3, 24, 7, 4), (11, 24, 9, 4), (21, 24, 8, 4)]
+        shades = [(196, 186, 165), (175, 165, 145), (210, 200, 180), (185, 175, 152)]
+        for i, (x, y, w, h) in enumerate(stones):
+            p.setBrush(QColor(*shades[i % 4]))
+            p.drawRoundedRect(QRectF(x, y, w, h), 1.6, 1.6)
     p.end()
     return QIcon(pm)
 
@@ -838,7 +850,7 @@ DIVIDER = "|"          # in the saved layout: a divider between groups of button
 # The plugins sorted by what they're for: the Extensions menu's sub-menus, and the
 # ready-made 'one small toolbar for each kind' layout.
 GROUPS = [
-    ("Walls", ["3D Brick & Block Studio", "3D Wrap", "3D Wood Planking", "3D Subframe", "3D Floor Plan"]),
+    ("Walls", ["3D Brick & Block Studio", "3D Realistic Wall", "3D Wrap", "3D Wood Planking", "3D Subframe", "3D Floor Plan"]),
     ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
     ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
@@ -2664,7 +2676,7 @@ EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
               "pieces_in", "blend", "subframe", "floor_plan", "openings", "plugins_toolbar",
-              "update_checker")
+              "update_checker", "realistic_wall")
 EDDY_EXTRA_NAMES = ()
 
 
