@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.15"  # 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.18"  # 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -109,6 +109,7 @@ PLUGINS = [
     ("3D Show / Hide", "Ctrl+Alt+Shift+H", "Show/hide", "eye"),
     ("3D Bridges & Arches", "Ctrl+Alt+Shift+B", "Bridges", "bridge"),
     ("3D Check for Updates", "Ctrl+Alt+Shift+U", "Updates", "update"),
+    ("3D Card Kit", "Ctrl+Alt+Shift+K", "Card kit", "cardkit"),
 ]
 
 
@@ -634,6 +635,31 @@ def make_icon(kind):
             ring.arcMoveTo(QRectF(x0 - 1.5, 13.5, 11, 15), 180)
             ring.arcTo(QRectF(x0 - 1.5, 13.5, 11, 15), 180, -180)
             p.drawPath(ring)
+    elif kind == "cardkit":
+        # a sheet of paper with a little printed house on it: its glue tab and a dashed fold
+        p.setPen(dark)
+        p.setBrush(QColor(250, 250, 246))
+        sheet = QPainterPath()
+        sheet.moveTo(5, 2)
+        sheet.lineTo(22, 2)
+        sheet.lineTo(28, 8)
+        sheet.lineTo(28, 30)
+        sheet.lineTo(5, 30)
+        sheet.closeSubpath()
+        p.drawPath(sheet)
+        p.setBrush(QColor(225, 225, 225))
+        p.drawPolygon(QPolygonF([QPointF(22, 2), QPointF(22, 8), QPointF(28, 8)]))   # turned-up corner
+        p.setBrush(QColor(215, 215, 215))
+        p.drawPolygon(QPolygonF([QPointF(9, 25), QPointF(24, 25), QPointF(22, 28), QPointF(11, 28)]))  # tab
+        p.setPen(QPen(QColor(110, 50, 35), 1.0))
+        p.setBrush(QColor(176, 84, 56))
+        p.drawPolygon(QPolygonF([QPointF(9, 25), QPointF(9, 15), QPointF(16.5, 8.5), QPointF(24, 15),
+                                 QPointF(24, 25)]))                                   # the house
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255))
+        p.drawRect(QRectF(12, 17, 4, 4))                                              # window to cut out
+        p.setPen(QPen(QColor(30, 30, 30), 1.0, Qt.DashLine))
+        p.drawLine(QPointF(9, 25), QPointF(24, 25))                                   # the fold
     elif kind == "update":
         # a green arrow coming down into a tray, under a blue circling arrow
         p.setPen(QPen(QColor(40, 110, 180), 2.4))
@@ -818,7 +844,7 @@ GROUPS = [
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
-    ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In"]),
+    ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In", "3D Card Kit"]),
     ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar", "3D Check for Updates"]),
 ]
 MAIN_ID = "main"
@@ -988,9 +1014,8 @@ def build_buttons(tb, win, items=None):
         act.triggered.connect(lambda checked=False, n=name, s=shortcut: run_plugin(win, n, s))
         tb.addAction(act)
         act.setVisible(name not in hidden)
-    if getattr(tb, '_bar_id', MAIN_ID) == MAIN_ID:
-        va = tb.addWidget(_version_label())
-        va._wf = True                           # made fresh each time the buttons are rebuilt
+    # (the version number used to sit at the end of the main toolbar; taken off in 3.18 - it's in
+    # the title of the Arrange toolbars window instead)
 
 
 # ---------------------------------------------------------------------------
@@ -1442,6 +1467,7 @@ PROJECT_NAME = TOOLBAR_NAME + "_project"
 # EssexBrick Model Works videos on YouTube: add each plugin's link here as its video comes out
 VIDEOS = {
     "Getting started": "https://youtu.be/ho2iT4jlClQ",
+    "How to install": "https://youtu.be/Qernr_VfzYQ",
     "3D Floor Plan": "https://youtu.be/PPgYvw2RL8I",
     "3D Openings": "https://youtu.be/2Y94tA5ecPQ",
     "3D Subframe": "https://youtu.be/HjO3KEXHdlY",
@@ -1490,6 +1516,8 @@ PROJECTS = [
     ("Get a model ready to print", [
         ("3D Layers & Colours", "Check parts"), ("3D Scale Studio", "Scale & pieces"),
         ("3D Print Scaler", "Fit the bed")]),
+    ("Make a card kit (print on paper)", [
+        ("3D Layers & Colours", "Colours"), ("3D Card Kit", "Card kit")]),
 ]
 MAKE_CSS = ("QToolButton { color: #4a0a16; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
             "stop:0 #ffe08a, stop:1 #e0b040); border: 2px solid #8e1d33; border-radius: 13px; "
@@ -1564,6 +1592,9 @@ def add_make_button(tb, win):
         menu.addSeparator()
         vid = menu.addAction("\u25b6  Watch: Getting started (video)")
         vid.triggered.connect(lambda checked=False: open_video("Getting started"))
+    if VIDEOS.get("How to install"):
+        ins = menu.addAction("\u25b6  Watch: How to install (video)")
+        ins.triggered.connect(lambda checked=False: open_video("How to install"))
     menu.addSeparator()
     off = menu.addAction("Put the steps away")
     off.triggered.connect(lambda checked=False: close_project(win))
@@ -2074,7 +2105,7 @@ def arrange_buttons(tb=None):
     win = (tb.parent() if tb is not None else None) or _main_window()
     dlg = QDialog(win)
     dlg.setObjectName(TOOLBAR_NAME + "_arrange")
-    dlg.setWindowTitle("Arrange the 3D Plugins toolbars")
+    dlg.setWindowTitle("Arrange the 3D Plugins toolbars  (version %s)" % VERSION)
     lay = QVBoxLayout(dlg)
     note = QLabel("Every toolbar and its buttons. Pick a button and move it up or down - past the top or "
                   "bottom of a toolbar it goes onto the next one - or send it straight to another toolbar. "

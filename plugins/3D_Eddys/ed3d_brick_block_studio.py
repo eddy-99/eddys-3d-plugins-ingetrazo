@@ -19,6 +19,19 @@ bricks on edge, cock and hen, upright slates), weathering and bomb-site damage (
 and sunk units, a broken-down top, blast holes and missing units that can go right through,
 hanging units taken out, rubble at the foot), and rubble piles with planks, barrels, crates and
 your own objects. Sizes in real-world mm.
+Version 7.9: the level bands of a brick cut round an arch are always joined back up, even where the
+general join can't manage it (no more thin stacked strips beside an arch).
+Version 7.8: a brick cut round an arch is worked out a sounder way (in level bands, each cut along
+the arch's true line, then joined back into one piece), so no overlaps, odd triangles or fans.
+Version 7.7: the bits of a brick cut round an arch are joined back into one piece more readily (no
+fans of thin wedges), and only really thin slivers are left out, so no brick-sized gaps by the arch.
+Version 7.6: no thin slivers of brick left along an arch where it runs almost level with the
+courses (near the crown): a cut piece thinner than 'Smallest cut piece' is left out, and the
+mortar shows there instead.
+Version 7.5: bricks round an arch (or any opening that isn't a plain box) are cut along the arch's
+true line, not in little steps of thin slices.
+Version 7.4: no more bricks missing round arched windows - an opening is only smoothed over
+when its outline really is nearly round (not when an arch ring stands out past the window).
 Version 7.3: follows the outside face other plugins mark on their pieces (3D Bridges & Arches), and
 leaves out the pieces they mark as not walls (pier linings, end walls, barrels...).
 """
@@ -38,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "7.3"             # shown in the window title, so you can tell which file is loaded
+VERSION = "7.9"             # shown in the window title, so you can tell which file is loaded
 
 
 PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
@@ -258,7 +271,197 @@ def _hole_intervals(poly, y):
     return [[xs[i], xs[i + 1]] for i in range(0, len(xs) - 1, 2)]
 
 
+def _hole_convex_parts(hole):
+    """An opening that isn't convex (an arched window with its brick ring) split into a few convex
+    pieces: cut into triangles, then neighbours joined back while they stay convex."""
+    h = [tuple(p) for p in hole]
+    if _area(h) < 0:
+        h = h[::-1]
+    parts = [list(t) for t in _ear_clip(h)]
+    merged = True
+    while merged and len(parts) > 1:
+        merged = False
+        for a in range(len(parts)):
+            A = parts[a]
+            for b in range(a + 1, len(parts)):
+                B = parts[b]
+                joined = None
+                for i in range(len(A)):
+                    u, v = A[i], A[(i + 1) % len(A)]
+                    for j in range(len(B)):
+                        if B[j] == v and B[(j + 1) % len(B)] == u:
+                            # walk A from v round to u, then B from after u round to before v
+                            ra = [A[(i + 1 + k) % len(A)] for k in range(len(A))]
+                            rb = [B[(j + 2 + k) % len(B)] for k in range(len(B) - 2)]
+                            joined = ra + rb
+                            break
+                    if joined:
+                        break
+                if joined and _is_convex(joined) and _area(joined) > 0:
+                    parts[a] = joined
+                    del parts[b]
+                    merged = True
+                    break
+            if merged:
+                break
+    return [p for p in parts if len(p) >= 3 and _area(p) > 0]
+
+
+_PARTS_CACHE = {}
+
+
+def _subtract_exact(poly, hole):
+    """A brick with the opening taken out of it, along the opening's true outline."""
+    key = id(hole)
+    got = _PARTS_CACHE.get(key)
+    if got is None or got[0] is not hole:
+        if len(_PARTS_CACHE) > 400:
+            _PARTS_CACHE.clear()
+        got = (hole, [(p, _bbox(p)) for p in _hole_convex_parts(hole)])
+        _PARTS_CACHE[key] = got
+    parts = got[1]
+    if not parts:
+        raise ValueError("opening couldn't be split")
+    pieces = [list(poly)]
+    for part, (hx1, hx2, hy1, hy2) in parts:
+        nxt = []
+        for pc in pieces:
+            px = [p[0] for p in pc]
+            py = [p[1] for p in pc]
+            if max(px) <= hx1 or min(px) >= hx2 or max(py) <= hy1 or min(py) >= hy2:
+                nxt.append(pc)
+            else:
+                nxt.extend(q for q in _subtract_convex(pc, part) if len(q) >= 3)
+        pieces = nxt
+        if not pieces:
+            break
+    return pieces
+
+
+def _seg_y_cross(a, b, c, d):
+    """The height where segment ab crosses segment cd, or None."""
+    r = (b[0] - a[0], b[1] - a[1])
+    q = (d[0] - c[0], d[1] - c[1])
+    den = r[0] * q[1] - r[1] * q[0]
+    if abs(den) < 1e-30:
+        return None
+    t = ((c[0] - a[0]) * q[1] - (c[1] - a[1]) * q[0]) / den
+    u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den
+    if 0.0 < t < 1.0 and 0.0 < u < 1.0:
+        return a[1] + t * r[1]
+    return None
+
+
+def _subtract_bands(poly, hole):
+    """poly with the opening taken out, exactly: cut into level bands at every corner and every
+    crossing, so inside each band every edge runs straight across; there the pieces left are
+    trapezoids between the edges, and those are joined back up afterwards."""
+    pe = [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+    he = [(hole[i], hole[(i + 1) % len(hole)]) for i in range(len(hole))]
+    y_lo = min(p[1] for p in poly)
+    y_hi = max(p[1] for p in poly)
+    ys = {y_lo, y_hi}
+    for p in hole:
+        if y_lo < p[1] < y_hi:
+            ys.add(p[1])
+    for p in poly:
+        ys.add(p[1])
+    px1, px2 = min(p[0] for p in poly), max(p[0] for p in poly)
+    for a, b in pe:
+        for c, d in he:
+            if max(c[0], d[0]) < min(a[0], b[0]) or min(c[0], d[0]) > max(a[0], b[0]):
+                continue
+            yc = _seg_y_cross(a, b, c, d)
+            if yc is not None and y_lo < yc < y_hi:
+                ys.add(yc)
+    ys = sorted(ys)
+    span = max(y_hi - y_lo, px2 - px1, 1e-12)
+    out = []
+
+    def x_at(e, y):
+        (x1, y1), (x2, y2) = e
+        if abs(y2 - y1) < 1e-300:
+            return x1
+        return x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+    for y0, y1 in zip(ys, ys[1:]):
+        if y1 - y0 <= span * 1e-9:
+            continue
+        ym = (y0 + y1) * 0.5
+        cross = []
+        for e in pe:
+            (ax, ay), (bx, by) = e
+            if min(ay, by) <= y0 and max(ay, by) >= y1 and ay != by:
+                cross.append((x_at(e, ym), 0, e))
+        for e in he:
+            (ax, ay), (bx, by) = e
+            if min(ay, by) <= y0 and max(ay, by) >= y1 and ay != by:
+                cross.append((x_at(e, ym), 1, e))
+        cross.sort(key=lambda t: t[0])
+        in_p = in_h = False
+        for k in range(len(cross) - 1):
+            _x, which, e = cross[k]
+            if which == 0:
+                in_p = not in_p
+            else:
+                in_h = not in_h
+            if in_p and not in_h:
+                e2 = cross[k + 1][2]
+                l0, l1 = x_at(e, y0), x_at(e, y1)
+                r0, r1 = x_at(e2, y0), x_at(e2, y1)
+                trap = [(l0, y0), (r0, y0), (r1, y1), (l1, y1)]
+                trap = [p for i, p in enumerate(trap)
+                        if abs(p[0] - trap[i - 1][0]) > span * 1e-12 or abs(p[1] - trap[i - 1][1]) > span * 1e-12]
+                if len(trap) >= 3 and _area(trap) > span * span * 1e-12:
+                    out.append(trap)
+    return out
+
+
+def _join_shared(pieces, eps):
+    """Joins pieces that share a whole edge (one band on top of the next) into one, again and again
+    until none do. Simple and sure: used before the general join, so even if that one gives up the
+    bands are already joined."""
+    def key(p):
+        return (round(p[0] / eps), round(p[1] / eps))
+    pcs = [list(p) for p in pieces]
+    changed = True
+    while changed and len(pcs) > 1:
+        changed = False
+        edge_of = {}
+        for k, pc in enumerate(pcs):
+            for i in range(len(pc)):
+                edge_of.setdefault((key(pc[i]), key(pc[(i + 1) % len(pc)])), (k, i))
+        for k, pc in enumerate(pcs):
+            for i in range(len(pc)):
+                u, v = key(pc[i]), key(pc[(i + 1) % len(pc)])
+                hit = edge_of.get((v, u))
+                if hit is None or hit[0] == k:
+                    continue
+                m, j = hit
+                B = pcs[m]
+                # this piece from v round to u, then the other from after u round to before v
+                ra = [pc[(i + 1 + t) % len(pc)] for t in range(len(pc))]
+                rb = [B[(j + 2 + t) % len(B)] for t in range(len(B) - 2)]
+                joined = _simplify(ra + rb, eps)
+                if len(joined) >= 3 and abs(abs(_area(joined)) - abs(_area(pc)) - abs(_area(B))) <= \
+                        1e-6 * (abs(_area(pc)) + abs(_area(B))) + eps * eps:
+                    pcs = [p for t, p in enumerate(pcs) if t not in (k, m)] + [joined]
+                    changed = True
+                    break
+            if changed:
+                break
+    return pcs
+
+
 def _subtract_concave(poly, hole, subdiv):
+    try:
+        h = [tuple(p) for p in hole]
+        return _subtract_bands([tuple(p) for p in poly], h)
+    except Exception:
+        pass                    # fall back to slices (the old way)
+    return _subtract_concave_slices(poly, hole, subdiv)
+
+
+def _subtract_concave_slices(poly, hole, subdiv):
     xs = [p[0] for p in poly]
     yv = [p[1] for p in poly]
     bx1, bx2, by1, by2 = min(xs), max(xs), min(yv), max(yv)
@@ -396,15 +599,36 @@ def _hull(pts):
     return lo[:-1] + hi[:-1]
 
 
-def _smooth_hole(h):
+def _hull_gap(h, hull):
+    """How far the opening's outline comes in from its smooth outline, at the most."""
+    worst = 0.0
+    m = len(hull)
+    for p in h:
+        best = None
+        for j in range(m):
+            a, b = hull[j], hull[(j + 1) % m]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 <= 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
+            d = math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+            if best is None or d < best:
+                best = d
+        worst = max(worst, best or 0.0)
+    return worst
+
+
+def _smooth_hole(h, tol=None):
     """(hole, box, convex) for an opening. One that is very nearly convex - a round window with
     little teeth round it from a brick ring - is taken as its smooth outline, so the bricks round
-    it are cut cleanly instead of in thin slices."""
+    it are cut cleanly instead of in thin slices. Only when the teeth are small (under tol): an
+    arched window whose brick ring stands out past the window is cut round properly, or the
+    bricks in the corners beside the ring were cut away too, leaving dark gaps."""
     if _is_convex(h):
         return (h, _bbox(h), True)
     hull = _hull(h)
     if len(hull) >= 3 and abs(_area(h)) >= 0.97 * abs(_area(hull)):
-        return (hull, _bbox(hull), True)
+        if tol is None or _hull_gap(h, hull) <= tol:
+            return (hull, _bbox(hull), True)
     return (h, _bbox(h), False)
 
 
@@ -460,9 +684,16 @@ def trim_poly(poly, holes, subdiv, min_frag):
         if not pieces:
             break
     if MERGE_PIECES and len(pieces) > 1:
-        pieces = _merge(pieces, ext * 1e-7)
+        pieces = _join_shared(pieces, ext * 1e-6)
+        if len(pieces) > 1:
+            pieces = _merge(pieces, ext * 1e-6)
     min_area = min_frag * min_frag * 0.5
-    return [pc for pc in pieces if len(pc) >= 3 and abs(_area(pc)) >= min_area]
+    thin = min_frag * 0.2          # how thin a cut piece may be: 2 x area / perimeter is its width
+
+    def thick_enough(pc):
+        per = sum(math.hypot(pc[i][0] - pc[i - 1][0], pc[i][1] - pc[i - 1][1]) for i in range(len(pc)))
+        return per <= 0 or 2.0 * abs(_area(pc)) / per >= thin
+    return [pc for pc in pieces if len(pc) >= 3 and abs(_area(pc)) >= min_area and thick_enough(pc)]
 
 
 # ---------------- trimming to the face's own outline ----------------
@@ -2326,7 +2557,8 @@ def wall_units(p, W, H, outline, holes, hole_ids, rng_seed_base=0):
     def picked(k):
         return chosen is None or hole_ids[k] in chosen
 
-    real_holes = [_smooth_hole(h) for h in holes]
+    # teeth smaller than a third of a brick's height are smoothed over; anything bigger is cut round
+    real_holes = [_smooth_hole(h, 0.33 * min(A, B)) for h in holes]
 
     # ---- copings, quoins and opening dressings come first: the walling fits round them
     placed = []                  # convex shapes that later pieces must keep out of

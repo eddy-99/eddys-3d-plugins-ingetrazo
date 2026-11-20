@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Openings"
-VERSION = "1.9"
+VERSION = "1.10"   # 1.10: the page tabs on two rows, so they all show at once
 
 
 def _ed3d_organise(scene, group):
@@ -1926,6 +1926,88 @@ def open_subframe(dlg):
                             "folder with this one.")
 
 
+class TwoRowTabs(QWidget):
+    """Pages with their tabs on two rows, so they all show without scrolling across.
+    Works like a QTabWidget: addTab, setTabToolTip, currentIndex, setCurrentIndex, currentChanged."""
+    try:
+        from PySide6.QtCore import Signal as _Signal
+        currentChanged = _Signal(int)
+    except Exception:
+        currentChanged = None
+
+    def __init__(self, rows=2, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QGridLayout, QStackedWidget, QButtonGroup
+        self._rows = rows
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self._grid = QGridLayout()
+        self._grid.setSpacing(2)
+        lay.addLayout(self._grid)
+        self._stack = QStackedWidget()
+        try:
+            from PySide6.QtWidgets import QFrame
+            self._stack.setFrameShape(QFrame.StyledPanel)
+        except Exception:
+            pass
+        lay.addWidget(self._stack, 1)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons = []
+        self._group.idClicked.connect(self.setCurrentIndex)
+
+    def _relayout(self):
+        n = len(self._buttons)
+        per = max(1, -(-n // self._rows))         # tabs on each row
+        for b in self._buttons:
+            self._grid.removeWidget(b)
+        for i, b in enumerate(self._buttons):
+            self._grid.addWidget(b, i // per, i % per)
+
+    def addTab(self, widget, title):
+        b = QPushButton(title.replace("&&", "&"))
+        b.setCheckable(True)
+        b.setStyleSheet("QPushButton { padding: 3px 8px; }"
+                        "QPushButton:checked { font-weight: bold; background-color: palette(base); "
+                        "border: 1px solid palette(mid); border-bottom: 2px solid palette(highlight); }")
+        i = len(self._buttons)
+        self._group.addButton(b, i)
+        self._buttons.append(b)
+        self._stack.addWidget(widget)
+        self._relayout()
+        if i == 0:
+            b.setChecked(True)
+        return i
+
+    def setTabToolTip(self, i, tip):
+        if 0 <= i < len(self._buttons):
+            self._buttons[i].setToolTip(tip)
+
+    def tabText(self, i):
+        return self._buttons[i].text() if 0 <= i < len(self._buttons) else ""
+
+    def count(self):
+        return len(self._buttons)
+
+    def currentIndex(self):
+        return self._stack.currentIndex()
+
+    def setCurrentIndex(self, i):
+        try:
+            i = int(i)
+        except Exception:
+            return
+        if not 0 <= i < len(self._buttons) or i == self._stack.currentIndex() and self._buttons[i].isChecked():
+            return
+        self._buttons[i].setChecked(True)
+        self._stack.setCurrentIndex(i)
+        try:
+            self.currentChanged.emit(i)
+        except Exception:
+            pass
+
+
 class OpeningsDialog(QDialog):
     def __init__(self, cur, viewport, tool):
         super().__init__(viewport)
@@ -1964,7 +2046,7 @@ class OpeningsDialog(QDialog):
                                    "set out on it.")
         self.left.setTabToolTip(1, "What each lettered size is.")
         row.addWidget(self.left, 1)
-        self.tabs = QTabWidget()
+        self.tabs = TwoRowTabs(2)              # the pages' tabs on two rows, so they all show
         row.addWidget(self.tabs, 1)
         self.sp = {}
         self.page_of = {}

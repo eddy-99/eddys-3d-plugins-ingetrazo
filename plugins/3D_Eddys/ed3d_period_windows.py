@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Windows"
-VERSION = "2.5"  # shown in the window title, so you can tell which file is loaded. 2.5: a door built into the same wall keeps its own colours when the windows are built again
+VERSION = "2.10"  # shown in the window title, so you can tell which file is loaded. 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
 
 
 def _ed3d_organise(scene, group):
@@ -963,8 +963,19 @@ def build_head(sh, v, fd):
                     i0, o0 = _arch_pts(sh, s0, hh)
                     i1, o1 = _arch_pts(sh, s1, hh)
                     out.append(band([i0, i1], [o0, o1], zb, zfront))
-                # mortar behind the joints
-                out.append(_mortar(_band_piece(sh, a, b, hh - 1.0, zb, zfront - 3.0, inset=1.0)))
+                # mortar behind the joints - stopping 1 mm short of the ends of the arch, so its end
+                # isn't level with the end brick's face (the two fought, and a pale patch showed)
+                whole_ = sh.get('closed') and a <= 1e-6 and b >= _arch_len(sh) - 1e-6
+                ma, mb = (a, b) if whole_ else (a + 1.0, b - 1.0)
+                # each arch brick's outer face is straight, but the mortar's is curved: keep the
+                # curve inside the straight faces (by how far a curve that long bows out), or on a
+                # tight arch the mortar showed through the middle of the bricks
+                r_in = min((R for _cx, _cy, R, _a0, _a1 in sh['arcs']), default=0.0)
+                r_out = max(r_in + hh, 1.0)
+                chord = step * r_out / max(r_in, 1.0)
+                sag = chord * chord / (8.0 * r_out)
+                if mb > ma:
+                    out.append(_mortar(_band_piece(sh, ma, mb, hh - 1.0 - sag, zb, zfront - 3.0, inset=1.0)))
         if key:
             out.append(_keystone_arch(sh, v, hh, zb, zfront))
         return out
@@ -2827,8 +2838,50 @@ def build_into_wall(op, v, overlap):
     return [so.mapped(tw) for so in sols], describe(sh, v)
 
 
+def _triangles_3d(pts):
+    """A face's outline (3D points, no holes) cut into triangles, for when IngeTrazo won't take it
+    whole - a curved arch reveal that is a hair out of flat. Works on L shapes too (ear cutting)."""
+    n = _newell(pts)
+    ax = max(range(3), key=lambda k: abs(n[k]))
+    i0, i1 = [k for k in range(3) if k != ax]
+    p2 = [(p[i0], p[i1]) for p in pts]
+    s = 0.0
+    for i in range(len(p2)):
+        s += p2[i][0] * p2[(i + 1) % len(p2)][1] - p2[(i + 1) % len(p2)][0] * p2[i][1]
+    sign = 1.0 if s >= 0 else -1.0
+    idx = list(range(len(pts)))
+    tris = []
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    def inside(p, a, b, c):
+        d1, d2, d3 = cross(a, b, p), cross(b, c, p), cross(c, a, p)
+        return (d1 >= 0 and d2 >= 0 and d3 >= 0) or (d1 <= 0 and d2 <= 0 and d3 <= 0)
+    guard = 0
+    while len(idx) > 3 and guard < 10000:
+        guard += 1
+        for k in range(len(idx)):
+            ia, ib, ic = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
+            a, b, c = p2[ia], p2[ib], p2[ic]
+            if cross(a, b, c) * sign <= 1e-18:
+                continue
+            if any(inside(p2[j], a, b, c) for j in idx if j not in (ia, ib, ic)):
+                continue
+            tris.append([pts[ia], pts[ib], pts[ic]])
+            idx.pop(k)
+            break
+        else:
+            break                          # nothing more to cut cleanly: fan out what's left
+    if len(idx) >= 3:
+        for k in range(1, len(idx) - 1):
+            tris.append([pts[idx[0]], pts[idx[k]], pts[idx[k + 1]]])
+    return tris
+
+
 def _mesh_from(faces_lists):
-    """A new mesh from [(outer points, [hole points])] in metres."""
+    """A new mesh from [(outer points, [hole points])] in metres. A face IngeTrazo won't take as
+    it is goes in as triangles instead, so it never leaves a hole (the white patches in an arch)."""
     from core.mesh import Mesh
     mesh = Mesh()
     tol = 1e-4 * 0.001
@@ -2855,7 +2908,19 @@ def _mesh_from(faces_lists):
             else:
                 mesh.add_face(outer)
         except Exception:
-            bad[0] += 1
+            ok = False
+            if not hls and len(pts) > 3:
+                try:
+                    for t in _triangles_3d(list(pts)):
+                        try:
+                            mesh.add_face([vx(p) for p in t])
+                        except Exception:
+                            pass                   # a sliver of nothing: no loss
+                    ok = True
+                except Exception:
+                    ok = False
+            if not ok:
+                bad[0] += 1
     return mesh, bad[0]
 
 
@@ -3270,6 +3335,16 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
             hit = next(((nm, kd) for _n, _d, pf, nm, kd in cand if _pip3(q, pf, U, V)), None)
             votes[hit] = votes.get(hit, 0) + 1
         best = max(votes.items(), key=lambda kv: kv[1])[0]
+        if best is None:
+            # a face a hair off its part's plane - a strip of a curved arch head, cut into triangles
+            # because it wasn't quite flat - matched more loosely, so it isn't left white
+            loose = sorted((p for p in planes if v_dot(p[0], n) > 0.995 and abs(p[1] - d) < 2e-3),
+                           key=lambda p: abs(p[1] - d))
+            votes = {}
+            for q in qs:
+                hit = next(((nm, kd) for _n, _d, pf, nm, kd in loose if _pip3(q, pf, U, V)), None)
+                votes[hit] = votes.get(hit, 0) + 1
+            best = max(votes.items(), key=lambda kv: kv[1])[0]
         a = None
         if best is not None:
             a = attrs_for(*best)
@@ -3719,6 +3794,24 @@ class WindowsDialog(QDialog):
         self.refresh_presets()
         self.set_values(cur)
         self.read_selection()
+        # find the openings straight away, as Brick & Block shows its walls straight away - and
+        # again when the Whole building page is opened with nothing found yet
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(150, self._auto_find)
+            self.tabs.currentChanged.connect(lambda i: self._auto_find(only_if_empty=True)
+                                             if self.tabs.tabText(i).replace("&", "") == "Whole building" else None)
+        except Exception:
+            pass
+
+    def _auto_find(self, only_if_empty=False):
+        """Looks for the openings on its own (no message if there's a problem)."""
+        if only_if_empty and self.found:
+            return
+        try:
+            self.find_openings(quiet=True)
+        except Exception as e:
+            print("%s: couldn't find the openings by itself: %s" % (PLUGIN_NAME, e))
 
     # ---- whole building ----
     def _add_building_page(self):
@@ -3800,7 +3893,7 @@ class WindowsDialog(QDialog):
         self._sel_timer.setInterval(400)
         self._sel_timer.timeout.connect(self._watch_selection)
         self._sel_timer.start()
-        self.b_find.clicked.connect(self.find_openings)
+        self.b_find.clicked.connect(lambda: self.find_openings())
         self.b_build.clicked.connect(lambda: self.tool.build_into_walls(self))
         self.b_takeout.clicked.connect(lambda: self.tool.build_into_walls(self, take_out=True))
         b_all.clicked.connect(lambda: self._tick(True))
@@ -3820,7 +3913,7 @@ class WindowsDialog(QDialog):
             want = i < len(self.found) and self._wants(self.found[i])
             it.setCheckState(Qt.Checked if (on and want) else Qt.Unchecked)
 
-    def find_openings(self):
+    def find_openings(self, quiet=False):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QListWidgetItem
         scene = getattr(self.viewport, 'scene', None)
@@ -3830,7 +3923,8 @@ class WindowsDialog(QDialog):
             self.found = find_building_openings(scene, self.w['flip'].isChecked())
         except Exception as e:
             self.found = []
-            QMessageBox.warning(self, PLUGIN_NAME, "Could not look for openings:\n%s" % e)
+            if not quiet:
+                QMessageBox.warning(self, PLUGIN_NAME, "Could not look for openings:\n%s" % e)
             return
         # this plugin only: door openings (and doors built in) for doors, the rest for windows
         self.found = [op for op in self.found

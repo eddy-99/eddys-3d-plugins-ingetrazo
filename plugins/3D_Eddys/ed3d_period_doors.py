@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "2.7"  # shown in the window title, so you can tell which file is loaded. 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
+VERSION = "2.10"  # shown in the window title, so you can tell which file is loaded. 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
 
 
 def _ed3d_organise(scene, group):
@@ -1584,7 +1584,19 @@ def build_head(sh, v, fd):
                     i1, o1 = _arch_pts(sh, s1, hh)
                     out.append(band([i0, i1], [o0, o1], zb, zfront))
                 # mortar behind the joints
-                out.append(_mortar(_band_piece(sh, a, b, hh - 1.0, zb, zfront - 3.0, inset=1.0)))
+                # stopping 1 mm short of the ends of the arch, so its end isn't level with the end
+                # brick's face (the two fought, and a pale patch showed)
+                whole_ = sh.get('closed') and a <= 1e-6 and b >= _arch_len(sh) - 1e-6
+                ma, mb = (a, b) if whole_ else (a + 1.0, b - 1.0)
+                # each arch brick's outer face is straight, but the mortar's is curved: keep the
+                # curve inside the straight faces (by how far a curve that long bows out), or on a
+                # tight arch the mortar showed through the middle of the bricks
+                r_in = min((R for _cx, _cy, R, _a0, _a1 in sh['arcs']), default=0.0)
+                r_out = max(r_in + hh, 1.0)
+                chord = step * r_out / max(r_in, 1.0)
+                sag = chord * chord / (8.0 * r_out)
+                if mb > ma:
+                    out.append(_mortar(_band_piece(sh, ma, mb, hh - 1.0 - sag, zb, zfront - 3.0, inset=1.0)))
         if key:
             out.append(_keystone_arch(sh, v, hh, zb, zfront))
         return out
@@ -4940,6 +4952,24 @@ class DoorsDialog(QDialog):
         self.refresh_presets()
         self.set_values(cur)
         self.read_selection()
+        # find the openings straight away, as Brick & Block shows its walls straight away - and
+        # again when the Whole building page is opened with nothing found yet
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(150, self._auto_find)
+            self.tabs.currentChanged.connect(lambda i: self._auto_find(only_if_empty=True)
+                                             if self.tabs.tabText(i).replace("&", "") == "Whole building" else None)
+        except Exception:
+            pass
+
+    def _auto_find(self, only_if_empty=False):
+        """Looks for the openings on its own (no message if there's a problem)."""
+        if only_if_empty and self.found:
+            return
+        try:
+            self.find_openings(quiet=True)
+        except Exception as e:
+            print("%s: couldn't find the openings by itself: %s" % (PLUGIN_NAME, e))
 
     # ---- whole building ----
     def _add_building_page(self):
@@ -5021,7 +5051,7 @@ class DoorsDialog(QDialog):
         self._sel_timer.setInterval(400)
         self._sel_timer.timeout.connect(self._watch_selection)
         self._sel_timer.start()
-        self.b_find.clicked.connect(self.find_openings)
+        self.b_find.clicked.connect(lambda: self.find_openings())
         self.b_build.clicked.connect(lambda: self.tool.build_into_walls(self))
         self.b_takeout.clicked.connect(lambda: self.tool.build_into_walls(self, take_out=True))
         b_all.clicked.connect(lambda: self._tick(True))
@@ -5041,7 +5071,7 @@ class DoorsDialog(QDialog):
             want = i < len(self.found) and self._wants(self.found[i])
             it.setCheckState(Qt.Checked if (on and want) else Qt.Unchecked)
 
-    def find_openings(self):
+    def find_openings(self, quiet=False):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QListWidgetItem
         scene = getattr(self.viewport, 'scene', None)
@@ -5051,7 +5081,8 @@ class DoorsDialog(QDialog):
             self.found = find_building_openings(scene, self.w['flip'].isChecked())
         except Exception as e:
             self.found = []
-            QMessageBox.warning(self, PLUGIN_NAME, "Could not look for openings:\n%s" % e)
+            if not quiet:
+                QMessageBox.warning(self, PLUGIN_NAME, "Could not look for openings:\n%s" % e)
             return
         # this plugin only: door openings (and doors built in) for doors, the rest for windows
         self.found = [op for op in self.found
