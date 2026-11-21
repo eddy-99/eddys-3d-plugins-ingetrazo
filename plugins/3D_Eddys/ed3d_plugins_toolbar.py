@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.26"  # 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.27"  # 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -1518,6 +1518,30 @@ PROJECTS = [
         (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
         ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a station building", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
+        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"), ("3D Station Canopies", "Canopy"),
+        ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a goods shed or engine shed", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Goods doors"),
+        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"), ("3D Gutters & Downpipes", "Gutters"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a timber building", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Wood Planking", "Cladding"),
+        (ROOF_CHOICE, "Roof"), ("3D Gutters & Downpipes", "Gutters"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a tin shed", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Corrugated Iron", "Tin walls"),
+        (ROOF_CHOICE, "Roof"), ("3D Gutters & Downpipes", "Gutters"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a factory chimney", [
+        ("3D Chimneys", "Chimney"), ("3D Wrap", "Bricks round it"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Make a bridge or arches", [
         ("3D Bridges & Arches", "Bridge"), (WALL_CHOICE, "Walling"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
@@ -1528,11 +1552,26 @@ PROJECTS = [
     ("Make fences and gates", [
         ("3D Fences & Gates", "Fences"), ("3D Layers & Colours", "Colours"),
         ("3D Scale Studio", "Scale & print")]),
+    ("Make a riveted part (loco or wagon)", [
+        ("3D Loft", "Shape"), ("3D Blend", "Blend the joins"), ("3D Place Along Line", "Rivets"),
+        ("3D Find & Replace", "Full rivets"), ("3D Layers & Colours", "Colours"),
+        ("3D Scale Studio", "Scale & print")]),
+    ("Make a boiler with a dome", [
+        ("3D Loft", "Boiler"), ("3D Blend", "Dome & collar"), ("3D Place Along Line", "Rivets & bands"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Get a model ready to print", [
         ("3D Layers & Colours", "Check parts"), ("3D Scale Studio", "Scale & pieces"),
         ("3D Print Scaler", "Fit the bed")]),
     ("Make a card kit (print on paper)", [
         ("3D Layers & Colours", "Colours"), ("3D Card Kit", "Card kit")]),
+]
+# the Make... menu, sorted into groups (any job not listed here goes under 'More')
+PROJECT_GROUPS = [
+    ("Buildings", ["Make a building", "Make a station building", "Make a goods shed or engine shed",
+                   "Make a timber building", "Make a tin shed", "Make a factory chimney"]),
+    ("Railway & outside", ["Make a bridge or arches", "Make a station canopy", "Make fences and gates"]),
+    ("Locos, wagons & parts", ["Make a riveted part (loco or wagon)", "Make a boiler with a dome"]),
+    ("Printing", ["Get a model ready to print", "Make a card kit (print on paper)"]),
 ]
 MAKE_CSS = ("QToolButton { color: #4a0a16; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
             "stop:0 #ffe08a, stop:1 #e0b040); border: 2px solid #8e1d33; border-radius: 13px; "
@@ -1599,9 +1638,21 @@ def add_make_button(tb, win):
     btn.setPopupMode(QToolButton.InstantPopup)
     menu = QMenu(btn)
     menu.setObjectName(TOOLBAR_NAME + "_makemenu")
-    for name, steps in PROJECTS:
-        a = menu.addAction("%s   (%d steps)" % (name, len(steps)))
-        a.triggered.connect(lambda checked=False, n=name: start_project(n, win))
+    steps_of = dict(PROJECTS)
+    listed = set()
+    groups = [(g, [n for n in names if n in steps_of]) for g, names in PROJECT_GROUPS]
+    for g, names in PROJECT_GROUPS:
+        listed.update(names)
+    rest = [n for n, _ in PROJECTS if n not in listed]
+    if rest:
+        groups.append(("More", rest))
+    for g, names in groups:
+        if not names:
+            continue
+        sub = menu.addMenu(g)
+        for name in names:
+            a = sub.addAction("%s   (%d steps)" % (name, len(steps_of[name])))
+            a.triggered.connect(lambda checked=False, n=name: start_project(n, win))
     menu.addSeparator()
     if VIDEOS.get("Getting started"):
         menu.addSeparator()
