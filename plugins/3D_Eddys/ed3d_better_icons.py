@@ -15,7 +15,7 @@
 When IngeTrazo opens, this finds its tool buttons (Line, Arc, Tape Measure, Walk...)
 by name and gives each a clearer icon, drawn here as SVG so they stay sharp at
 any size, including with 'Large toolbar icons' on. Nothing extra to install.
-Ctrl+Alt+Y opens its settings: the new icons on or off, the icon size, and names
+Ctrl+Alt+Shift+I opens its settings: the new icons on or off, the icon size, and names
 under the icons (on the new ones, or on every toolbar button) and their text size.
 Ctrl+Alt+Q turns the names on or off. The menus keep IngeTrazo's full names.
 Removing this file puts IngeTrazo's icons back too.
@@ -30,7 +30,8 @@ import json
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Better Icons"
-VERSION = "1.0"  # shown in the window title, so you can tell which file is loaded
+VERSION = "1.1"  # shown in the window title, so you can tell which file is loaded
+                 # 1.1: settings key is now Ctrl+Alt+Shift+I (Ctrl+Alt+Y belongs to Subframe)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_better_icons.json")
 LIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ed3d_better_icons_buttons.txt")
 # Eddy's own toolbars keep their icons
@@ -1059,7 +1060,7 @@ def eddy_window(dlg, key, tips=None, place=True):
 
 
 # ---------------------------------------------------------------------------
-# Tools: Ctrl+Alt+Y opens the settings, Ctrl+Alt+Q turns the names on / off
+# Tools: Ctrl+Alt+Shift+I opens the settings, Ctrl+Alt+Q turns the names on / off
 # ---------------------------------------------------------------------------
 def _window_of(viewport):
     try:
@@ -1070,7 +1071,7 @@ def _window_of(viewport):
 
 class BetterIconsTool(Tool):
     name = PLUGIN_NAME
-    shortcut = "Ctrl+Alt+Y"
+    shortcut = "Ctrl+Alt+Shift+I"
     description = "Clearer icons for IngeTrazo's toolbars: icon size, names under the icons and their size."
 
     def on_activate(self, viewport):

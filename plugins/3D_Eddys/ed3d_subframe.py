@@ -47,7 +47,12 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.53"
+VERSION = "1.58"  # 1.58: the debug file is only written when something goes wrong;
+#                 1.57: roof trusses on gable ends that are pieces of their own (not joined to the walls);
+#                 never takes the narrow end of a wall for a gable;
+#                 1.55: a roof truss with nothing left above the wall tops no longer stops the whole frame;
+#                 1.54: if the frame can't be built, says why (and notes it in ed3d_subframe_debug.txt)
+DEBUG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ed3d_subframe_debug.txt")
 
 
 class AutoSpin(QDoubleSpinBox):
@@ -2817,6 +2822,10 @@ def _truss_bars(tri, w, style, overhang=0.0, wall_t=0.0, ye_wall=None, stud_sp=0
         if q and abs(area2(q)) > 1e-6 * w * w:
             flat.append(q)
     bits = flat
+    if not bits:
+        # 1.55: nothing of the truss left above the wall tops - say so (the caller reports it)
+        # rather than failing the whole frame
+        return [], region, lift_, []
     reg = square([region])
     region = reg[0] if reg else region
     tails = []
@@ -3603,6 +3612,44 @@ def _gable_eaves(o):
     return min(min(e[0][1], e[1][1]) for e in rake)
 
 
+def _pure_gable(o, w):
+    """1.57: Floor Plan's gable ends, when not joined to their walls, are triangles of their own
+    sitting on the end walls: a flat bottom edge right across, sloping up to a peak. Returns the
+    height of the bottom edge (the eaves) - else None."""
+    x0, x1, y0, y1 = bbox(o)
+    wid, hgt = x1 - x0, y1 - y0
+    if wid < 4.0 * w or hgt < 1.5 * w:
+        return None
+    tol = 1e-3 * max(wid, hgt) + 1e-6
+    bottom = rake = 0.0
+    for k in range(len(o)):
+        q1, q2 = o[k], o[(k + 1) % len(o)]
+        L_ = math.hypot(q2[0] - q1[0], q2[1] - q1[1])
+        if L_ < 1e-9:
+            continue
+        if abs(q1[1] - y0) < tol and abs(q2[1] - y0) < tol:
+            bottom += L_
+        elif 0.1 < abs(q2[1] - q1[1]) / L_ < 0.98:
+            rake += L_
+        elif abs(q2[0] - q1[0]) > tol:
+            return None                  # a flat top or some other shape: not a plain gable
+    if bottom < 0.9 * wid or rake < 0.9 * hgt:
+        return None
+    if not any(abs(q[1] - y1) < tol and x0 + 0.1 * wid < q[0] < x1 - 0.1 * wid for q in o):
+        return None                      # no peak in the middle
+    return y0
+
+
+def _gable_eaves_w(o, w):
+    """Where a gable's slopes start - a wall with a gable on top, or a gable on its own. A face too
+    narrow to hold a truss (the end of a wall, as thick as the wall) never counts."""
+    x0, x1, y0, y1 = bbox(o)
+    if x1 - x0 < 4.0 * w:
+        return None
+    ye = _gable_eaves(o)
+    return ye if ye is not None else _pure_gable(o, w)
+
+
 def find_gables(ready, p):
     """Every pair of gable walls facing each other: [{a, b, tri (a's gable above the eaves),
     ye_wall (top of the side walls), D (how far apart)}]."""
@@ -3613,13 +3660,14 @@ def find_gables(ready, p):
             continue
         o = a.outline
         x0, x1, y0, y1 = bbox(o)
-        ye = _gable_eaves(o)
+        ye = _gable_eaves_w(o, p['w'])
         if ye is None:
             continue
         Oa = a.tw((0.0, 0.0, 0.0))
         best = None
         for b in ready[i + 1:]:
-            if b.kind != 'wall' or id(b) in used or v_dot(a.N, b.N) > -0.99 or _gable_eaves(b.outline) is None:
+            if b.kind != 'wall' or id(b) in used or v_dot(a.N, b.N) > -0.99 or \
+                    _gable_eaves_w(b.outline, p['w']) is None:
                 continue
             D = v_dot(v_sub(b.tw((0.0, 0.0, 0.0)), Oa), a.N) / SCALE      # how far apart, inside
             if D <= 3.0 * d:
@@ -3632,7 +3680,7 @@ def find_gables(ready, p):
         _ar, b, D = best
         tri = clip_half(list(o), 0.0, 1.0, -ye)
         tri = clean(tri) if len(tri) >= 3 else None
-        if not tri:
+        if not tri or abs(area2(tri)) < 4.0 * p['w'] * p['w']:
             continue
         used.add(id(a))
         used.add(id(b))
@@ -6396,8 +6444,44 @@ class SubframeTool(Tool):
         return v, p, scene
 
     def frame_selection(self, dlg):
+        """Suggest frame for selection - with a note of what happened kept in ed3d_subframe_debug.txt,
+        and any error shown, so nothing fails silently."""
+        import traceback
+        import time
+        lines = ["%s  %s %s  Suggest frame for selection" % (time.strftime("%Y-%m-%d %H:%M:%S"), PLUGIN_NAME, VERSION)]
+        try:
+            scene = getattr(getattr(dlg, 'viewport', None), 'scene', None)
+            sel = _items(getattr(scene, 'selection', None)) if scene is not None else []
+            lines.append("scene: %s   selected: %d" % ("yes" if scene is not None else "NONE", len(sel)))
+            for e in sel[:40]:
+                lines.append("  - %r  (%s, mesh=%s, loop=%s)" % (str(getattr(e, 'name', '') or ''), type(e).__name__,
+                             getattr(e, 'mesh', None) is not None, hasattr(e, 'loop')))
+        except Exception:
+            lines.append("selection not read:\n" + traceback.format_exc())
+        err = None
+        try:
+            self._frame_selection(dlg)
+            lines.append("finished without an error")
+        except Exception:
+            err = traceback.format_exc()
+            lines.append("ERROR:\n" + err)
+        if err:
+            try:
+                with open(DEBUG_FILE, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines) + "\n")
+            except Exception:
+                pass
+            print("\n".join(lines))
+            QMessageBox.warning(dlg, PLUGIN_NAME, "The frame couldn't be built - something went wrong:\n\n%s\n"
+                                "(This is saved in ed3d_subframe_debug.txt in the plugins folder.)"
+                                % err.strip().splitlines()[-1])
+
+    def _frame_selection(self, dlg):
         v, p, scene = self._start(dlg)
+        if v is None:
+            return                      # _start has already said what's wrong with the sizes
         if scene is None:
+            QMessageBox.information(dlg, PLUGIN_NAME, "No model to frame - close this window and open it again.")
             return
         sel = _items(getattr(scene, 'selection', None))
         groups = [e for e in sel if getattr(e, 'mesh', None) is not None and not hasattr(e, 'loop')]
