@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "7.9"             # shown in the window title, so you can tell which file is loaded
+VERSION = "7.10"            # shown in the window title, so you can tell which file is loaded
 
 
 PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
@@ -1840,13 +1840,52 @@ def _has_walling(fd, recs, boxes):
     return False
 
 
-def find_building_walls(scene, inside_walls=False, inside_faces=False):
-    """The walls in the selected building or groups (the whole model if nothing is selected):
-    [dict(name, face (WorldFace), group, bricked, length, height, openings)], and how many
-    groups were skipped (not walls)."""
+def _model_size(top):
+    """How big a model is (the floor area its box covers), to tell a building from a figure beside it."""
+    lo, hi = [1e18] * 3, [-1e18] * 3
+    try:
+        for g, m in _placements(top):
+            for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                for v in _items(getattr(f, 'vertices', None)):
+                    p = _pos3(v)
+                    if p is None:
+                        continue
+                    q = _wmap(m, p)
+                    for k in range(3):
+                        lo[k] = min(lo[k], q[k])
+                        hi[k] = max(hi[k], q[k])
+    except Exception:
+        return 0.0
+    if hi[0] < lo[0]:
+        return 0.0
+    d = sorted(hi[k] - lo[k] for k in range(3))
+    return d[1] * d[2]
+
+
+def building_of(scene, g):
+    """The building (top-level group of the model) that a group is in, or None."""
+    for t in _items(getattr(scene, 'groups', None)):
+        if any(x is g for x, _ in _placements(t)):
+            return t
+    return None
+
+
+def model_list(scene):
+    """The models (top-level groups) in the scene that have something in them."""
+    return [t for t in _items(getattr(scene, 'groups', None))
+            if getattr(t, 'mesh', None) is not None or _kids(t)]
+
+
+def find_building_walls(scene, inside_walls=False, inside_faces=False, top=None, use_picked=True):
+    """The walls of one building (top), or of the selected building or groups (the whole model if
+    nothing is selected): [dict(name, face (WorldFace), group, bricked, length, height, openings)],
+    and how many groups were skipped (not walls)."""
     sel = _items(getattr(scene, 'selection', None))
     picked = [e for e in sel if getattr(e, 'mesh', None) is not None or _kids(e)]
     tops = _items(getattr(scene, 'groups', None))
+    if top is not None:
+        tops = [top]
+        picked = [p for p in picked if use_picked and p is not top and any(x is p for x, _ in _placements(top))]
     if picked:
         def in_tree(t, g):
             return any(x is g for x, _ in _placements(t))
@@ -4805,17 +4844,26 @@ class BrickDialog(QDialog):
         from PySide6.QtWidgets import QAbstractItemView
         page = QWidget()
         lay = QVBoxLayout(page)
-        info = QLabel("Select the building (or some of its wall groups) and click Find - or click it with "
-                      "nothing selected for the whole model. Every wall is listed with a tick box: plain "
+        info = QLabel("Pick the building from the Building list (the one you've selected is picked for you, "
+                      "or the biggest model if nothing is). Every wall is listed with a tick box: plain "
                       "walls start ticked, walls that already have walling on them start unticked. Click a "
                       "line to light that wall's face up in the model. Then 'Brick the ticked walls': each "
                       "gets the walling, quoins, copings and damage set on the other pages, round all its "
                       "openings. One Undo takes them all away.")
         info.setWordWrap(True)
         lay.addWidget(info)
-        self.btn_find = QPushButton("Find walls in the selected building")
-        self.btn_find.setToolTip("Lists the walls in the selected building or groups (or the whole model if "
-                                 "nothing is selected), with a tick box for each.")
+        brow_ = QHBoxLayout()
+        brow_.addWidget(QLabel("Building:"))
+        self.cb_building = QComboBox()
+        self.cb_building.setToolTip("The building (model) to work on - other models in the scene are left alone. "
+                                    "The one you've selected in the model is picked for you, or the biggest "
+                                    "model if nothing is selected.")
+        brow_.addWidget(self.cb_building, 1)
+        lay.addLayout(brow_)
+        self._tops, self._bbusy = [], False
+        self.btn_find = QPushButton("Find walls (in the selected building)")
+        self.btn_find.setToolTip("Looks again. If you've selected a building or some of its walls in the model, "
+                                 "that building is picked first; selected walls only are listed.")
         lay.addWidget(self.btn_find)
         self.cb_inside_walls = QCheckBox("Include inside walls")
         self.cb_inside_walls.setToolTip("List Floor Plan's inside walls (room dividers) too, so they can have "
@@ -4847,7 +4895,8 @@ class BrickDialog(QDialog):
         self.lbl_walls.setWordWrap(True)
         lay.addWidget(self.lbl_walls)
         self.found_walls = []
-        self.btn_find.clicked.connect(self.find_walls)
+        self.btn_find.clicked.connect(lambda: (self.refresh_buildings(), self.find_walls(use_picked=True)))
+        self.cb_building.currentIndexChanged.connect(lambda *_: None if self._bbusy else self.find_walls())
         self.cb_inside_walls.toggled.connect(lambda *_: self.find_walls() if self.found_walls else None)
         self.cb_inside_faces.toggled.connect(lambda *_: self.find_walls() if self.found_walls else None)
         b_plain.clicked.connect(lambda: self._tick_walls(True))
@@ -4859,13 +4908,57 @@ class BrickDialog(QDialog):
         self.tabs.setTabToolTip(self.tabs.count() - 1, "Find the walls of a building and tick the ones that "
                                                        "get walling.")
 
-    def find_walls(self):
+    def refresh_buildings(self):
+        """Fills the Building list with the models in the scene, picking the selected one, else the one
+        picked before, else the biggest (a figure or a tree beside the building isn't it)."""
         scene = getattr(self.viewport, 'scene', None)
         if scene is None:
             return
+        tops = model_list(scene)
+        was = self.cb_building.currentData()
+        mine = []
+        for e in _items(getattr(scene, 'selection', None)):
+            if getattr(e, 'mesh', None) is None and not _kids(e):
+                continue
+            b = building_of(scene, e)
+            if b is not None and all(b is not x for x in mine):
+                mine.append(b)
+        chosen = max(mine, key=_model_size) if mine else None
+        if chosen is None and was is not None and was < len(self._tops):
+            chosen = next((t for t in tops if t is self._tops[was]), None)
+        if chosen is None and tops:
+            chosen = max(tops, key=_model_size)
+        self._bbusy = True
+        self._tops = tops
+        self.cb_building.clear()
+        self.cb_building.addItem("-- pick a building --", None)
+        used = {}
+        for i, t in enumerate(tops):
+            nm = str(getattr(t, 'name', '') or "Model %d" % (i + 1))
+            used[nm] = used.get(nm, 0) + 1
+            self.cb_building.addItem(nm if used[nm] == 1 else "%s (%d)" % (nm, used[nm]), i)
+        if chosen is not None:
+            self.cb_building.setCurrentIndex(1 + next(i for i, t in enumerate(tops) if t is chosen))
+        self._bbusy = False
+
+    def find_walls(self, use_picked=False):
+        """Lists the walls of the building picked in the Building list (just the selected walls of it,
+        when Find is clicked with some selected)."""
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        if self.cb_building.count() == 0 or self.cb_building.currentData() is None:
+            self.refresh_buildings()
+        idx = self.cb_building.currentData()
+        top = self._tops[idx] if idx is not None and idx < len(self._tops) else None
+        if top is None:
+            self.found_walls = []
+            self.fill_walls()
+            self.lbl_walls.setText("Pick the building to work on from the Building list.")
+            return
         try:
             self.found_walls, skipped = find_building_walls(scene, self.cb_inside_walls.isChecked(),
-                                                            self.cb_inside_faces.isChecked())
+                                                            self.cb_inside_faces.isChecked(), top, use_picked)
         except Exception as e:
             self.found_walls, skipped = [], 0
             QMessageBox.warning(self, PLUGIN_NAME, "Could not look for walls:\n%s" % e)
@@ -4876,8 +4969,8 @@ class BrickDialog(QDialog):
             txt = "Found %d wall%s" % (len(self.found_walls), "" if len(self.found_walls) == 1 else "s")
             txt += (" - %d already ha%s walling (unticked)." % (nb, "s" if nb == 1 else "ve")) if nb else "."
         else:
-            txt = ("No walls found. Select the building (the group holding the walls) and click Find again, "
-                   "or click Find with nothing selected for the whole model.")
+            txt = ("No walls found in that building. Pick another one from the Building list, or select "
+                   "the group holding the walls and click Find again.")
         if skipped:
             txt += " %d group%s didn't look like a wall (no face front and back)." % (skipped,
                                                                                    "" if skipped == 1 else "s")

@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "2.10"  # shown in the window title, so you can tell which file is loaded. 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
+VERSION = "2.11"  # shown in the window title, so you can tell which file is loaded. 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
 
 
 def _ed3d_organise(scene, group):
@@ -3138,11 +3138,50 @@ def _picked_groups(scene):
     return [e for e in _items(getattr(scene, 'selection', None)) if hasattr(e, 'mesh')]
 
 
-def _wall_meshes(scene):
-    """[(group, mesh, world matrix)] for every group with faces in what's picked
-    (or the whole model when nothing is picked), and the middle of the building(s)."""
+def _model_size(top):
+    """How big a model is (the floor area its box covers), to tell a building from a figure beside it."""
+    lo, hi = [1e18] * 3, [-1e18] * 3
+    try:
+        for g, m in _placements(top):
+            for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                for v in _items(getattr(f, 'vertices', None)):
+                    p = _pos(v)
+                    if p is None:
+                        continue
+                    q = _wmap(m, p)
+                    for k in range(3):
+                        lo[k] = min(lo[k], q[k])
+                        hi[k] = max(hi[k], q[k])
+    except Exception:
+        return 0.0
+    if hi[0] < lo[0]:
+        return 0.0
+    d = sorted(hi[k] - lo[k] for k in range(3))
+    return d[1] * d[2]
+
+
+def building_of(scene, g):
+    """The building (top-level group of the model) that a group is in, or None."""
+    for t in _items(getattr(scene, 'groups', None)):
+        if t is g or _in_tree(t, g):
+            return t
+    return None
+
+
+def model_list(scene):
+    """The models (top-level groups) in the scene that have something in them."""
+    return [t for t in _items(getattr(scene, 'groups', None))
+            if getattr(t, 'mesh', None) is not None or _kids_of(t)]
+
+
+def _wall_meshes(scene, top=None):
+    """[(group, mesh, world matrix)] for every group with faces in what's picked - in one building
+    (top) if it's given - (or the whole model when nothing is picked), and the middle of the building."""
     picked = _picked_groups(scene)
     tops = _tops_for(scene, picked)
+    if top is not None:
+        tops = [top]
+        picked = [p for p in picked if p is not top and _in_tree(top, p)]
     skip = _plugin_built(tops)
     every = []
     for t in tops:
@@ -3376,7 +3415,7 @@ def _group_of_mesh(scene, mesh):
     return None
 
 
-def find_building_openings(scene, flip=False, door_tol=15.0):
+def find_building_openings(scene, flip=False, door_tol=15.0, top=None):
     """Every opening in what's picked: [dict(group, mesh, face, fi, k, poly (mm, on the face), frame,
     depth (m), door, w, h, name, built)]. Picked faces (a wall face, even one inside a group): just
     their openings, the window going on that face. Otherwise every hole in the outside faces of the
@@ -3407,7 +3446,7 @@ def find_building_openings(scene, flip=False, door_tol=15.0):
             fi = next((n for n, f in numbered if f is face), None)
             _face_openings_into(found, g, mesh, look, face, fi, None, gname, door_tol, [0])
         return found
-    use, centre = _wall_meshes(scene)
+    use, centre = _wall_meshes(scene, top)
     wall_no = 0
     for g, mesh, m in use:
         wall_no += 1
@@ -4976,19 +5015,27 @@ class DoorsDialog(QDialog):
         from PySide6.QtWidgets import QListWidget
         page = QWidget()
         lay = QVBoxLayout(page)
-        info = QLabel(("Select the building, some of its wall groups, or just a wall face (the outside "
-                       "face - the %(ns)s go on the face you pick), and click Find. Every opening in "
-                       "the outside of the walls lights up and is listed here. Untick any you don't "
+        info = QLabel(("Pick the building from the Building list (the one you've selected is picked for you) "
+                       "- or select just a wall face (the outside face - the %(ns)s go on the face you "
+                       "pick) - and its openings light up and are listed here. Untick any you don't "
                        "want, then Build: each %(n)s, with its %(sill)s and head, is joined into its own "
                        "wall section, flat with the back of the wall - so in Scale Studio's Pieces "
                        "page each wall lays flat and prints as one piece, %(ns)s and all. The %(n)s "
                        "is made from the settings on the other pages.") % WB_WORDS)
         info.setWordWrap(True)
         lay.addWidget(info)
-        self.b_find = QPushButton("Find openings in the selected building, group or face")
-        self.b_find.setToolTip("Lights up every opening in the outside walls of the selected building "
-                               "or groups, or in the selected face(s) - or the whole model if nothing is "
-                               "selected - and lists them below.")
+        brow_ = QHBoxLayout()
+        brow_.addWidget(QLabel("Building:"))
+        self.cb_building = QComboBox()
+        self.cb_building.setToolTip("The building (model) to work on - other models in the scene are left "
+                                    "alone. The one you've selected in the model is picked for you, or the "
+                                    "biggest model if nothing is selected.")
+        brow_.addWidget(self.cb_building, 1)
+        lay.addLayout(brow_)
+        self._tops, self._bbusy = [], False
+        self.b_find = QPushButton("Find openings (in the selected building, or the selected face)")
+        self.b_find.setToolTip("Looks again. If you've selected a building or wall in the model, its building "
+                               "is picked first; if you've selected wall face(s), just their openings are found.")
         lay.addWidget(self.b_find)
         self.lst_open = QListWidget()
         self.lst_open.setToolTip(("Ticked openings get a %(n)s (%(os)s start unticked). Click a line to "
@@ -5051,7 +5098,8 @@ class DoorsDialog(QDialog):
         self._sel_timer.setInterval(400)
         self._sel_timer.timeout.connect(self._watch_selection)
         self._sel_timer.start()
-        self.b_find.clicked.connect(lambda: self.find_openings())
+        self.b_find.clicked.connect(lambda: (self.refresh_buildings(), self.find_openings()))
+        self.cb_building.currentIndexChanged.connect(lambda *_: None if self._bbusy else self.find_openings())
         self.b_build.clicked.connect(lambda: self.tool.build_into_walls(self))
         self.b_takeout.clicked.connect(lambda: self.tool.build_into_walls(self, take_out=True))
         b_all.clicked.connect(lambda: self._tick(True))
@@ -5071,14 +5119,63 @@ class DoorsDialog(QDialog):
             want = i < len(self.found) and self._wants(self.found[i])
             it.setCheckState(Qt.Checked if (on and want) else Qt.Unchecked)
 
+    def refresh_buildings(self):
+        """Fills the Building list with the models in the scene, picking the selected one, else the one
+        picked before, else the biggest (a figure or a tree beside the building isn't it)."""
+        scene = getattr(self.viewport, 'scene', None)
+        if scene is None:
+            return
+        tops = model_list(scene)
+        was = self.cb_building.currentData()
+        mine = []
+        try:
+            sel = [e for e in _items(getattr(scene, 'selection', None)) if hasattr(e, 'mesh')]
+            for f in selected_faces(scene):
+                mesh = mesh_of_face(scene, f)
+                g = _group_of_mesh(scene, mesh) if mesh is not None else None
+                if g is not None:
+                    sel.append(g)
+            for e in sel:
+                b = building_of(scene, e)
+                if b is not None and all(b is not x for x in mine):
+                    mine.append(b)
+        except Exception:
+            mine = []
+        chosen = max(mine, key=_model_size) if mine else None
+        if chosen is None and was is not None and was < len(self._tops):
+            chosen = next((t for t in tops if t is self._tops[was]), None)
+        if chosen is None and tops:
+            chosen = max(tops, key=_model_size)
+        self._bbusy = True
+        self._tops = tops
+        self.cb_building.clear()
+        self.cb_building.addItem("-- pick a building --", None)
+        used = {}
+        for i, t in enumerate(tops):
+            nm = str(getattr(t, 'name', '') or "Model %d" % (i + 1))
+            used[nm] = used.get(nm, 0) + 1
+            self.cb_building.addItem(nm if used[nm] == 1 else "%s (%d)" % (nm, used[nm]), i)
+        if chosen is not None:
+            self.cb_building.setCurrentIndex(1 + next(i for i, t in enumerate(tops) if t is chosen))
+        self._bbusy = False
+
     def find_openings(self, quiet=False):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QListWidgetItem
         scene = getattr(self.viewport, 'scene', None)
         if scene is None:
             return
+        if self.cb_building.count() == 0 or self.cb_building.currentData() is None:
+            self.refresh_buildings()
+        idx = self.cb_building.currentData()
+        top = self._tops[idx] if idx is not None and idx < len(self._tops) else None
+        if top is None and not selected_faces(scene):
+            self.found = []
+            self.lst_open.clear()
+            self.lbl_found.setText("Pick the building to work on from the Building list.")
+            return
         try:
-            self.found = find_building_openings(scene, self.w['flip'].isChecked())
+            self.found = find_building_openings(scene, self.w['flip'].isChecked(), top=top)
         except Exception as e:
             self.found = []
             if not quiet:

@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.20"  # 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.26"  # 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -1493,6 +1493,7 @@ VIDEOS = {
     "3D Layers & Colours": "https://youtu.be/27Vfeo2Jmj4",
     "3D Scale Studio": "https://youtu.be/IrMON6o8TE8",
     "3D Card Kit": "https://youtu.be/1Z8iHbJ2nJU",
+    "3D Realistic Wall": "https://youtu.be/0Sd6ZMrLLf4",
 }
 
 
@@ -1508,16 +1509,17 @@ def open_video(key):
         print("%s: couldn't open the video (%s): %s" % (PLUGIN_NAME, e, url))
 # a step can be a choice: [(plugin, what it's called)] - you pick one when you get to it
 ROOF_CHOICE = [("3D Roof Tiles", "Roof tiles"), ("3D Corrugated Iron", "Roof sheets")]
+WALL_CHOICE = [("3D Brick & Block Studio", "Bricks"), ("3D Realistic Wall", "Realistic wall")]
 # (what it's called, [(plugin or a choice, the step's name)]) - the building follows Eddy's build order
 PROJECTS = [
     ("Make a building", [
         ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
         ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
-        (ROOF_CHOICE, "Roof"), ("3D Brick & Block Studio", "Bricks"),
+        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
         ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Make a bridge or arches", [
-        ("3D Bridges & Arches", "Bridge"), ("3D Brick & Block Studio", "Bricks"),
+        ("3D Bridges & Arches", "Bridge"), (WALL_CHOICE, "Walling"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Make a station canopy", [
         ("3D Station Canopies", "Canopy"), (ROOF_CHOICE, "Roof"),
@@ -1930,15 +1932,42 @@ def build_workflow(tb, win, items):
 NOT_A_FILE = ("clear", "empty", "no recent", "none")
 
 
+MODEL_TYPES = (".igz", ".ige", ".igt")
+
+
+def _action_path(a):
+    """The file an Open Recent entry opens, if it says (its data, else its text)."""
+    try:
+        d = a.data()
+        if isinstance(d, str) and d.strip():
+            return d.strip()
+    except Exception:
+        pass
+    return (a.text() or "").split("\t")[0].replace("&", "").strip()
+
+
 def _recent_menu(win):
+    """IngeTrazo's list of recent models. If there's more than one 'recent' list (recent folders, say),
+    the one with model files in it."""
     from PySide6.QtWidgets import QMenu
+    best, best_n = None, -1
     for m in win.findChildren(QMenu):
         try:
-            if "recent" in _clean(m.title()) and not _ours(m):
-                return m
+            if "recent" not in _clean(m.title()) or _ours(m):
+                continue
+            try:
+                m.aboutToShow.emit()
+            except Exception:
+                pass
+            n = sum(1 for a in m.actions() if _action_path(a).lower().endswith(MODEL_TYPES)
+                    or any(t in _action_path(a).lower() for t in MODEL_TYPES))
+            if "folder" in _clean(m.title()) or "dir" in _clean(m.title()):
+                n -= 1000
+            if n > best_n:
+                best, best_n = m, n
         except Exception:
             continue
-    return None
+    return best
 
 
 def _recent_files(menu):
@@ -1994,6 +2023,233 @@ def open_last(win=None):
         op.trigger()
     else:
         QMessageBox.information(win, PLUGIN_NAME, why)
+
+
+# ---------------------------------------------------------------------------
+# Start window: when IngeTrazo opens, open the last model, another one, or start new
+# ---------------------------------------------------------------------------
+def start_popup_on():
+    return bool(load_settings().get('start_popup', True))
+
+
+def set_start_popup(on):
+    s = load_settings()
+    s['start_popup'] = bool(on)
+    save_settings(s)
+
+
+def _recent_name(a):
+    """The model's own name for an Open Recent entry (not its folder)."""
+    import re
+    for t in (_action_path(a), (a.text() or "").split("\t")[0].replace("&", "").strip()):
+        m = re.search(r"([^\\/:]+?)(%s)\b" % "|".join(re.escape(x) for x in MODEL_TYPES), t, re.I)
+        if m:
+            got = m.group(1).strip()
+            if t.lstrip("&")[:1].isdigit() and not ("\\" in t or "/" in t):
+                got = re.sub(r"^\d+[.)]?\s+", "", got)      # '1 name' -> 'name'
+            return got
+    t = (a.text() or "").split("\t")[0].replace("&", "").strip()
+    t = re.sub(r"^\d+[.)]?\s+", "", t)                    # '1 name' -> 'name'
+    for sep in ("  ", " \u2014 ", " \u2013 ", " - ", " ("):
+        if sep in t:
+            t = t.split(sep)[0]
+            break
+    return os.path.splitext(os.path.basename(t.rstrip("\\/")))[0] or t
+
+
+def start_popup(win=None):
+    """A small window when IngeTrazo starts: Open last model, Open another, or Start a new one (the
+    empty model IngeTrazo has open already)."""
+    from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel, QCheckBox
+    from PySide6.QtCore import Qt
+    win = win or _main_window()
+    if win is None or getattr(win, '_eddy_start_shown', False):
+        return
+    win._eddy_start_shown = True
+    menu = _recent_menu(win)
+    files = _recent_files(menu) if menu is not None else []
+    op = _open_action(win)
+    dlg = QDialog(win)
+    dlg.setWindowTitle("Start")
+    lay = QVBoxLayout(dlg)
+    lab = QLabel("What would you like to do?")
+    f = lab.font()
+    f.setPointSize(f.pointSize() + 2)
+    f.setBold(True)
+    lab.setFont(f)
+    lay.addWidget(lab)
+    choice = [None]
+
+    def pick(what):
+        choice[0] = what
+        dlg.accept()
+    big = "QPushButton { padding: 8px 14px; text-align: left; font-size: 11pt; }"
+    if files:
+        b = QPushButton(make_icon("openlast"), "Open last:  %s" % _recent_name(files[0]))
+        b.setToolTip((files[0].text() or "").replace("&", ""))
+        b.setStyleSheet(big)
+        b.setDefault(True)
+        b.clicked.connect(lambda: pick('last'))
+        lay.addWidget(b)
+        for a in files[1:4]:                       # the next few from the recent list
+            bb = QPushButton("      %s" % _recent_name(a))
+            bb.setToolTip((a.text() or "").replace("&", ""))
+            bb.setFlat(True)
+            bb.setStyleSheet("QPushButton { text-align: left; padding: 3px 14px; }")
+            bb.clicked.connect(lambda _=False, a=a: pick(a))
+            lay.addWidget(bb)
+    if op is not None:
+        b = QPushButton("Open another model...")
+        b.setStyleSheet(big)
+        b.clicked.connect(lambda: pick('open'))
+        lay.addWidget(b)
+    b = QPushButton("Start a new model")
+    b.setToolTip("Carries on with the empty model IngeTrazo has open.")
+    b.setStyleSheet(big)
+    b.clicked.connect(lambda: pick('new'))
+    lay.addWidget(b)
+    cb = QCheckBox("Show this when IngeTrazo starts")
+    cb.setToolTip("Untick it to stop this window coming up. It can be put back from the right-click menu on "
+                  "the 3D Plugins toolbar.")
+    cb.setChecked(True)
+    cb.toggled.connect(set_start_popup)
+    lay.addWidget(cb)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+    dlg.exec()
+    what = choice[0]
+    if what not in (None, 'new'):
+        _close_untitled_later(win)
+    try:
+        if what == 'last' and files:
+            print("%s: Start - open last %s" % (PLUGIN_NAME, _recent_name(files[0])))
+            files[0].trigger()
+        elif what == 'open' and op is not None:
+            op.trigger()
+        elif what not in (None, 'new', 'last', 'open'):
+            what.trigger()
+    except Exception as e:
+        print("%s: Start - couldn't open it (%s)" % (PLUGIN_NAME, e))
+
+
+def _tab_name(t):
+    return (t or "").replace("&", "").replace("\u2022", "").replace("*", "").strip().lower()
+
+
+def _untitled_tab(win):
+    """(tab bar, index, holder) of the empty 'Untitled' tab IngeTrazo starts with, when another model is
+    open beside it - else None."""
+    from PySide6.QtWidgets import QTabBar, QTabWidget
+    for bar in win.findChildren(QTabBar):
+        try:
+            if _ours(bar) or bar.count() < 2:
+                continue
+            names = [_tab_name(bar.tabText(i)) for i in range(bar.count())]
+            hits = [i for i, n in enumerate(names) if n.startswith("untitled")]
+            if len(hits) != 1:
+                continue
+            i = hits[0]
+            if bar.currentIndex() == i:                # the model hasn't opened beside it yet
+                continue
+            holder = bar.parent() if isinstance(bar.parent(), QTabWidget) else None
+            if holder is not None and not _tab_is_empty(holder.widget(i)):
+                return None                            # something's been drawn in it: leave it
+            return bar, i, holder
+        except Exception:
+            continue
+    return None
+
+
+def _tab_is_empty(page):
+    """True unless the tab's model clearly has something in it (when it can't tell, it's the fresh
+    one IngeTrazo started with, so it counts as empty)."""
+    if page is None:
+        return True
+    try:
+        from PySide6.QtWidgets import QWidget
+        for w in [page] + page.findChildren(QWidget):
+            sc = getattr(w, 'scene', None)
+            if sc is not None and not callable(sc):
+                return not list(getattr(sc, 'groups', []) or [])
+    except Exception:
+        pass
+    return True
+
+
+def _close_untitled_later(win, tries=0):
+    """After the Start window opens your model, closes the empty Untitled tab beside it (checks for up to
+    15 seconds while the model loads)."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QTabBar, QApplication
+    if QApplication.activeModalWidget() is not None and tries < 60:      # an Open window is still up
+        QTimer.singleShot(500, lambda: _close_untitled_later(win, tries + 1))
+        return
+    found = _untitled_tab(win)
+    if found is None:
+        if tries < 30:
+            QTimer.singleShot(500, lambda: _close_untitled_later(win, tries + 1))
+        return
+    bar, i, holder = found
+    print("%s: Start - closing the empty Untitled tab" % PLUGIN_NAME)
+    QTimer.singleShot(150, lambda: _answer_dont_save(0))   # IngeTrazo asks 'Save changes?': answer Don't Save
+    try:
+        btn = bar.tabButton(i, QTabBar.RightSide) or bar.tabButton(i, QTabBar.LeftSide)
+        if btn is not None:
+            btn.click()                                  # just as if you'd clicked its little x
+        elif holder is not None:
+            holder.tabCloseRequested.emit(i)
+        else:
+            bar.tabCloseRequested.emit(i)
+    except Exception as e:
+        print("%s: Start - couldn't close the Untitled tab (%s)" % (PLUGIN_NAME, e))
+
+
+def _answer_dont_save(tries):
+    """Just after the empty Untitled tab is closed: if IngeTrazo asks whether to save it, clicks Don't Save
+    (only that one question, and only for about 3 seconds after the tab is closed)."""
+    import re
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QMessageBox, QAbstractButton, QLabel
+    dlg = QApplication.activeModalWidget()
+    if dlg is None:
+        if tries < 20:
+            QTimer.singleShot(150, lambda: _answer_dont_save(tries + 1))
+        return
+    try:
+        words = [dlg.windowTitle()] + [lb.text() for lb in dlg.findChildren(QLabel)]
+        if isinstance(dlg, QMessageBox):
+            words.append(dlg.text())
+        if not re.search(r"save|unsaved|changes", " ".join(words), re.I):
+            return                                     # some other question: leave it alone
+        pick = None
+        if isinstance(dlg, QMessageBox):
+            for sb in (QMessageBox.Discard, QMessageBox.No):
+                pick = dlg.button(sb)
+                if pick is not None:
+                    break
+        if pick is None:
+            for b in dlg.findChildren(QAbstractButton):
+                if re.search(r"don.?t\s*save|discard|close without|^\s*no\s*$", b.text().replace("&", ""), re.I):
+                    pick = b
+                    break
+        if pick is not None:
+            print("%s: Start - answered Don't Save for the empty Untitled tab" % PLUGIN_NAME)
+            pick.click()
+    except Exception as e:
+        print("%s: Start - couldn't answer the Save question (%s)" % (PLUGIN_NAME, e))
+
+
+def _start_popup_when_ready(win, tries=0):
+    """Waits until IngeTrazo's window is up (and nothing else is asking something) before the Start window."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    if not start_popup_on() or getattr(win, '_eddy_start_shown', False):
+        return
+    busy = QApplication.activeModalWidget() is not None
+    if (not win.isVisible() or busy) and tries < 40:
+        QTimer.singleShot(500, lambda: _start_popup_when_ready(win, tries + 1))
+        return
+    if win.isVisible():
+        start_popup(win)
 
 
 def style_workflow(tb):
@@ -2527,6 +2783,8 @@ def install_toolbar(win=None):
     if simple_view_on():
         for ms in (1500, 4000):
             QTimer.singleShot(ms, lambda: simple_view_on() and set_simple_view(True, win))
+    if start_popup_on():
+        QTimer.singleShot(2500, lambda: _start_popup_when_ready(win))   # after the plugins have loaded
     return tb
 
 
@@ -2642,6 +2900,10 @@ def choose_buttons(tb, where=None):
     steps.setCheckable(True)
     steps.setChecked(steps_on())
     steps.toggled.connect(lambda on: set_steps_on(on, tb.parent()))
+    startw = menu.addAction("Start window when IngeTrazo opens (open last, open, new)")
+    startw.setCheckable(True)
+    startw.setChecked(start_popup_on())
+    startw.toggled.connect(set_start_popup)
     menu.addSeparator()
     hide = menu.addAction("Hide this toolbar")
     hide.triggered.connect(lambda: tb.setVisible(False))
