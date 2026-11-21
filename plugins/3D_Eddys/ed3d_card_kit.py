@@ -34,7 +34,7 @@ import json
 import math
 
 PLUGIN_NAME = "3D Card Kit"
-VERSION = "2.6"   # 2.6: the piece numbers go on a glue tab, not on the wall itself, so they don\'t show on the finished model; 2.5: a material picked for a brick wall goes on the bricks (it was going on the bare wall behind them); 2.4: a roof slope comes out as one clean shape (no slot or notch where the chimney goes through - the chimney sits on it); every piece has its main colour under its faces, so no gaps show through; 2.3: the choice of program comes up as a proper box in the middle of the Card Kit window, with big buttons; 2.2: Open PDF with... (and Ask me each time) shows a short list - Edge, Chrome, the usual program, or show it in its folder - as Windows' own Open with box did nothing; 2.1: "Open in" sits next to Make card kit; Open PDF with... works straight after making it (or makes it first); 2.0: bricks back (only parts set back behind the wall's own face are left out, like the frame behind a window); choose which program opens the PDF; 1.11: what's seen through a window with no glass (parts set back at the back of the wall) is left out, and the openings get the glass look you pick; 1.10: window glass is drawn whichever way its face points (some panes were missing, showing the frame behind as green); joint lines on dark colours (slates) are drawn lighter so they show; 1.9: the piece choices set by accident with the mouse wheel are cleared once; roof slates and tiles (and cladding) are printed on the roof piece under them, as one piece; 1.8: scrolling the Parts list with the mouse wheel no longer changes a drop-down it passes over; 1.7: click a piece in the preview to pick it in the Parts list (it's outlined in blue); narrower colour boxes, wider names; "&" shows in the page names; 1.6: glass never hidden behind the frame colour (faces only grouped when they can't cover each other); glass: cut out, plain white, the model's glass colour or pale blue; 1.5: switches to Sharp once, as 1.2 had saved "picture" as your setting; 1.4: leaves out Subframe's frame (studs, plates, trusses, glazing frames) but keeps the fascia, barge and soffit boards; 1.3: sharp shapes in the PDF, joined up by colour, so it prints crisp and still opens quickly; 1.2: piece names cut short to fit under small pieces; 1.1: the faces go into the PDF as a picture (opens fast in LibreOffice and the like); cut and fold lines stay sharp
+VERSION = "2.7"   # 2.7: a wall no longer comes out inside out (only its window openings and quoins drawn) - the outline join was losing the wall itself on some brick walls; 2.6: the piece numbers go on a glue tab, not on the wall itself, so they don\'t show on the finished model; 2.5: a material picked for a brick wall goes on the bricks (it was going on the bare wall behind them); 2.4: a roof slope comes out as one clean shape (no slot or notch where the chimney goes through - the chimney sits on it); every piece has its main colour under its faces, so no gaps show through; 2.3: the choice of program comes up as a proper box in the middle of the Card Kit window, with big buttons; 2.2: Open PDF with... (and Ask me each time) shows a short list - Edge, Chrome, the usual program, or show it in its folder - as Windows' own Open with box did nothing; 2.1: "Open in" sits next to Make card kit; Open PDF with... works straight after making it (or makes it first); 2.0: bricks back (only parts set back behind the wall's own face are left out, like the frame behind a window); choose which program opens the PDF; 1.11: what's seen through a window with no glass (parts set back at the back of the wall) is left out, and the openings get the glass look you pick; 1.10: window glass is drawn whichever way its face points (some panes were missing, showing the frame behind as green); joint lines on dark colours (slates) are drawn lighter so they show; 1.9: the piece choices set by accident with the mouse wheel are cleared once; roof slates and tiles (and cladding) are printed on the roof piece under them, as one piece; 1.8: scrolling the Parts list with the mouse wheel no longer changes a drop-down it passes over; 1.7: click a piece in the preview to pick it in the Parts list (it's outlined in blue); narrower colour boxes, wider names; "&" shows in the page names; 1.6: glass never hidden behind the frame colour (faces only grouped when they can't cover each other); glass: cut out, plain white, the model's glass colour or pale blue; 1.5: switches to Sharp once, as 1.2 had saved "picture" as your setting; 1.4: leaves out Subframe's frame (studs, plates, trusses, glazing frames) but keeps the fascia, barge and soffit boards; 1.3: sharp shapes in the PDF, joined up by colour, so it prints crisp and still opens quickly; 1.2: piece names cut short to fit under small pieces; 1.1: the faces go into the PDF as a picture (opens fast in LibreOffice and the like); cut and fold lines stay sharp
 
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_card_kit.json")
 PRESET_DIR = os.path.join(os.path.expanduser("~"), "Documents", "IngeTrazo Presets", "Card Kit")
@@ -1392,19 +1392,24 @@ def clip_text(t, n):
 # ===========================================================================
 def qt_outline(side):
     """The outline of a piece: its faces on one side joined into one shape (with any holes
-    right through it), as loops in mm."""
+    right through it), as loops in mm.
+    2.7: the corners are snapped to a 0.1 mm grid first. Thousands of bricks with edges a hair's
+    breadth off the wall's own edges made Qt's joining lose the wall itself on some walls (the
+    piece came out inside out - only the window openings and the quoins drawn). If the join still
+    loses the main face, the plain outline of the biggest face is used instead."""
     from PySide6.QtGui import QPainterPath, QPolygonF
     from PySide6.QtCore import QPointF, Qt
-    S = 100.0
+    S = 10.0                                   # 0.1 mm steps
+    snap = lambda lp: [QPointF(round(x * S), round(y * S)) for x, y in lp]
     path = QPainterPath()
     path.setFillRule(Qt.FillRule.WindingFill)
     for outer, holes in side:
         o = outer if area2(outer) > 0 else outer[::-1]
-        path.addPolygon(QPolygonF([QPointF(x * S, y * S) for x, y in o]))
+        path.addPolygon(QPolygonF(snap(o)))
         path.closeSubpath()
         for h in holes:
             hh = h if area2(h) < 0 else h[::-1]
-            path.addPolygon(QPolygonF([QPointF(x * S, y * S) for x, y in hh]))
+            path.addPolygon(QPolygonF(snap(hh)))
             path.closeSubpath()
     simp = path.simplified()
     out = []
@@ -1412,7 +1417,18 @@ def qt_outline(side):
         lp = clean_loop([(p.x() / S, p.y() / S) for p in poly])
         if len(lp) >= 3:
             out.append(lp)
-    return out
+    if not side:
+        return out
+    # check it: the biggest face must still be there, whole
+    big = max(abs(area2(o)) for o, _h in side)
+    cls = classify_loops(out) if out else []
+    best = max([abs(area2(lp)) for lp, hole in cls if not hole] or [0.0])
+    if best < 0.95 * big:
+        print("%s: outline join lost the main face - using the plain outline" % PLUGIN_NAME)
+        return simple_outline(side)
+    # leave out specks left between snapped bricks (a hole smaller than 50 x 50 mm, real size)
+    keep = [lp for lp, hole in cls if not hole or abs(area2(lp)) >= 2500.0]
+    return keep
 
 
 _TEX_CACHE = {}
