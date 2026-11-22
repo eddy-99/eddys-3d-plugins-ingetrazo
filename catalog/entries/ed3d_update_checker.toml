@@ -4,7 +4,8 @@
 # catalog/screenshots/ whenever the plugin or this entry changes.
 
 id = "ed3d_update_checker"
-pr_note = "Network: only reads this repository on GitHub - the folder listing from api.github.com (one request per check) and the plugin files from raw.githubusercontent.com. It checks when you click it, and when IngeTrazo starts at most once a day (can be turned off). It only writes Eddy's own ed3d_*.py plugin files, and only the ones you tick: each download is checked against GitHub's file hash and compiled before it replaces the old file, and the old copy is kept in Documents/IngeTrazo Presets/Plugin backups."
+version = "1.2"
+pr_note = "Version 1.2 (as tested and merged in #391): the entry now says 1.2 to match the file. Network: only reads IngeTrazo's catalog (raw.githubusercontent.com/ingelibre/ingetrazo-extensions/main/catalog.json) and the download addresses listed in it, and only for Eddy's own entries. Nothing is read at startup unless you tick 'Check when IngeTrazo starts' (then at most once a day). Each download is checked against the catalog's SHA-256 and a different file is refused; ticked plugins are put in by IngeTrazo's own extension installer, the old copy is kept as a backup, and its settings go in IngeTrazo's data folder (ingetrazo/ed3d_update_checker/)."
 source = "plugins/3D_Eddys/ed3d_update_checker.py"
 author = "Phillip Edwards (Eddy)"
 author_url = "https://github.com/eddy-99"
@@ -19,6 +20,6 @@ en = "3D Check for Updates"
 pt = "Procurar atualizações 3D"
 
 [summary]
-en = "Finds new versions of Eddy's 3D plugins, and new plugins, on GitHub. Tick the ones you want and they're put in for you, with your old copy kept as a backup. Can check by itself when IngeTrazo starts."
-es = "Busca en GitHub nuevas versiones de los plugins 3D de Eddy, y plugins nuevos. Marca los que quieras y se instalan solos, guardando una copia de los anteriores. Puede comprobarlo solo al abrir IngeTrazo."
-pt = "Procura no GitHub novas versões dos plugins 3D do Eddy, e plugins novos. Marque os que quiser e são instalados por si, guardando uma cópia dos anteriores. Pode verificar sozinho ao abrir o IngeTrazo."
+en = "Finds new versions of Eddy's 3D plugins, and new plugins, in IngeTrazo's catalog. Tick the ones you want and they're put in for you, with your old copy kept as a backup. Install it first to get the whole set in one go."
+es = "Busca en el catálogo de IngeTrazo nuevas versiones de los plugins 3D de Eddy, y plugins nuevos. Marca los que quieras y se instalan solos, guardando una copia de los anteriores. Instálalo primero para tener todo el conjunto de una vez."
+pt = "Procura no catálogo do IngeTrazo novas versões dos plugins 3D do Eddy, e plugins novos. Marque os que quiser e são instalados por si, guardando uma cópia dos anteriores. Instale-o primeiro para ter o conjunto completo de uma vez."
