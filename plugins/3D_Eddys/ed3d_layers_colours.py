@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPu
                                QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "5.7"   # 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
+VERSION = "5.11"   # 5.11: colours for the new shop front styles - black glass (Vitrolite), chrome & aluminium, bronze, gilt, bow window glass; 5.10: the layers are kept in A to Z order (IngeTrazo\'s own first layer stays at the top); 5.9: shop fronts fawn, their sign lettering dark maroon; 5.8: colours and a layer for 3D Shop Fronts (shop front paint, gilt sign lettering, stallriser tiles, polished granite); 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -58,6 +58,7 @@ DEFAULT_LAYERS = {
     "3D Soil & Waste Pipes": "Soil & waste pipes",
     "3D Station Canopies": "Station canopies",
     "3D Fences & Gates": "Fences & gates",
+    "3D Shop Fronts": "Shop fronts",
 }
 
 # (material, colour 0-255, opacity, words in a part's name that pick it, only for these plugins)
@@ -66,6 +67,15 @@ DEFAULT_PALETTE = [
     ("Fascia & barge boards", (240, 230, 200), 1.0, "fascia, barge, soffit", ""),
     ("Glass", (176, 196, 206), 0.35, "glass, pane, light", ""),
     ("Ironmongery", (40, 40, 42), 1.0, "handle, hinge, knob, latch, letter, knocker, vane, finial", ""),
+    ("Black glass (Vitrolite)", (32, 32, 36), 1.0, "vitrolite, black", ""),
+    ("Chrome & aluminium", (198, 202, 206), 1.0, "chrome, aluminium", ""),
+    ("Bronze", (140, 100, 52), 1.0, "bronze", ""),
+    ("Gilt", (214, 178, 84), 1.0, "gilt", ""),
+    ("Bow window glass", (70, 86, 98), 1.0, "bowfront", ""),
+    ("Sign lettering", (96, 30, 40), 1.0, "lettering", ""),
+    ("Stallriser tiles", (40, 86, 70), 1.0, "tiling", ""),
+    ("Polished granite", (150, 146, 148), 1.0, "granite", ""),
+    ("Shop front paint", (222, 196, 150), 1.0, "shop, stallriser, pilaster, console", ""),
     ("Chimney pot", (184, 108, 72), 1.0, "pot", "3D Chimneys"),
     ("Lead", (115, 120, 128), 1.0, "flashing, lead, roll", ""),
     ("Mortar", (200, 194, 178), 1.0, "mortar, flaunching, render, pointing", ""),
@@ -83,7 +93,8 @@ DEFAULT_PALETTE = [
 ]
 
 # rows added since version 1: put into a palette you saved before they were there
-NEW_ROWS = ("Fascia & barge boards", "Roof tiles")
+NEW_ROWS = ("Fascia & barge boards", "Roof tiles", "Sign lettering", "Stallriser tiles", "Polished granite", "Shop front paint",
+            "Black glass (Vitrolite)", "Chrome & aluminium", "Bronze", "Gilt", "Bow window glass")
 
 # The colours shown on the Roofs tab (the rest are on the Colours tab). A colour you add on
 # the Roofs tab is kept there.
@@ -109,6 +120,7 @@ PLUGIN_FALLBACK = {
     "3D Soil & Waste Pipes": "Pipework",
     "3D Station Canopies": "Canopy ironwork",
     "3D Fences & Gates": "Timber",
+    "3D Shop Fronts": "Shop front paint",
 }
 
 
@@ -191,10 +203,37 @@ def ensure_layer(scene, name):
     layers = getattr(scene, 'layers', None)
     if layers is None:
         return
-    if name in {getattr(ly, 'name', None) for ly in layers}:
+    if name not in {getattr(ly, 'name', None) for ly in layers}:
+        from core.layers import Layer
+        layers.append(Layer(name))
+    sort_layers(scene)
+
+
+def sort_layers(scene):
+    """Puts the layers in A to Z order, so they're easy to find. IngeTrazo's own first layer stays at
+    the top, and the layer you're working on stays the one you're working on."""
+    layers = getattr(scene, 'layers', None)
+    if not isinstance(layers, list) or len(layers) < 3:
         return
-    from core.layers import Layer
-    layers.append(Layer(name))
+    rest = layers[1:]
+    want = sorted(rest, key=lambda ly: (getattr(ly, 'name', '') or '').lower())
+    if all(a is b for a, b in zip(rest, want)):
+        return
+    keep = {}
+    for attr in ('current_layer', 'active_layer', 'layer_index', 'current'):
+        val = getattr(scene, attr, None)
+        if isinstance(val, int) and not isinstance(val, bool) and 0 <= val < len(layers):
+            keep[attr] = layers[val]          # remembered by its place in the list: find it again after
+    try:
+        layers[1:] = want
+    except Exception as e:
+        print("%s: couldn't sort the layers: %s" % (PLUGIN_NAME, e))
+        return
+    for attr, ly in keep.items():
+        try:
+            setattr(scene, attr, next(i for i, x in enumerate(layers) if x is ly))
+        except Exception:
+            pass
 
 
 def _paint_attrs(scene, row, update):
@@ -313,7 +352,7 @@ def organise(scene, group, plugin):
 def _plugin_of(group):
     """Which plugin made a group, guessed from its name - for Apply to selected."""
     low = (getattr(group, 'name', '') or '').lower()
-    guesses = [("chimney", "3D Chimneys"), ("pot", "3D Chimneys"), ("vent", "3D Chimneys"),
+    guesses = [("shop front", "3D Shop Fronts"), ("chimney", "3D Chimneys"), ("pot", "3D Chimneys"), ("vent", "3D Chimneys"),
                ("canopy", "3D Station Canopies"), ("window", "3D Period Windows"),
                ("door", "3D Period Doors"), ("gutter", "3D Gutters & Downpipes"),
                ("downpipe", "3D Gutters & Downpipes"), ("soil", "3D Soil & Waste Pipes"),
