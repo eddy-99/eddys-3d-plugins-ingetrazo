@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Windows"
-VERSION = "2.14"  # shown in the window title, so you can tell which file is loaded. 2.14: faces of the frame missed by the colouring (round arched tops) take the colour of the part they join on to - they showed white; 2.13: a Mortar joint depth setting (Z) for brick sills, heads and arches (it was always 3 mm); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the windows are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
+VERSION = "2.17"  # shown in the window title, so you can tell which file is loaded. 2.17: on the Whole building page, clicking a window or door already built in lights up its own edges in the model (not the whole wall), so you can see which one it is; 2.16: a separate casement is only as thick as a casement, not right through the wall, so it lies flat on the print bed; 2.15: "Casements as separate pieces" - casements and top lights come out as pieces of their own, a small gap smaller than the frame, to print flat and glue in open; "Make one on its own" builds a window with no wall; 2.14: faces of the frame missed by the colouring (round arched tops) take the colour of the part they join on to - they showed white; 2.13: a Mortar joint depth setting (Z) for brick sills, heads and arches (it was always 3 mm); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the windows are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
 
 
 def _ed3d_organise(scene, group):
@@ -72,7 +72,7 @@ DEFAULTS = {
     'sash_w': 45.0, 'sash_d': 40.0, 'bottom_rail': 70.0, 'meet_w': 35.0, 'meet': 50.0,
     'bar_w': 18.0, 'bar_d': 25.0,
     'cols': 3, 'rows': 2, 'cols_b': 3, 'rows_b': 2, 'arch_bars': 'fan',
-    'leaves': 2, 'mullion_w': 60.0, 'transom': 0.0,
+    'leaves': 2, 'mullion_w': 60.0, 'transom': 0.0, 'leaf_apart': False, 'leaf_gap': 15.0,
     'pivot': False, 'pivot_col': 2, 'pivot_row': 2,
     'open': False, 'sash_open': 40.0, 'open_angle': 50.0,
     'glass': False, 'glass_t': 4.0,
@@ -83,7 +83,8 @@ DEFAULTS = {
 }
 INT_KEYS = ('cols', 'rows', 'cols_b', 'rows_b', 'leaves', 'pivot_col', 'pivot_row')
 CHOICE_KEYS = ('style', 'top', 'arch_bars', 'sill', 'sill_shape', 'head')
-BOOL_KEYS = ('flip', 'flat', 'bars_back', 'remove_face', 'join', 'cut', 'pivot', 'open', 'glass', 'keystone')
+BOOL_KEYS = ('flip', 'flat', 'bars_back', 'remove_face', 'join', 'cut', 'pivot', 'open', 'glass', 'keystone',
+             'leaf_apart')
 PRESET_KEYS = tuple(DEFAULTS)
 
 BUILTIN_PRESETS = {
@@ -602,6 +603,7 @@ def build_window(sh, v):
     base = v.get('_base', 0.0)          # the back: the face, or the back of the wall
     ov = min(2.0, fw * 0.25)            # how far neighbouring parts overlap
     win, glass = [], []
+    leaves_apart, leaf_glass = [], []
     O = offset_poly(P, fw)
     if clean(O) is None or area2(O) <= 0:
         raise ValueError("The frame width is too big for this opening.")
@@ -657,15 +659,26 @@ def build_window(sh, v):
             cells = [('leaf', clip_rect(O, cx0, cx1, oy0 - 1, low_top))]
             if yt is not None:
                 cells.append(('light', clip_rect(O, cx0, cx1, yt + mw / 2, oy1 + 1)))
+            apart = bool(v.get('leaf_apart'))
+            cl = max(0.0, float(v.get('leaf_gap', 15.0))) if apart else 0.0
             for what, R in cells:
                 if not R:
                     continue
+                if apart:
+                    # a casement of its own, to print flat and glue in open: clear of the frame all round
+                    R = clean(offset_poly(R, cl)) if cl > 0 else R
+                    if not R or min(bbox(R)[1] - bbox(R)[0], bbox(R)[3] - bbox(R)[2]) < 2 * v['sash_w'] + 10:
+                        raise ValueError("The gap round the separate casements leaves no room for them.")
+                gr = 0.0 if apart else ov
+                # a separate casement is only as thick as a casement (not right through the wall), so
+                # it lies flat on its face to print
+                vs = dict(v, _base=zf - sd) if apart else v
                 if what == 'leaf':
                     so, gl = sash(R, v['sash_w'], v['sash_w'], None, v['cols'], v['rows'],
-                                  mode, sh, v, zf - sd, zf, grow=ov)
+                                  mode, sh, vs, zf - sd, zf, grow=gr)
                 else:
                     so, gl = sash(R, v['sash_w'], None, None, v['cols_b'], v['rows_b'],
-                                  mode, sh, v, zf - sd, zf, grow=ov)
+                                  mode, sh, vs, zf - sd, zf, grow=gr)
                 if ang > 0:
                     rx0, rx1, ry0, ry1 = bbox(R)
                     if what == 'leaf':
@@ -675,8 +688,12 @@ def build_window(sh, v):
                         f = swing_horizontal(ry1, zf, ang * 0.5)
                     so = [s.mapped(f) for s in so]
                     gl = [s.mapped(f) for s in gl]
-                win += so
-                glass += gl
+                if apart:
+                    leaves_apart.append(so)
+                    leaf_glass += gl
+                else:
+                    win += so
+                    glass += gl
 
     else:   # fixed / industrial
         bd = v['bar_d']
@@ -752,7 +769,17 @@ def build_window(sh, v):
         else:
             win.append(prism([(x0 + ov, y1 - ov), (x1 - ov, y1 - ov), (x1 - ov, y1 + ov),
                               (x0 + ov, y1 + ov)], max(base, hb), zf - ov))
+    leaf = []
+    for k, so in enumerate(leaves_apart):
+        for s_ in so:
+            if s_:
+                s_.leaf_no = k + 1           # which casement: each its own piece
+                leaf.append(s_)
+    for s_ in leaf_glass:
+        if s_:
+            s_.leaf_no = 0
     return {'window': [s for s in win if s], 'glass': [s for s in glass if s],
+            'leaf': leaf, 'leaf_glass': [s for s in leaf_glass if s],
             'sill': [s for s in sill if s], 'head': [s for s in head if s],
             'info': {'fd': fd, 'O': bbox(O), 'ym': locals().get('ym')}}
 
@@ -1535,9 +1562,9 @@ def preview_items(sh, v):
     for grp, sols in parts.items():
         if grp == 'info':
             continue
-        if grp == 'glass':
+        if grp in ('glass', 'leaf_glass'):
             rgb, alpha = COLOURS['glass'], 110
-        elif grp == 'window':
+        elif grp in ('window', 'leaf'):
             rgb, alpha = COLOURS['window'], 255
         else:
             rgb, alpha = COLOURS.get(v['sill'] if grp == 'sill' else v['head'], COLOURS['stone']), 255
@@ -1850,7 +1877,7 @@ def _slice_x(solids, xc):
 def sizes_drawing(sh, v):
     """{'front': [(depth, pts, rgb)], 'cut': {group: segments}, 'dims': [...], 'xc': x}
     Dims are (letter, view, p1, p2, (ox, oy), offset px); view 'F' uses (x, y), 'C' (z, y)."""
-    v = dict(v, open=False)
+    v = dict(v, open=False, leaf_apart=False)
     parts = build_window(sh, v)
     info = parts['info']
     fd = info['fd']
@@ -2128,8 +2155,16 @@ def fit_kind_shape(poly, v):
     return fit_shape(poly, v['top'], v['rise'])
 
 
+_LAST_LEAVES = []       # the separate casements (and their glass) of the window kind_parts made last (local mm)
+
+
 def kind_parts(sh, vv):
     built = build_window(sh, vv)
+    _LAST_LEAVES[:] = []
+    for grp in ('leaf', 'leaf_glass'):
+        for so in built.get(grp) or []:
+            so.part = grp
+            _LAST_LEAVES.append(so)
     out = []
     for grp in ('window', 'sill', 'head'):
         for so in built[grp]:
@@ -2866,6 +2901,52 @@ def opening_edges(op):
     return out
 
 
+def _edge_ends(e):
+    for get in (lambda: (e.v1, e.v2), lambda: (e.a, e.b), lambda: tuple(_items(getattr(e, 'vertices', None)))[:2],
+                lambda: (e.start, e.end)):
+        try:
+            a, b = get()
+            pa, pb = _pos(a), _pos(b)
+            if pa is not None and pb is not None:
+                return pa, pb
+        except Exception:
+            pass
+    return None
+
+
+def built_edges(op):
+    """The edges of a window or door built into its wall (its frame, sash or door, sill or step, head),
+    to light it up: the wall's edges in and round its opening - from the wall's own mesh, as the
+    opening's own edges went when it was joined in."""
+    mesh = op.get('mesh')
+    if mesh is None or not op.get('poly') or not op.get('frame'):
+        return []
+    O, U, V, N = [tuple(x) for x in op['frame']]
+    x0, x1, y0, y1 = bbox([tuple(p) for p in op['poly']])
+    vals = dict(DEFAULTS)
+    vals.update((op.get('built') or {}).get('values') or {})
+    side = float(vals.get('frame_w', 75.0)) + float(vals.get('horn', 100.0)) + 60.0
+    below = 450.0 if op.get('built', {}).get('kind') != 'door' else 450.0 + 4000.0 * bool(vals.get('flight'))
+    above = float(vals.get('head_h', 215.0)) + float(vals.get('key_up', 0.0)) + 60.0
+    ax0, ax1, ay0, ay1 = x0 - side, x1 + side, y0 - below, y1 + above
+    depth = (op.get('depth') or 0.0) + 0.6           # through the wall, and what stands out in front
+    out = []
+    for e in _items(getattr(mesh, 'edges', None)):
+        ends = _edge_ends(e)
+        if not ends:
+            continue
+        ok = True
+        for p in ends:
+            d = v_sub(p, O)
+            x, y, z = v_dot(d, U) / SCALE, v_dot(d, V) / SCALE, v_dot(d, N)
+            if not (ax0 <= x <= ax1 and ay0 <= y <= ay1 and -depth <= z <= 0.6):
+                ok = False
+                break
+        if ok:
+            out.append(e)
+    return out
+
+
 def build_into_wall(op, v, overlap):
     """The window or door for one opening, as solids in the wall's own (local) metres, made a little
     bigger all round and sunk into the wall so it joins on. Flat at the back of the wall."""
@@ -2883,6 +2964,12 @@ def build_into_wall(op, v, overlap):
     sh = fit_kind_shape(grown, v)
     sols = kind_parts(sh, vv)
     tw = to_world(op['frame'])
+    # casements made as separate pieces: kept apart from the wall, groups of their own beside it
+    op['_leaves'] = []
+    for so in _LAST_LEAVES:
+        m_ = so.mapped(tw)
+        m_.leaf_no = getattr(so, 'leaf_no', 1)
+        op['_leaves'].append(m_)
     return [so.mapped(tw) for so in sols], describe(sh, v)
 
 
@@ -3229,6 +3316,140 @@ def wall_swap_command(swaps):
 
 
 # ---------------------------------------------------------------------------
+# Separate pieces (a door leaf, a casement) made with a wall's windows / doors: each is a group of its
+# own, beside its wall, in the wall's own place, marked with the wall it belongs to so it's made
+# again (or taken away) whenever that wall's windows / doors are built again.
+# ---------------------------------------------------------------------------
+LEAF_KEY = "ed3d_%s_leaf" % WB_KIND
+LEAF_WORDS = ("Door leaf - ", "doors") if WB_KIND == 'door' else ("Casement - ", "casements")
+
+
+def _group_lists(scene):
+    """[(list, group)] for every group in the scene, with the list it sits in."""
+    out = []
+    stack = [getattr(scene, 'groups', None)]
+    guard = 0
+    while stack and guard < 200000:
+        guard += 1
+        lst = stack.pop()
+        if not isinstance(lst, list):
+            continue
+        for g in lst:
+            out.append((lst, g))
+            for attr in ('children', 'groups'):
+                kl = getattr(g, attr, None)
+                if isinstance(kl, list) and kl:
+                    stack.append(kl)
+    return out
+
+
+def plan_leaf_groups(scene, wall_groups, recs, jobs):
+    """The separate pieces to add ([(list, after group, new group)]) and the ones made before for these
+    walls to take away ([(list, group)])."""
+    if scene is None:
+        return [], []
+    uids = set(r.get('uid') for r in recs if r and r.get('uid'))
+    removes = []
+    where = {}
+    for lst, g in _group_lists(scene):
+        where.setdefault(id(g), lst)
+        ext = getattr(g, 'ext', None)
+        mk = ext.get(LEAF_KEY) if isinstance(ext, dict) else None
+        if isinstance(mk, dict) and mk.get('wall') in uids:
+            removes.append((lst, g))
+    adds = []
+    from core.group import Group
+    for wg, rec, item, sols in jobs:
+        lst = where.get(id(wg))
+        if lst is None:
+            continue
+        by = {}
+        for so in sols:
+            if getattr(so, 'part', '') == 'leaf_glass':
+                by.setdefault(('glass', 0), []).append(so)
+            else:
+                by.setdefault(('leaf', getattr(so, 'leaf_no', 1) if WB_KIND == 'window' else 1), []).append(so)
+        for (which, no), ss in sorted(by.items(), key=lambda e: (e[0][0] == 'glass', e[0][1])):
+            if not ss:
+                continue
+            mesh, _bad = _mesh_from([(f, []) for so in ss for f in so.faces])
+            lw = LEAF_WORDS[0] if WB_KIND != 'window' else "Casement %d - " % no
+            if which == 'glass':
+                lw = "Glass - " + (LEAF_WORDS[0] if WB_KIND != 'window' else "casements - ")
+            name = lw + str(item.get('name') or WB_WORDS['n'])
+            g = Group(name)
+            g.mesh = mesh
+            try:
+                g.name = name
+            except Exception:
+                pass
+            try:
+                xf = getattr(wg, 'xform', None)
+                if xf is not None:
+                    g.xform = list(xf) if isinstance(xf, (list, tuple)) else xf
+            except Exception:
+                pass
+            try:
+                ext = dict(getattr(g, 'ext', None) or {})
+                ext[LEAF_KEY] = {'wall': rec.get('uid'), 'fi': item.get('fi'), 'k': item.get('k')}
+                g.ext = ext
+            except Exception:
+                pass
+            g.component = False
+            try:
+                paint_wall(scene, mesh, None, ss)
+            except Exception:
+                pass
+            adds.append((lst, wg, g))
+    return adds, removes
+
+
+def with_leaf_groups(base, adds, removes, scene_):
+    """The walls' undo step, with the separate pieces taken away and added in the same step."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+
+    class WithLeaves(Command):
+        def __init__(self):
+            self.where = []
+            self.organised = False
+
+        def do(self, scene):
+            base.do(scene)
+            self.where = []
+            for lst, g in removes:
+                i = next((k for k, x in enumerate(lst) if x is g), None)
+                if i is not None:
+                    del lst[i]
+                self.where.append(i)
+            for lst, after, g in adds:
+                i = next((k for k, x in enumerate(lst) if x is after), None)
+                lst.insert(len(lst) if i is None else i + 1, g)
+                if not self.organised:
+                    _ed3d_organise(scene, g)
+            self.organised = True
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def undo(self, scene):
+            for lst, _after, g in reversed(adds):
+                for k, x in enumerate(lst):
+                    if x is g:
+                        del lst[k]
+                        break
+            for (lst, g), i in reversed(list(zip(removes, self.where))):
+                if i is not None:
+                    lst.insert(min(i, len(lst)), g)
+            base.undo(scene)
+
+    return WithLeaves()
+
+
+# ---------------------------------------------------------------------------
 # Colours for windows and doors built into their walls (just for looks: they don't change the print).
 # Each face of the new wall is painted by the part it lies on - with 3D Layers & Colours' colours when
 # that plugin is loaded, otherwise plain ones - and the wall's own faces keep the colour they had.
@@ -3245,7 +3466,7 @@ def paint_name(so, kind, vals):
     if getattr(so, 'mortar', False):
         return "mortar"
     grp = getattr(so, 'part', None)
-    if grp == 'glass':
+    if grp in ('glass', 'leaf_glass'):
         return "glass"
     if grp in ('step', 'sill', 'head'):
         m = vals.get(grp, 'stone')
@@ -3517,6 +3738,15 @@ FIELDS = {
                                      "pivot lights tilt."),
     'sash_open': ("Sash open", 0.0, 100.0, 0, " %", "How far the bottom sash is slid up."),
     'open_angle': ("Opening angle", 0.0, 120.0, 0, " deg", "How far casements and pivot lights open."),
+    'leaf_apart': ("Casements as separate pieces", "Casement windows: each opening leaf and top light (with "
+                                                   "its glass as a piece of its own) comes out as its own "
+                                                   "group, not joined to the frame - print them flat and glue "
+                                                   "them in at any angle, posed open. They're made a little "
+                                                   "smaller than their openings (the gap below)."),
+    'leaf_gap': ("Gap round a separate casement", 0.0, 200.0, 0, " mm", "How much smaller than its opening "
+                                                                        "a separate casement is, all round "
+                                                                        "(real mm: 15 mm = 0.2 mm in OO), so "
+                                                                        "it fits once printed."),
     'glass': ("Glass", "Adds glass as its own group (so you can hide it or print it in clear)."),
     'glass_t': ("Glass thickness", 0.1, 50.0, 1, " mm", ""),
     'cols': ("Panes across", 1, 20, None, "", "Columns of panes (per sash or leaf)."),
@@ -3577,7 +3807,7 @@ LETTERS = {'frame_w': 'A', 'frame_d': 'B', 'sash_w': 'C', 'sash_d': 'D', 'bottom
 
 TABS = [
     ("Window", ('style', 'top', 'rise', 'flat', 'bars_back', 'join', 'remove_face', 'cut', 'lift', 'flip', 'open', 'sash_open', 'open_angle',
-                'glass', 'glass_t')),
+                'leaf_apart', 'leaf_gap', 'glass', 'glass_t')),
     ("Panes", ('cols', 'rows', 'cols_b', 'rows_b', 'arch_bars', 'meet', 'leaves', 'mullion_w',
                'transom', 'pivot', 'pivot_col', 'pivot_row')),
     ("Sill && head", ('sill', 'sill_shape', 'sill_h', 'sill_p', 'horn', 'head', 'head_h', 'head_p', 'bearing',
@@ -3893,15 +4123,20 @@ class WindowsDialog(QDialog):
 
         brow = QHBoxLayout()
         self.b_add = QPushButton("Add window to selected face(s)")
+        self.b_own = QPushButton("Make one on its own")
+        self.b_own.setToolTip("A window with no wall: type its width and height and it's made beside the model, "
+                              "with these settings, ready to print on its own.")
         self.b_add.setDefault(True)
         b_refresh = QPushButton("Preview selected face")
         b_close = QPushButton("Close")
         brow.addWidget(self.b_add)
+        brow.addWidget(self.b_own)
         brow.addWidget(b_refresh)
         brow.addStretch(1)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         self.b_add.clicked.connect(lambda: self.tool.add_from_dialog(self))
+        self.b_own.clicked.connect(lambda: self.tool.make_on_own(self))
         b_refresh.clicked.connect(self.read_selection)
         b_close.clicked.connect(self.close)
 
@@ -3956,8 +4191,9 @@ class WindowsDialog(QDialog):
         lay.addWidget(self.b_find)
         self.lst_open = QListWidget()
         self.lst_open.setToolTip(("Ticked openings get a %(n)s (%(os)s start unticked). Click a line to "
-                                  "light that opening up in the model and look at it; pick a wall in the "
-                                  "model and its openings light up here.") % WB_WORDS)
+                                  "light that opening up in the model and look at it - one with a window "
+                                  "or door in it lights up its edges; pick a wall in the model and its "
+                                  "openings light up here.") % WB_WORDS)
         lay.addWidget(self.lst_open, 1)
         row = QHBoxLayout()
         b_all = QPushButton("Tick all empty %(n)s openings" % WB_WORDS)
@@ -4221,7 +4457,13 @@ class WindowsDialog(QDialog):
             if i < len(self.found):
                 op = self.found[i]
                 got = opening_edges(op)
-                # a window or door built into its wall has no opening edges left: light up its wall
+                if not got:
+                    # a window or door built into its wall has no opening edges left: light up its own
+                    # edges in the wall (its frame, step or sill, head), or the wall if that fails
+                    try:
+                        got = built_edges(op)
+                    except Exception:
+                        got = []
                 edges += got if got else [op['group']]
         try:
             scene.selection.clear()
@@ -4297,6 +4539,7 @@ class WindowsDialog(QDialog):
             'rise': v['top'] == 'segment',
             'sash_open': v['open'] and st == 'sash',
             'open_angle': v['open'] and st != 'sash' and not v['flat'],
+            'leaf_apart': st == 'casement', 'leaf_gap': st == 'casement' and v.get('leaf_apart', False),
             'cut': v['remove_face'],
             'bars_back': v['flat'],
             'glass_t': v['glass'],
@@ -4536,6 +4779,33 @@ class VertexWrapper(QVector3D):
 # ---------------------------------------------------------------------------
 # Tool
 # ---------------------------------------------------------------------------
+
+class LooseFace:
+    """A face that isn't in the model: an upright rectangle to make a window on its own."""
+    def __init__(self, pts):
+        self.vertices = [tuple(p) for p in pts]
+        self.holes = []
+
+
+def loose_spot(scene):
+    """Where a window made on its own goes: 1 m to the right of everything in the model (metres)."""
+    hi = None
+    for top in _items(getattr(scene, 'groups', None)):
+        try:
+            for g, m in _placements(top):
+                for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                    for q in _items(getattr(f, 'vertices', None)):
+                        p = _pos(q)
+                        if p is None:
+                            continue
+                        x = _wmap(m, p)[0] if m is not None else p[0]
+                        if hi is None or x > hi:
+                            hi = x
+        except Exception:
+            continue
+    return 0.0 if hi is None else hi + 1.0
+
+
 class PeriodWindowsTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+N"
@@ -4590,6 +4860,46 @@ class PeriodWindowsTool(Tool):
 
     def on_deactivate(self, viewport):
         pass
+
+    def make_on_own(self, dlg):
+        """'Make one on its own': a window with no wall, the size you type, beside the model."""
+        from PySide6.QtWidgets import QInputDialog
+        cls = type(self)
+        w0, h0 = getattr(cls, '_own_size', None) or (900.0, 1200.0)
+        w, ok = QInputDialog.getDouble(dlg, PLUGIN_NAME, "Width of the opening it fits (real-world mm):",
+                                       w0, 100.0, 20000.0, 0)
+        if not ok:
+            return
+        h, ok = QInputDialog.getDouble(dlg, PLUGIN_NAME, "Height of the opening it fits (real-world mm):",
+                                       h0, 100.0, 20000.0, 0)
+        if not ok:
+            return
+        cls._own_size = (w, h)
+        v = dict(dlg.values())
+        v.update(remove_face=False, cut=False, flip=False)
+        type(self)._saved = dict(dlg.values())
+        try:
+            dlg.remember()
+        except Exception:
+            pass
+        viewport = dlg.viewport
+        scene = getattr(viewport, 'scene', None)
+        x0 = loose_spot(scene)
+        W_, H_ = w * SCALE, h * SCALE
+        face = LooseFace([(x0, 0.0, 0.0), (x0 + W_, 0.0, 0.0), (x0 + W_, 0.0, H_), (x0, 0.0, H_)])
+        parts, problems, _used, _cuts = self.plan([face], v, scene)
+        if not parts:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "Nothing could be made at that size.")
+            return
+        self._join = v.get('join', True)
+        self._cut = False
+        self.last_report = []
+        ok = self.add_to_scene(viewport, parts, [], {})
+        if ok:
+            dlg.show_report(["A window on its own, %.0f x %.0f mm, made beside the model (front facing -Y, the "
+                             "Front view)." % (w, h)] + list(self.last_report or []))
+        if ok and problems:
+            QMessageBox.information(dlg, PLUGIN_NAME, "\n".join(problems))
 
     def add_from_dialog(self, dlg):
         v = dlg.values()
@@ -4686,6 +4996,14 @@ class PeriodWindowsTool(Tool):
                               ("%s - %s" % (dict(SILLS)[v['sill']], title), built['sill']),
                               ("%s - %s" % ("Keystone head" if v['keystone'] else "Head", title),
                                built['head'])]
+                if built.get('leaf'):
+                    # each casement on its own: never joined to the frame, to print flat and pose open
+                    by = {}
+                    for so in built['leaf']:
+                        by.setdefault(getattr(so, 'leaf_no', 1), []).append(so)
+                    for k_ in sorted(by):
+                        groups.append(("Casement %d - %s" % (k_, title), by[k_]))
+                    groups.append(("Glass - casements - " + title, built.get('leaf_glass') or []))
                 for name, sols in groups:
                     if sols:
                         parts.append((name, [s.mapped(tw) for s in sols]))
@@ -4749,12 +5067,21 @@ class PeriodWindowsTool(Tool):
                     'frame': [list(O), list(U), list(V_), list(N)],
                     'values': dict(keep_v), 'overlap': overlap})
         swaps, problems, loose = [], [], []
+        scene_ = getattr(dlg.viewport, 'scene', None)
+        leaf_jobs = []                               # separate door leaves / casements: [(wall, record, item, solids)]
         for g, mesh, rec in walls:
             plain, _bad = _mesh_from([(pts, hls) for pts, hls in rec['orig'] if len(pts) >= 3])
             sols, kept = [], []
+            if not rec.get('uid'):
+                import uuid as _uuid
+                rec['uid'] = _uuid.uuid4().hex[:12]     # names this wall's separate pieces
             for w_ in rec['items']:
                 try:
                     got = item_solids(w_, WB_KIND)
+                    lv = w_.pop('_leaves', None)
+                    w_.pop('_cutters', None)
+                    if lv and w_.get('kind') == WB_KIND:
+                        leaf_jobs.append((g, rec, w_, lv))
                     vals = dict(DEFAULTS)
                     vals.update(w_.get('values') or {})
                     for so in got:
@@ -4767,6 +5094,8 @@ class PeriodWindowsTool(Tool):
                     sols += got
                     kept.append(w_)
                 except ValueError as e:
+                    w_.pop('_leaves', None)
+                    w_.pop('_cutters', None)
                     problems.append("%s: %s" % (w_.get('name', 'an opening'), e))
                     if w_.get('kind') != WB_KIND:
                         kept.append(w_)          # not ours: never lose it
@@ -4785,8 +5114,17 @@ class PeriodWindowsTool(Tool):
                 print("%s: couldn't colour %s: %s" % (PLUGIN_NAME, getattr(g, 'name', 'a wall'), e))
             old_rec = wall_record(g)
             swaps.append((g, mesh, new, json.loads(json.dumps(old_rec)) if old_rec else None, new_rec))
+        base_cmd = wall_swap_command(swaps)
         try:
-            dlg.viewport.history.execute(wall_swap_command(swaps))
+            leaf_adds, leaf_removes = plan_leaf_groups(scene_, [w[0] for w in walls], [w[2] for w in walls],
+                                                       leaf_jobs)
+        except Exception as e:
+            leaf_adds, leaf_removes = [], []
+            problems.append("separate pieces: %s" % e)
+        if leaf_adds or leaf_removes:
+            base_cmd = with_leaf_groups(base_cmd, leaf_adds, leaf_removes, scene_)
+        try:
+            dlg.viewport.history.execute(base_cmd)
         except Exception as e:
             QMessageBox.warning(dlg, PLUGIN_NAME, "Could not change the walls:\n%s" % e)
             return
@@ -4806,6 +5144,9 @@ class PeriodWindowsTool(Tool):
         else:
             lines = ["%d %s%s built into %d wall section%s." % (len(ops), WB_WORDS['n'], pl(len(ops)),
                                                                len(swaps), pl(len(swaps)))]
+        if leaf_adds:
+            lines.append("%d %s made as separate pieces, beside their walls ('%s...'): print them flat and "
+                         "glue them in, posed open." % (len(leaf_adds), LEAF_WORDS[1], LEAF_WORDS[0]))
         if loose:
             lines.append("Couldn't join into one solid, so they're in the wall's piece but "
                          "overlapping it (slicers join them when printing): " + "; ".join(loose))

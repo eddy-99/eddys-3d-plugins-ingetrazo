@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "2.21"  # shown in the window title, so you can tell which file is loaded. 2.21: faces of the frame missed by the colouring (inside a fanlight arch, behind a brick arch) take the colour of the part they join on to - they showed white; 2.20: the preview no longer draws the block the steps cut out of the plinth (it showed as a big box round the steps); 2.19: the flight of steps down runs right through to the back of the wall too (the doorway is cut to the bottom of the wall, so it left a slot behind the steps), and cuts the plinth under it to match; 2.18: the doorstep runs right through to the back of the wall (it stopped at the wall face, leaving a slot under the door when printed), and a Mortar joint depth setting (AC) for brick steps, heads and arches (it was always 3 mm); 2.17: the steps allow for a building that has been scaled in IngeTrazo (they came out too tall), and stop at the bottom of the plinth in front of the door; 2.16: the steps go down to the bottom of the building (its plinth), not to 0 - a building standing above 0 had them going on below the plinth; 2.15: the steps go down to the ground again (2.14 stopped them on top of the plinth - too short); 2.13: the steps down no longer go deeper each time the wall is built again (the ground is found from the plain wall, not its built-in steps); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the doors are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
+VERSION = "2.24"  # shown in the window title, so you can tell which file is loaded. 2.24: on the Whole building page, clicking a window or door already built in lights up its own edges in the model (not the whole wall), so you can see which one it is; 2.23: a separate door is only as thick as a door, not right through the wall, so it lies flat on the print bed; 2.22: "Door as a separate piece" - the door comes out as its own piece, a small gap smaller than the frame, to print flat and glue in open; "Make one on its own" builds a door with no wall; 2.21: faces of the frame missed by the colouring (inside a fanlight arch, behind a brick arch) take the colour of the part they join on to - they showed white; 2.20: the preview no longer draws the block the steps cut out of the plinth (it showed as a big box round the steps); 2.19: the flight of steps down runs right through to the back of the wall too (the doorway is cut to the bottom of the wall, so it left a slot behind the steps), and cuts the plinth under it to match; 2.18: the doorstep runs right through to the back of the wall (it stopped at the wall face, leaving a slot under the door when printed), and a Mortar joint depth setting (AC) for brick steps, heads and arches (it was always 3 mm); 2.17: the steps allow for a building that has been scaled in IngeTrazo (they came out too tall), and stop at the bottom of the plinth in front of the door; 2.16: the steps go down to the bottom of the building (its plinth), not to 0 - a building standing above 0 had them going on below the plinth; 2.15: the steps go down to the ground again (2.14 stopped them on top of the plinth - too short); 2.13: the steps down no longer go deeper each time the wall is built again (the ground is found from the plain wall, not its built-in steps); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the doors are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
 
 
 def _ed3d_organise(scene, group):
@@ -80,7 +80,7 @@ HEADS = [("stone", "Stone lintel / stone arch"), ("brick", "Brick soldier course
 DEFAULTS = {
     'style': 'panel', 'top': 'face', 'rise': 150.0, 'flip': False, 'flat': True, 'bars_back': True,
     'remove_face': True, 'join': True, 'cut': True, 'lift': 0.01,
-    'leaves': 1, 'hinge': 'left', 'open': False, 'open_angle': 60.0,
+    'leaves': 1, 'hinge': 'left', 'open': False, 'open_angle': 60.0, 'leaf_apart': False, 'leaf_gap': 15.0,
     'frame_w': 75.0, 'frame_d': 110.0, 'leaf_t': 45.0, 'leaf_set': 20.0,
     'stile_w': 110.0, 'top_rail': 110.0, 'bottom_rail': 220.0, 'lock_w': 200.0, 'lock_y': 1000.0,
     'muntin_w': 100.0,
@@ -102,7 +102,7 @@ DEFAULTS = {
 INT_KEYS = ('cols', 'rows', 'cols_b', 'rows_b', 'leaves', 'fan_cols')
 CHOICE_KEYS = ('style', 'top', 'panel', 'hinge', 'fanlight', 'arch_bars', 'step', 'head', 'flight_to')
 BOOL_KEYS = ('flip', 'flat', 'bars_back', 'remove_face', 'join', 'cut', 'open', 'glass', 'ledges',
-             'braces', 'straps', 'knob', 'keystone', 'flight', 'cut_below')
+             'braces', 'straps', 'knob', 'keystone', 'flight', 'cut_below', 'leaf_apart')
 PRESET_KEYS = tuple(DEFAULTS)
 
 BUILTIN_PRESETS = {
@@ -1332,8 +1332,10 @@ def build_door(sh, v):
         top = y1 + over
         yb = y0 + hs + (2.0 if hs > 0 else 0.0)        # clear of the step
         R = [(x0 - over, yb), (x1 + over, yb), (x1 + over, top), (x0 - over, top)]
+        apart = bool(v.get('leaf_apart'))
+        leaf = []
         sols, binfo = boarded_leaf(R, v, z0, z1, 'sliding', False, ov)
-        door += sols
+        (leaf if apart else door).extend(sols)
         rh = max(10.0, v['rail_h'])
         W = x1 - x0 + 2 * over
         rail = prism([(x0 - over - 40, top + 30), (x1 + over + W, top + 30), (x1 + over + W, top + 30 + rh),
@@ -1347,7 +1349,7 @@ def build_door(sh, v):
                         (xh - 25, top + 30 + rh * 0.7)], z1 - ov, z1 + 10.0)
             if hg:
                 hg.kind = "hanger"
-                door.append(hg)
+                (leaf if apart else door).append(hg)
         info.update({'O': (x0, x1, y0 + hs, y1), 'L': bbox(R), 'leaf_z': (z0, z1), 'boarded': binfo,
                      'zf': z1})
         step = build_step(sh, v, 0.0) if has_step else []
@@ -1357,6 +1359,7 @@ def build_door(sh, v):
         head = build_head(sh, dict(v, head_p=zh, key_p=0.0), 0.0) if v['head'] != 'none' else []
         return {'door': [s for s in door if s], 'glass': [], 'step': [s for s in step if s],
                 'head': [s for s in head if s], 'info': info,
+                'leaf': [s for s in leaf if s], 'leaf_glass': [],
                 'cutter': [c for c in [step_cutter(sh, v, 0.0)] if c is not None]}
 
     P2 = clip_rect(P, x0 - 1, x1 + 1, y0 + hs, y1 + 1) if hs > 0 else P
@@ -1421,26 +1424,43 @@ def build_door(sh, v):
     # the leaf (or leaves), set back in the frame
     zl1 = zf - max(0.0, min(v['leaf_set'], zf * 0.6))
     zl0 = base if flat else zl1 - max(5.0, v['leaf_t'])
+    if v.get('leaf_apart') and style != 'sliding':
+        # a separate door is only as thick as a door (not right through the wall), so it lies flat
+        # on its face to print
+        zl0 = zl1 - max(5.0, v['leaf_t'])
     info['leaf_z'] = (zl0, zl1)
     nl = 2 if int(v['leaves']) >= 2 else 1
     lx0, lx1, ly0, ly1 = bbox(L)
     gap = max(3.0, 2.5 * ov)
-    spans = [(lx0 - ov, lx1 + ov)] if nl == 1 else [(lx0 - ov, (lx0 + lx1) / 2 - gap / 2),
-                                                     ((lx0 + lx1) / 2 + gap / 2, lx1 + ov)]
-    Lg = clean(offset_poly(L, -ov)) or L
+    apart = bool(v.get('leaf_apart'))
+    leaf, leaf_glass = [], []
+    if apart:
+        # a door of its own, to print flat and glue in open: clear of the frame all round
+        cl = max(0.0, float(v.get('leaf_gap', 15.0)))
+        gap = max(gap, 2.0 * cl)
+        spans = [(lx0 + cl, lx1 - cl)] if nl == 1 else [(lx0 + cl, (lx0 + lx1) / 2 - gap / 2),
+                                                        ((lx0 + lx1) / 2 + gap / 2, lx1 - cl)]
+        Lg = clean(offset_poly(L, cl)) if cl > 0 else L
+        if Lg is None or spans[0][1] - spans[0][0] < 50.0:
+            raise ValueError("The gap round the separate door leaves no room for the door.")
+    else:
+        spans = [(lx0 - ov, lx1 + ov)] if nl == 1 else [(lx0 - ov, (lx0 + lx1) / 2 - gap / 2),
+                                                         ((lx0 + lx1) / 2 + gap / 2, lx1 + ov)]
+        Lg = clean(offset_poly(L, -ov)) or L
     ang = math.radians(v['open_angle']) if (v['open'] and not flat) else 0.0
     for k, (a, b) in enumerate(spans):
         # the bottom runs into the step, but never below the opening
-        R = clip_rect(Lg, a, b, ly0 - (ov if has_step else 0.0), ly1 + ov + 1)
+        R = clip_rect(Lg, a, b, (ly0 + cl) if apart else (ly0 - (ov if has_step else 0.0)), ly1 + ov + 1)
         R = clean(R) if R else None
         if R is None:
             continue
         hinge_right = (v['hinge'] == 'right') if nl == 1 else (k == 1)
+        vl = dict(v, _base=zl0) if apart else v
         if style in ('panel', 'glazed'):
-            sols, gl, pinfo = panel_leaf(R, v, sh, zl0, zl1, style == 'glazed', ov)
+            sols, gl, pinfo = panel_leaf(R, vl, sh, zl0, zl1, style == 'glazed', ov)
             info['panel'] = pinfo
         else:
-            sols, binfo = boarded_leaf(R, v, zl0, zl1, style, hinge_right, ov)
+            sols, binfo = boarded_leaf(R, vl, zl0, zl1, style, hinge_right, ov)
             gl = []
             info['boarded'] = binfo
         if v['knob'] and style != 'sliding':
@@ -1458,8 +1478,12 @@ def build_door(sh, v):
             f = swing_vertical(rx1 if hinge_right else rx0, zl1, ang, hinge_right)
             sols = [s.mapped(f) for s in sols]
             gl = [s.mapped(f) for s in gl]
-        door += sols
-        glass += gl
+        if apart:
+            leaf += sols
+            leaf_glass += gl
+        else:
+            door += sols
+            glass += gl
 
     step = build_step(sh, v, fd) if has_step else []
     if sh.get('flat_bottom'):
@@ -1489,6 +1513,7 @@ def build_door(sh, v):
     info['zf'] = zf
     return {'door': [s for s in door if s], 'glass': [s for s in glass if s],
             'step': [s for s in step if s], 'head': [s for s in head if s], 'info': info,
+            'leaf': [s for s in leaf if s], 'leaf_glass': [s for s in leaf_glass if s],
             'cutter': [c for c in [step_cutter(sh, v, fd)] if c is not None]}
 
 
@@ -2588,9 +2613,9 @@ def preview_items(sh, v):
         for s in sols:
             if getattr(s, 'mortar', False):
                 continue
-            if grp == 'glass':
+            if grp in ('glass', 'leaf_glass'):
                 rgb, alpha = COLOURS['glass'], 110
-            elif grp == 'door':
+            elif grp in ('door', 'leaf'):
                 rgb, alpha = _door_rgb(v, s), 255
             else:
                 rgb, alpha = COLOURS.get(v['step'] if grp == 'step' else v['head'], COLOURS['stone']), 255
@@ -2910,7 +2935,7 @@ def _slice_x(solids, xc):
 def sizes_drawing(sh, v):
     """{'front': [(depth, pts, rgb)], 'cut': {group: segments}, 'dims': [...], 'xc': x}
     Dims are (letter, view, p1, p2, (ox, oy), offset px); view 'F' uses (x, y), 'C' (z, y)."""
-    v = dict(v, open=False)
+    v = dict(v, open=False, leaf_apart=False)
     parts = build_door(sh, v)
     info = parts['info']
     fd = info['fd']
@@ -3161,9 +3186,17 @@ _LAST_CUTTERS = []      # the step cutters of the door kind_parts made last (loc
 _PLAN_CUTTERS = []      # [(world step cutters, [the wall's group])] from the last plan()
 
 
+_LAST_LEAVES = []       # the separate door leaf (and its glass) of the door kind_parts made last (local mm)
+
+
 def kind_parts(sh, vv):
     built = build_door(sh, vv)
     _LAST_CUTTERS[:] = list(built.get('cutter') or [])
+    _LAST_LEAVES[:] = []
+    for grp in ('leaf', 'leaf_glass'):
+        for so in built.get(grp) or []:
+            so.part = grp
+            _LAST_LEAVES.append(so)
     out = []
     for grp in ('door', 'step', 'head'):
         for so in built[grp]:
@@ -3901,6 +3934,52 @@ def opening_edges(op):
     return out
 
 
+def _edge_ends(e):
+    for get in (lambda: (e.v1, e.v2), lambda: (e.a, e.b), lambda: tuple(_items(getattr(e, 'vertices', None)))[:2],
+                lambda: (e.start, e.end)):
+        try:
+            a, b = get()
+            pa, pb = _pos(a), _pos(b)
+            if pa is not None and pb is not None:
+                return pa, pb
+        except Exception:
+            pass
+    return None
+
+
+def built_edges(op):
+    """The edges of a window or door built into its wall (its frame, sash or door, sill or step, head),
+    to light it up: the wall's edges in and round its opening - from the wall's own mesh, as the
+    opening's own edges went when it was joined in."""
+    mesh = op.get('mesh')
+    if mesh is None or not op.get('poly') or not op.get('frame'):
+        return []
+    O, U, V, N = [tuple(x) for x in op['frame']]
+    x0, x1, y0, y1 = bbox([tuple(p) for p in op['poly']])
+    vals = dict(DEFAULTS)
+    vals.update((op.get('built') or {}).get('values') or {})
+    side = float(vals.get('frame_w', 75.0)) + float(vals.get('horn', 100.0)) + 60.0
+    below = 450.0 if op.get('built', {}).get('kind') != 'door' else 450.0 + 4000.0 * bool(vals.get('flight'))
+    above = float(vals.get('head_h', 215.0)) + float(vals.get('key_up', 0.0)) + 60.0
+    ax0, ax1, ay0, ay1 = x0 - side, x1 + side, y0 - below, y1 + above
+    depth = (op.get('depth') or 0.0) + 0.6           # through the wall, and what stands out in front
+    out = []
+    for e in _items(getattr(mesh, 'edges', None)):
+        ends = _edge_ends(e)
+        if not ends:
+            continue
+        ok = True
+        for p in ends:
+            d = v_sub(p, O)
+            x, y, z = v_dot(d, U) / SCALE, v_dot(d, V) / SCALE, v_dot(d, N)
+            if not (ax0 <= x <= ax1 and ay0 <= y <= ay1 and -depth <= z <= 0.6):
+                ok = False
+                break
+        if ok:
+            out.append(e)
+    return out
+
+
 def build_into_wall(op, v, overlap):
     """The window or door for one opening, as solids in the wall's own (local) metres, made a little
     bigger all round and sunk into the wall so it joins on. Flat at the back of the wall."""
@@ -3922,6 +4001,8 @@ def build_into_wall(op, v, overlap):
     # the block its steps take out of the plinth (or whatever is under them), kept on the opening
     # for the whole-building build to use (it's taken off again before the record is saved)
     op['_cutters'] = [c.mapped(tw) for c in _LAST_CUTTERS]
+    # a door made as a separate piece: kept apart from the wall, a group of its own beside it
+    op['_leaves'] = [so.mapped(tw) for so in _LAST_LEAVES]
     return [so.mapped(tw) for so in sols], describe(sh, v)
 
 
@@ -4213,6 +4294,140 @@ def wall_swap_command(swaps):
 
 
 # ---------------------------------------------------------------------------
+# Separate pieces (a door leaf, a casement) made with a wall's windows / doors: each is a group of its
+# own, beside its wall, in the wall's own place, marked with the wall it belongs to so it's made
+# again (or taken away) whenever that wall's windows / doors are built again.
+# ---------------------------------------------------------------------------
+LEAF_KEY = "ed3d_%s_leaf" % WB_KIND
+LEAF_WORDS = ("Door leaf - ", "doors") if WB_KIND == 'door' else ("Casement - ", "casements")
+
+
+def _group_lists(scene):
+    """[(list, group)] for every group in the scene, with the list it sits in."""
+    out = []
+    stack = [getattr(scene, 'groups', None)]
+    guard = 0
+    while stack and guard < 200000:
+        guard += 1
+        lst = stack.pop()
+        if not isinstance(lst, list):
+            continue
+        for g in lst:
+            out.append((lst, g))
+            for attr in ('children', 'groups'):
+                kl = getattr(g, attr, None)
+                if isinstance(kl, list) and kl:
+                    stack.append(kl)
+    return out
+
+
+def plan_leaf_groups(scene, wall_groups, recs, jobs):
+    """The separate pieces to add ([(list, after group, new group)]) and the ones made before for these
+    walls to take away ([(list, group)])."""
+    if scene is None:
+        return [], []
+    uids = set(r.get('uid') for r in recs if r and r.get('uid'))
+    removes = []
+    where = {}
+    for lst, g in _group_lists(scene):
+        where.setdefault(id(g), lst)
+        ext = getattr(g, 'ext', None)
+        mk = ext.get(LEAF_KEY) if isinstance(ext, dict) else None
+        if isinstance(mk, dict) and mk.get('wall') in uids:
+            removes.append((lst, g))
+    adds = []
+    from core.group import Group
+    for wg, rec, item, sols in jobs:
+        lst = where.get(id(wg))
+        if lst is None:
+            continue
+        by = {}
+        for so in sols:
+            if getattr(so, 'part', '') == 'leaf_glass':
+                by.setdefault(('glass', 0), []).append(so)
+            else:
+                by.setdefault(('leaf', getattr(so, 'leaf_no', 1) if WB_KIND == 'window' else 1), []).append(so)
+        for (which, no), ss in sorted(by.items(), key=lambda e: (e[0][0] == 'glass', e[0][1])):
+            if not ss:
+                continue
+            mesh, _bad = _mesh_from([(f, []) for so in ss for f in so.faces])
+            lw = LEAF_WORDS[0] if WB_KIND != 'window' else "Casement %d - " % no
+            if which == 'glass':
+                lw = "Glass - " + (LEAF_WORDS[0] if WB_KIND != 'window' else "casements - ")
+            name = lw + str(item.get('name') or WB_WORDS['n'])
+            g = Group(name)
+            g.mesh = mesh
+            try:
+                g.name = name
+            except Exception:
+                pass
+            try:
+                xf = getattr(wg, 'xform', None)
+                if xf is not None:
+                    g.xform = list(xf) if isinstance(xf, (list, tuple)) else xf
+            except Exception:
+                pass
+            try:
+                ext = dict(getattr(g, 'ext', None) or {})
+                ext[LEAF_KEY] = {'wall': rec.get('uid'), 'fi': item.get('fi'), 'k': item.get('k')}
+                g.ext = ext
+            except Exception:
+                pass
+            g.component = False
+            try:
+                paint_wall(scene, mesh, None, ss)
+            except Exception:
+                pass
+            adds.append((lst, wg, g))
+    return adds, removes
+
+
+def with_leaf_groups(base, adds, removes, scene_):
+    """The walls' undo step, with the separate pieces taken away and added in the same step."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+
+    class WithLeaves(Command):
+        def __init__(self):
+            self.where = []
+            self.organised = False
+
+        def do(self, scene):
+            base.do(scene)
+            self.where = []
+            for lst, g in removes:
+                i = next((k for k, x in enumerate(lst) if x is g), None)
+                if i is not None:
+                    del lst[i]
+                self.where.append(i)
+            for lst, after, g in adds:
+                i = next((k for k, x in enumerate(lst) if x is after), None)
+                lst.insert(len(lst) if i is None else i + 1, g)
+                if not self.organised:
+                    _ed3d_organise(scene, g)
+            self.organised = True
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def undo(self, scene):
+            for lst, _after, g in reversed(adds):
+                for k, x in enumerate(lst):
+                    if x is g:
+                        del lst[k]
+                        break
+            for (lst, g), i in reversed(list(zip(removes, self.where))):
+                if i is not None:
+                    lst.insert(min(i, len(lst)), g)
+            base.undo(scene)
+
+    return WithLeaves()
+
+
+# ---------------------------------------------------------------------------
 # Steps that cut through what's under them (3D Period Doors only)
 # When a door is up a flight of steps, the steps go right down to the ground and take their own
 # place out of whatever is under them - a plinth, a base plate, a pavement - so they stand on the
@@ -4486,7 +4701,7 @@ def paint_name(so, kind, vals):
     if getattr(so, 'mortar', False):
         return "mortar"
     grp = getattr(so, 'part', None)
-    if grp == 'glass':
+    if grp in ('glass', 'leaf_glass'):
         return "glass"
     if grp in ('step', 'sill', 'head'):
         m = vals.get(grp, 'stone')
@@ -4747,6 +4962,14 @@ FIELDS = {
                             "strap hinges go; the knob goes on the other side)."),
     'open': ("Show the door open", "Swings the door (or doors) open. Not when printing flat."),
     'open_angle': ("Opening angle", 0.0, 120.0, 0, " deg", ""),
+    'leaf_apart': ("Door as a separate piece", "The door (with its knob, and its glass as a piece of its own) "
+                                               "comes out as its own group, not joined to the frame - print "
+                                               "it flat and glue it in at any angle, posed open. It's made a "
+                                               "little smaller than the opening in the frame (the gap below)."),
+    'leaf_gap': ("Gap round a separate door", 0.0, 200.0, 0, " mm", "How much smaller than the opening in "
+                                                                    "the frame a separate door is, all round "
+                                                                    "(real mm: 15 mm = 0.2 mm in OO), so it "
+                                                                    "fits once printed."),
     'frame_w': ("Frame width", 5.0, 500.0, 0, " mm", "Face width of the door frame (sides and top)."),
     'frame_d': ("Frame depth", 5.0, 500.0, 0, " mm", "How far the frame stands out (from the back when "
                                                      "cut through the wall)."),
@@ -4845,7 +5068,7 @@ LETTERS = {'frame_w': 'A', 'frame_d': 'B', 'stile_w': 'C', 'leaf_t': 'D', 'botto
 
 TABS = [
     ("Door", ('style', 'top', 'rise', 'leaves', 'hinge', 'flat', 'bars_back', 'join', 'remove_face',
-              'cut', 'lift', 'flip', 'open', 'open_angle', 'glass', 'glass_t')),
+              'cut', 'lift', 'flip', 'open', 'open_angle', 'leaf_apart', 'leaf_gap', 'glass', 'glass_t')),
     ("Panels", ('cols', 'rows', 'cols_b', 'rows_b', 'panel', 'panel_d', 'bevel', 'stile_w', 'top_rail',
                 'bottom_rail', 'lock_w', 'lock_y', 'muntin_w', 'arch_bars', 'bar_w', 'bar_d')),
     ("Boards", ('board_w', 'board_gap', 'groove_d', 'board_set', 'ledges', 'ledge_h', 'ledge_t',
@@ -5171,15 +5394,20 @@ class DoorsDialog(QDialog):
 
         brow = QHBoxLayout()
         self.b_add = QPushButton("Add door to selected face(s)")
+        self.b_own = QPushButton("Make one on its own")
+        self.b_own.setToolTip("A door with no wall: type its width and height and it's made beside the model, "
+                              "with these settings, ready to print on its own.")
         self.b_add.setDefault(True)
         b_refresh = QPushButton("Preview selected face")
         b_close = QPushButton("Close")
         brow.addWidget(self.b_add)
+        brow.addWidget(self.b_own)
         brow.addWidget(b_refresh)
         brow.addStretch(1)
         brow.addWidget(b_close)
         lay.addLayout(brow)
         self.b_add.clicked.connect(lambda: self.tool.add_from_dialog(self))
+        self.b_own.clicked.connect(lambda: self.tool.make_on_own(self))
         b_refresh.clicked.connect(self.read_selection)
         b_close.clicked.connect(self.close)
 
@@ -5234,8 +5462,9 @@ class DoorsDialog(QDialog):
         lay.addWidget(self.b_find)
         self.lst_open = QListWidget()
         self.lst_open.setToolTip(("Ticked openings get a %(n)s (%(os)s start unticked). Click a line to "
-                                  "light that opening up in the model and look at it; pick a wall in the "
-                                  "model and its openings light up here.") % WB_WORDS)
+                                  "light that opening up in the model and look at it - one with a window "
+                                  "or door in it lights up its edges; pick a wall in the model and its "
+                                  "openings light up here.") % WB_WORDS)
         lay.addWidget(self.lst_open, 1)
         row = QHBoxLayout()
         b_all = QPushButton("Tick all empty %(n)s openings" % WB_WORDS)
@@ -5501,7 +5730,13 @@ class DoorsDialog(QDialog):
             if i < len(self.found):
                 op = self.found[i]
                 got = opening_edges(op)
-                # a window or door built into its wall has no opening edges left: light up its wall
+                if not got:
+                    # a window or door built into its wall has no opening edges left: light up its own
+                    # edges in the wall (its frame, step or sill, head), or the wall if that fails
+                    try:
+                        got = built_edges(op)
+                    except Exception:
+                        got = []
                 edges += got if got else [op['group']]
         try:
             scene.selection.clear()
@@ -5580,6 +5815,7 @@ class DoorsDialog(QDialog):
             'rise': v['top'] == 'segment',
             'open_angle': v['open'] and not v['flat'],
             'open': not v['flat'] and st != 'sliding',
+            'leaf_gap': v.get('leaf_apart', False),
             'cut': v['remove_face'],
             'bars_back': v['flat'],
             'glass_t': v['glass'],
@@ -5827,6 +6063,33 @@ class VertexWrapper(QVector3D):
 # ---------------------------------------------------------------------------
 # Tool
 # ---------------------------------------------------------------------------
+
+class LooseFace:
+    """A face that isn't in the model: an upright rectangle to make a door on its own."""
+    def __init__(self, pts):
+        self.vertices = [tuple(p) for p in pts]
+        self.holes = []
+
+
+def loose_spot(scene):
+    """Where a door made on its own goes: 1 m to the right of everything in the model (metres)."""
+    hi = None
+    for top in _items(getattr(scene, 'groups', None)):
+        try:
+            for g, m in _placements(top):
+                for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
+                    for q in _items(getattr(f, 'vertices', None)):
+                        p = _pos(q)
+                        if p is None:
+                            continue
+                        x = _wmap(m, p)[0] if m is not None else p[0]
+                        if hi is None or x > hi:
+                            hi = x
+        except Exception:
+            continue
+    return 0.0 if hi is None else hi + 1.0
+
+
 class PeriodDoorsTool(Tool):
     name = PLUGIN_NAME
     shortcut = "Ctrl+Alt+D"
@@ -5881,6 +6144,46 @@ class PeriodDoorsTool(Tool):
 
     def on_deactivate(self, viewport):
         pass
+
+    def make_on_own(self, dlg):
+        """'Make one on its own': a door with no wall, the size you type, beside the model."""
+        from PySide6.QtWidgets import QInputDialog
+        cls = type(self)
+        w0, h0 = getattr(cls, '_own_size', None) or (900.0, 2100.0)
+        w, ok = QInputDialog.getDouble(dlg, PLUGIN_NAME, "Width of the opening it fits (real-world mm):",
+                                       w0, 100.0, 20000.0, 0)
+        if not ok:
+            return
+        h, ok = QInputDialog.getDouble(dlg, PLUGIN_NAME, "Height of the opening it fits (real-world mm):",
+                                       h0, 100.0, 20000.0, 0)
+        if not ok:
+            return
+        cls._own_size = (w, h)
+        v = dict(dlg.values())
+        v.update(remove_face=False, cut=False, flip=False)
+        type(self)._saved = dict(dlg.values())
+        try:
+            dlg.remember()
+        except Exception:
+            pass
+        viewport = dlg.viewport
+        scene = getattr(viewport, 'scene', None)
+        x0 = loose_spot(scene)
+        W_, H_ = w * SCALE, h * SCALE
+        face = LooseFace([(x0, 0.0, 0.0), (x0 + W_, 0.0, 0.0), (x0 + W_, 0.0, H_), (x0, 0.0, H_)])
+        parts, problems, _used, _cuts = self.plan([face], v, scene)
+        if not parts:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "Nothing could be made at that size.")
+            return
+        self._join = v.get('join', True)
+        self._cut = False
+        self.last_report = []
+        ok = self.add_to_scene(viewport, parts, [], {})
+        if ok:
+            dlg.show_report(["A door on its own, %.0f x %.0f mm, made beside the model (front facing -Y, the "
+                             "Front view)." % (w, h)] + list(self.last_report or []))
+        if ok and problems:
+            QMessageBox.information(dlg, PLUGIN_NAME, "\n".join(problems))
 
     def add_from_dialog(self, dlg):
         v = dlg.values()
@@ -5988,6 +6291,10 @@ class PeriodDoorsTool(Tool):
                               ("%s - %s" % (dict(STEPS)[v['step']], title), built['step']),
                               ("%s - %s" % ("Keystone head" if v['keystone'] else "Head", title),
                                built['head'])]
+                if built.get('leaf'):
+                    # the door on its own: never joined to the frame, to print flat and pose open
+                    groups += [("Door leaf - " + title, built['leaf']),
+                               ("Glass - door leaf - " + title, built.get('leaf_glass') or [])]
                 for name, sols in groups:
                     if sols:
                         parts.append((name, [s.mapped(tw) for s in sols]))
@@ -6056,6 +6363,7 @@ class PeriodDoorsTool(Tool):
         swaps, problems, loose = [], [], []
         scene_ = getattr(dlg.viewport, 'scene', None)
         cut_jobs, cut_prefixes = [], []
+        leaf_jobs = []                               # separate door leaves / casements: [(wall, record, item, solids)]
         for g, mesh, rec in walls:
             plain, _bad = _mesh_from([(pts, hls) for pts, hls in rec['orig'] if len(pts) >= 3])
             sols, kept = [], []
@@ -6066,6 +6374,9 @@ class PeriodDoorsTool(Tool):
             for w_ in rec['items']:
                 try:
                     got = item_solids(w_, WB_KIND)
+                    lv = w_.pop('_leaves', None)
+                    if lv and w_.get('kind') == WB_KIND:
+                        leaf_jobs.append((g, rec, w_, lv))
                     cs = w_.pop('_cutters', None)
                     if cs and rec.get('uid'):
                         cut_jobs.append(("w%s#%s#%s" % (rec['uid'], w_.get('fi'), w_.get('k')),
@@ -6083,6 +6394,7 @@ class PeriodDoorsTool(Tool):
                     kept.append(w_)
                 except ValueError as e:
                     w_.pop('_cutters', None)
+                    w_.pop('_leaves', None)
                     problems.append("%s: %s" % (w_.get('name', 'an opening'), e))
                     if w_.get('kind') != WB_KIND:
                         kept.append(w_)          # not ours: never lose it
@@ -6108,9 +6420,17 @@ class PeriodDoorsTool(Tool):
                 below, cut_probs, cut_names = plan_step_cuts(scene_, cut_jobs, cut_prefixes)
             except Exception as e:
                 cut_probs.append(str(e) or e.__class__.__name__)
+        base_cmd = below_swap_command(below, swaps) if below else wall_swap_command(swaps)
         try:
-            dlg.viewport.history.execute(below_swap_command(below, swaps) if below
-                                         else wall_swap_command(swaps))
+            leaf_adds, leaf_removes = plan_leaf_groups(scene_, [w[0] for w in walls], [w[2] for w in walls],
+                                                       leaf_jobs)
+        except Exception as e:
+            leaf_adds, leaf_removes = [], []
+            problems.append("separate pieces: %s" % e)
+        if leaf_adds or leaf_removes:
+            base_cmd = with_leaf_groups(base_cmd, leaf_adds, leaf_removes, scene_)
+        try:
+            dlg.viewport.history.execute(base_cmd)
         except Exception as e:
             QMessageBox.warning(dlg, PLUGIN_NAME, "Could not change the walls:\n%s" % e)
             return
@@ -6130,6 +6450,9 @@ class PeriodDoorsTool(Tool):
         else:
             lines = ["%d %s%s built into %d wall section%s." % (len(ops), WB_WORDS['n'], pl(len(ops)),
                                                                len(swaps), pl(len(swaps)))]
+        if leaf_adds:
+            lines.append("%d %s made as separate pieces, beside their walls ('%s...'): print them flat and "
+                         "glue them in, posed open." % (len(leaf_adds), LEAF_WORDS[1], LEAF_WORDS[0]))
         if loose:
             lines.append("Couldn't join into one solid, so they're in the wall's piece but "
                          "overlapping it (slicers join them when printing): " + "; ".join(loose))

@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Floor Plan"
-VERSION = "2.12"
+VERSION = "2.13"  # 2.13: hiding the roof also hides the tiles 3D Roof Tiles put on it
 
 
 def _ed3d_organise(scene, group):
@@ -3669,7 +3669,8 @@ def floor_groups(scene):
         if nm.startswith("Base plate"):
             row("Base plate")['floor'].append(e)
             return
-        if nm.startswith("Roof slope"):
+        if nm.startswith(("Roof slope", "Tiled - Roof slope")):
+            # (3D Roof Tiles puts a roof slope and its tiles in one group: they hide together)
             row("Roof")['floor'].append(e)
             return
         if nm.startswith("Roof ("):

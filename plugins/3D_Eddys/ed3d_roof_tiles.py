@@ -14,7 +14,10 @@
 3D Roof Tiles - roof coverings for IngeTrazo
 Select a roof face (any flat face: sloping, flat or upright) and it is covered in
 courses of tiles from its lowest edge (the eaves) up, trimmed to the face's outline
-and round any openings in it. Or click a whole group - the building, or Subframe's
+and round any openings in it. On a roof that is there already (Floor Plan's roof
+slopes, Subframe's roof panels) the tiles go straight onto it, with no backing sheet,
+and each slope's tiles go in a group with that slope ('Tiled - Roof slope 1 ...'), so
+the slope and its tiles print as one piece. Or click a whole group - the building, or Subframe's
 'Roof panels' group - and every roof piece in it is found and tiled at once, ridge
 and all. Each slope comes out as its own group, with its tiles, its half of the ridge,
 its finials and its flashing each a piece of their own, ready to print apart. Plain tiles, slates, fishtail, bullnose, beaver tail,
@@ -41,7 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "1.3"  # 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
+VERSION = "1.5"  # 1.5: the finials stay on the ridge tiles - one piece to print, not loose bits; 1.4: on a roof that is already there (Floor Plan's roof slopes, Subframe's roof panels) the tiles go straight onto it - no second roof (backing sheet) under them - and into the same group as that slope, so it prints as one piece; 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
 
 
 def _ed3d_organise(scene, group):
@@ -566,6 +569,9 @@ def lay_tiles(outline, holes, v):
     backing = max(0.0, v.get('backing', 0.0)) if printing else 0.0
     # the tiles sit on the backing, sunk into it a hair so they overlap rather than touch
     base = lift + backing - (min(0.2, backing * 0.2) if backing > 0 else 0.0)
+    if printing and backing <= 0 and v.get('_sink'):
+        # straight onto a roof that is there already: sunk into it a hair, so they print as one
+        base = -max(0.0, v['_sink'])
     x0, x1, y0, y1 = bbox(outline)
     parts = convex_parts(outline)
     hole_parts = [hp for hl in holes for hp in convex_parts(hl)]
@@ -1138,6 +1144,84 @@ def _has_built_ins(g):
     return isinstance(ext, dict) and any(isinstance(ext.get(k), dict) for k in BUILT_IN_KEYS)
 
 
+# a roof that is there already: Floor Plan's roof slopes and Subframe's plain roof panels. Tiles go
+# straight onto these (no backing sheet - the slope is the backing) and into a group with the slope.
+ROOF_HOSTS = ("Roof slope", "Roof panel ")
+TILED = "Tiled - "            # the group holding a roof slope and its tiles
+TILES_KEY = "ed3d_roof_tiles"
+
+
+def _is_host(g):
+    nm = str(getattr(g, 'name', '') or '')
+    return nm.startswith(ROOF_HOSTS) and len(_items(getattr(getattr(g, 'mesh', None), 'faces', None))) > 0
+
+
+def _is_tiles(g):
+    ext = getattr(g, 'ext', None)
+    return isinstance(ext, dict) and isinstance(ext.get(TILES_KEY), dict)
+
+
+def _host_in(chain):
+    """The roof slope a face belongs to: the nearest group in its chain (top first) that is one."""
+    for g in reversed(chain):
+        if _is_host(g):
+            return g
+    return None
+
+
+def scene_tree(scene):
+    """{id(group): (group, world matrix or None, the list it sits in, the group it's in or None)}
+    for every group in the scene."""
+    out = {}
+    for top in _items(getattr(scene, 'groups', None)):
+        place = {}
+        for g, m in _placements(top):
+            place.setdefault(id(g), m)
+
+        def walk(g, lst, par, lvl):
+            if id(g) in out:
+                return
+            out[id(g)] = (g, place.get(id(g)), lst, par)
+            if lvl < 40:
+                for attr in ('children', 'groups'):
+                    kl = getattr(g, attr, None)
+                    if isinstance(kl, list):
+                        for c in kl:
+                            if not _is_face(c):
+                                walk(c, kl, g, lvl + 1)
+        walk(top, getattr(scene, 'groups', None), None, 0)
+    return out
+
+
+def face_host(tree, face):
+    """The roof slope a picked face is on (or None)."""
+    home = None
+    for g, _m, _l, _p in tree.values():
+        fs = _items(getattr(getattr(g, 'mesh', None), 'faces', None))
+        if any(f is face for f in fs):
+            home = g
+            break
+    chain = []
+    while home is not None and len(chain) < 60:
+        chain.insert(0, home)
+        home = tree.get(id(home), (None, None, None, None))[3]
+    return _host_in(chain)
+
+
+def _inverse(m):
+    if m is None:
+        return None
+    try:
+        r = m.inverted()
+        if isinstance(r, tuple):
+            r, ok = r
+            if not ok:
+                return None
+        return r
+    except Exception:
+        return None
+
+
 class WorldFace:
     """A face from inside a group, its corners already where they really are (moved groups
     and copies come through their placement)."""
@@ -1200,13 +1284,15 @@ def faces_in_groups(groups):
             except Exception:
                 return p
 
-        def walk(g, lvl):
+        def walk(g, lvl, chain=()):
             nm = str(getattr(g, 'name', '') or '')
-            if any(w in nm for w in GROUP_SKIP_IN) or _has_built_ins(g):
+            if any(w in nm for w in GROUP_SKIP_IN) or _has_built_ins(g) or _is_tiles(g):
                 return
             if nm.startswith(GROUP_SKIP):
                 skipped.append(nm)
                 return
+            chain = tuple(chain) + (g,)
+            host = _host_in(chain)
             m = place.get(id(g))
             for f in _items(getattr(getattr(g, 'mesh', None), 'faces', None)):
                 pts = [p for p in (wpos(q, m) for q in _items(getattr(f, 'vertices', None))) if p is not None]
@@ -1217,10 +1303,12 @@ def faces_in_groups(groups):
                     hp = [p for p in (wpos(q, m) for q in _items(h)) if p is not None]
                     if len(hp) >= 3:
                         hs.append(hp)
-                out.append(WorldFace(pts, hs))
+                wf = WorldFace(pts, hs)
+                wf.host = host
+                out.append(wf)
             if lvl < 12:
                 for c in _kids(g):
-                    walk(c, lvl + 1)
+                    walk(c, lvl + 1, chain)
         walk(top, 0)
     return out, skipped
 
@@ -1289,6 +1377,8 @@ def merge_coplanar(slopes, tol=1.0):
                 d = v_sub(P, O)
                 return (v_dot(d, Uu) / SCALE, v_dot(d, Vu) / SCALE)
             for b in slopes[i + 1:]:
+                if len(a) > 4 and len(b) > 4 and a[4] is not b[4]:
+                    continue            # each roof slope keeps its own tiles
                 Ob = b[0]((0.0, 0.0, 0.0))
                 Nb = v_norm(v_sub(b[0]((0.0, 0.0, 1.0)), Ob))
                 if v_dot(Na, Nb) < 0.9999 or abs(v_dot(v_sub(Ob, O), Na)) / SCALE > tol:
@@ -2436,12 +2526,14 @@ class RoofTilesTool(Tool):
         problems, notes = [], []
         # every slope to tile: [to_world, outline, holes, up, picked from a group?]
         slopes = []
+        tree = scene_tree(scene) if scene is not None else {}
         for i, f in enumerate(faces):
             try:
                 tw, outline, holes, up = face_frame(f, v['flip'], v['turn'])
                 if outline is None:
                     raise ValueError("that face has no area")
-                slopes.append([tw, outline, holes, up, False])
+                host = face_host(tree, f) if tree else None
+                slopes.append([tw, outline, holes, up, False, host])
             except Exception as e:
                 problems.append("Face %d: %s" % (i + 1, e))
         if groups:
@@ -2452,11 +2544,11 @@ class RoofTilesTool(Tool):
                     # from a group: always on the top of the roof, eaves at the lowest edge
                     tw, outline, holes, up = face_frame(f, False, 0)
                     if outline is not None:
-                        found.append([tw, outline, holes, up])
+                        found.append([tw, outline, holes, up, getattr(f, 'host', None)])
                 except Exception:
                     pass
             merge_coplanar(found)
-            slopes += [s_ + [True] for s_ in found]
+            slopes += [s_[:4] + [True, s_[4]] for s_ in found]
             if not found:
                 problems.append("No roof pieces found in the group you picked - roof pieces are the "
                                 "sloping faces facing up, at least half a course wide.")
@@ -2484,7 +2576,8 @@ class RoofTilesTool(Tool):
         went_round = 0
         apart = bool(v.get('ridge_apart', True))
         ridge_sols, fin_sols = [], []
-        for i, (tw, outline, holes, up, from_group) in enumerate(slopes):
+        on_roof = 0
+        for i, (tw, outline, holes, up, from_group, host) in enumerate(slopes):
             cuts = []
             if chims:
                 ch = chimney_holes(tw, outline, chims, clear)
@@ -2493,7 +2586,11 @@ class RoofTilesTool(Tool):
                     holes = list(holes) + ch
                     cuts = ridge_cuts(ch, outline, max(1.0, v.get('ridge_w', 0.0)) + clear)
             try:
-                sols, count = lay_tiles(outline, holes, dict(v, _up=up, _ridge_cuts=cuts))
+                vs = dict(v, _up=up, _ridge_cuts=cuts)
+                if host is not None:
+                    # on a roof that's there already: it is the backing
+                    vs.update(backing=0.0, _sink=0.2)
+                sols, count = lay_tiles(outline, holes, vs)
                 nr = getattr(lay_tiles, 'ridges', 0)
                 if v.get('ridge') and not nr and not from_group:
                     problems.append("Slope %d: no level top edge for a ridge (a hip end?)" % (i + 1))
@@ -2511,20 +2608,27 @@ class RoofTilesTool(Tool):
             nslopes += 1
             k = nslopes
             pieces = [("Slope %d - %s - %s - %d %s" % (k, word, tile_name, count, word), [s.mapped(tw) for s in tiles])]
+            # the finials stay with the ridge tiles they stand on: one piece, so they print on it
             if rids:
                 if apart:
                     ridge_sols += [s.mapped(tw) for s in rids]
+                    fin_sols += [s.mapped(tw) for s in fins]
                 else:
-                    pieces.append(("Slope %d - ridge half - %d %s" % (k, nr, ridge_word), [s.mapped(tw) for s in rids]))
+                    pieces.append(("Slope %d - ridge half - %d %s%s" % (
+                        k, nr, ridge_word, (" with %s" % fin_word) if fins else ""),
+                        [s.mapped(tw) for s in rids + fins]))
                 ridges += nr
-            if fins:
+            elif fins:
                 if apart:
                     fin_sols += [s.mapped(tw) for s in fins]
                 else:
                     pieces.append(("Slope %d - %s" % (k, fin_word), [s.mapped(tw) for s in fins]))
             if fl:
                 pieces.append(("Slope %d - flashing" % k, [s.mapped(tw) for s in fl]))
-            slope_parts.append(("Slope %d (%d pieces)" % (k, len(pieces)) if len(pieces) > 1 else None, pieces))
+            if host is not None:
+                on_roof += 1
+            slope_parts.append(("Slope %d (%d pieces)" % (k, len(pieces)) if len(pieces) > 1 else None, pieces,
+                                host))
             total += count
         if not slope_parts:
             QMessageBox.warning(dlg, PLUGIN_NAME, "\n".join(problems) or "No tiles fitted on that face.")
@@ -2533,19 +2637,24 @@ class RoofTilesTool(Tool):
             # the ridge on its own, beside the slopes: both halves together, with its finials
             rp = []
             if ridge_sols:
-                rp.append(("Ridge - %d %s" % (ridges, ridge_word), ridge_sols))
-            if fin_sols:
+                rp.append(("Ridge - %d %s%s" % (ridges, ridge_word, (" with %s" % fin_word) if fin_sols else ""),
+                           ridge_sols + fin_sols))
+            elif fin_sols:
                 rp.append(("Ridge - %s" % fin_word, fin_sols))
-            slope_parts.append(("Ridge (%d pieces)" % len(rp) if len(rp) > 1 else None, rp))
+            slope_parts.append(("Ridge (%d pieces)" % len(rp) if len(rp) > 1 else None, rp, None))
         top = "Roof - %s%s" % (tile_name, " (for 3D printing)" if v['print_mode'] else "")
-        if len(slope_parts) == 1 and slope_parts[0][0]:
-            slope_parts = [(top, slope_parts[0][1])]        # one slope: its group is the roof
+        if len(slope_parts) == 1 and slope_parts[0][0] and slope_parts[0][2] is None:
+            slope_parts = [(top, slope_parts[0][1], None)]  # one slope: its group is the roof
         nf = self.add_to_scene(viewport, slope_parts, top)
         if nf is None:
             return
-        npieces = sum(len(pc) for _, pc in slope_parts)
+        npieces = sum(len(sp_[1]) for sp_ in slope_parts if sp_[2] is None)
         msg = "Added %d tiles%s on %d slope(s), %d faces." % (
             total, (" and %d ridge tiles" % ridges) if ridges else "", nslopes, nf)
+        if on_roof:
+            msg += ("\nOn the roof that was there already (%d slope%s): no backing sheet, and each slope's "
+                    "tiles are in a group with it ('%s...'), so in Scale Studio's Pieces page a slope and its "
+                    "tiles come out as one piece." % (on_roof, "" if on_roof == 1 else "s", TILED))
         if npieces > 1:
             msg += ("\nOne group '%s': each slope is a group of its own, with its tiles, ridge half, finials "
                     "and flashing each a separate piece (%d pieces). To print them apart, in Scale Studio's "
@@ -2591,51 +2700,103 @@ class RoofTilesTool(Tool):
             except Exception:
                 return None             # an older IngeTrazo: the pieces go in side by side
 
-        def mutate(scene):
+        scene = viewport.scene
+        tree = scene_tree(scene)
+        try:
             from core.mesh import Mesh
             from core.group import Group
-            tops = []
-            for sname, pieces in slope_parts:
-                kids = []
-                for name, solids in pieces:
-                    mesh = Mesh()
-                    made = 0
-                    for so in solids:
-                        verts = {}
+        except Exception as e:
+            QMessageBox.warning(viewport, PLUGIN_NAME, "Could not add the tiles:\n%s" % e)
+            return None
+        rec = {'version': VERSION}
 
-                        def vx(p):
-                            k = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
-                            if k not in verts:
-                                verts[k] = VertexWrapper(*p)
-                            return verts[k]
-                        for pts in so.faces:
+        def build(pieces, inv):
+            kids = []
+            for name, solids in pieces:
+                mesh = Mesh()
+                made = 0
+                for so in solids:
+                    verts = {}
+
+                    def vx(p):
+                        if inv is not None:
                             try:
-                                mesh.add_face([vx(p) for p in pts])
-                                made += 1
-                            except Exception as e:
-                                stats['errors'] += 1
-                                stats['err'] = e
-                    if not made:
-                        continue
-                    stats['faces'] += made
-                    g = make_group(Group, mesh, name)
-                    g.component = False
-                    kids.append(g)
+                                r = inv.map(QVector3D(*p))
+                                p = (float(r.x()), float(r.y()), float(r.z()))
+                            except Exception:
+                                pass
+                        k = (round(p[0] / tol), round(p[1] / tol), round(p[2] / tol))
+                        if k not in verts:
+                            verts[k] = VertexWrapper(*p)
+                        return verts[k]
+                    for pts in so.faces:
+                        try:
+                            mesh.add_face([vx(p) for p in pts])
+                            made += 1
+                        except Exception as e:
+                            stats['errors'] += 1
+                            stats['err'] = e
+                if not made:
+                    continue
+                stats['faces'] += made
+                g = make_group(Group, mesh, name)
+                g.component = False
+                try:
+                    ext = dict(getattr(g, 'ext', None) or {})
+                    ext[TILES_KEY] = dict(rec)
+                    g.ext = ext
+                except Exception:
+                    pass
+                kids.append(g)
+            return kids
+
+        tops = []               # new groups of their own (as before)
+        into = []               # [(list, host, holder or None to add to, new kids)]
+        organise = []
+        for entry in slope_parts:
+            sname, pieces, host = (tuple(entry) + (None,))[:3]
+            info = tree.get(id(host)) if host is not None else None
+            if info is not None and isinstance(info[2], list):
+                _g, _m, lst, par = info
+                inv = _inverse(tree.get(id(par), (None, None))[1]) if par is not None else None
+                if par is not None and tree.get(id(par), (None, None))[1] is not None and inv is None:
+                    info = None         # can't work out where it is: tiles go in a group of their own
+            if info is not None and isinstance(info[2], list):
+                kids = build(pieces, inv)
                 if not kids:
                     continue
-                h = holder(Group, sname, kids) if (sname and len(kids) > 1) else None
-                tops += [h] if h is not None else kids
-            if stats['faces'] == 0:
-                raise RuntimeError("No faces could be created (%s)." % stats['err'])
-            parent = holder(Group, top_name, tops) if len(tops) > 1 else None
-            for g in ([parent] if parent is not None else tops):
-                _ed3d_organise(scene, g)
-                if hasattr(scene, 'add_group') and parent is None:
-                    scene.add_group(g)
+                organise += kids
+                if par is not None and str(getattr(par, 'name', '') or '').startswith(TILED) \
+                        and isinstance(getattr(par, 'children', None), list):
+                    into.append((None, host, par, kids))         # tiled before: these join it
                 else:
-                    scene.groups.append(g)
+                    try:
+                        h = Group(name=TILED + str(getattr(host, 'name', '') or 'Roof slope'))
+                        h.component = False
+                    except Exception:
+                        h = None
+                    if h is None or not isinstance(getattr(h, 'children', None), list):
+                        tops.append((sname, kids))               # an older IngeTrazo
+                        continue
+                    into.append((lst, host, h, kids))
+                continue
+            kids = build(pieces, None)
+            if kids:
+                tops.append((sname, kids))
+        if stats['faces'] == 0:
+            QMessageBox.warning(viewport, PLUGIN_NAME, "Could not add the tiles:\nNo faces could be created (%s)."
+                                % stats['err'])
+            return None
+        new_tops = []
+        for sname, kids in tops:
+            h = holder(Group, sname, kids) if (sname and len(kids) > 1) else None
+            new_tops += [h] if h is not None else kids
+        parent = holder(Group, top_name, new_tops) if len(new_tops) > 1 else None
+        add_tops = [parent] if parent is not None else new_tops
+        organise = add_tops + organise
+        cmd = tiles_command(add_tops, into, organise, parent is None)
         try:
-            viewport.history.execute(SnapshotImport(mutate))
+            viewport.history.execute(cmd)
         except Exception as e:
             QMessageBox.warning(viewport, PLUGIN_NAME, "Could not add the tiles:\n%s" % e)
             return None
@@ -2644,6 +2805,109 @@ class RoofTilesTool(Tool):
         except Exception:
             pass
         return stats['faces']
+
+
+_PARENT_ATTRS = ('parent', '_parent')
+
+
+def tiles_command(add_tops, into, organise, loose):
+    """One undo step: new groups added to the scene, and roof slopes put in a group with their
+    tiles. into: [(the list the slope sits in, slope, its new group, tile groups)] - with no list,
+    the group is one tiled before and the tiles join it."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+    _none = object()
+
+    class RoofTilesCommand(Command):
+        def __init__(self):
+            self.done_once = False
+            self.saved = []
+
+        def _tidy(self, scene):
+            try:
+                scene.selection.clear()
+            except Exception:
+                pass
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def _set_parent(self, g, p):
+            for a in _PARENT_ATTRS:
+                if hasattr(g, a):
+                    try:
+                        setattr(g, a, p)
+                    except Exception:
+                        pass
+
+        def do(self, scene):
+            if not self.done_once:
+                for g in organise:
+                    _ed3d_organise(scene, g)
+            self.saved = []
+            for lst, host, h, kids in into:
+                olds = {a: getattr(host, a, _none) for a in _PARENT_ATTRS}
+                old_kids = list(h.children)
+                if lst is None:
+                    h.children.extend(kids)
+                    for k in kids:
+                        self._set_parent(k, h)
+                    self.saved.append((None, None, h, old_kids, olds))
+                    continue
+                i = next((k for k, x in enumerate(lst) if x is host), None)
+                if i is None:
+                    self.saved.append(None)
+                    continue
+                h.children[:] = [host] + list(kids)
+                for k in h.children:
+                    self._set_parent(k, h)
+                lst[i] = h
+                self.saved.append((lst, i, h, old_kids, olds))
+            for g in add_tops:
+                if hasattr(scene, 'add_group') and loose:
+                    scene.add_group(g)
+                else:
+                    scene.groups.append(g)
+            self.done_once = True
+            self._tidy(scene)
+
+        def undo(self, scene):
+            for g in reversed(add_tops):
+                lst = getattr(scene, 'groups', None)
+                gone = False
+                if isinstance(lst, list):
+                    for k, x in enumerate(lst):
+                        if x is g:
+                            del lst[k]
+                            gone = True
+                            break
+                if not gone:
+                    for fn in ('remove_group', 'delete_group'):
+                        if callable(getattr(scene, fn, None)):
+                            try:
+                                getattr(scene, fn)(g)
+                                break
+                            except Exception:
+                                pass
+            for (lst_, host, h, kids), sv in reversed(list(zip(into, self.saved))):
+                if sv is None:
+                    continue
+                lst, i, h, old_kids, olds = sv
+                h.children[:] = old_kids
+                if lst is not None and i < len(lst) and lst[i] is h:
+                    lst[i] = host
+                for a, val in olds.items():
+                    if val is not _none:
+                        try:
+                            setattr(host, a, val)
+                        except Exception:
+                            pass
+            self._tidy(scene)
+
+    return RoofTilesCommand()
 
 
 def run(viewport=None):

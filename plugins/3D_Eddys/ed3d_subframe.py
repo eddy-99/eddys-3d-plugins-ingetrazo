@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.60"  # 1.60: an end piece where the verge soffit meets the eaves soffit, closing the step between them (the roof showed through there); 1.59: a verge soffit under each barge board, from the boxed end at the eaves up to the peak, back to the wall (the underside of the roof showed between the wall and the barge board); 1.58: the debug file is only written when something goes wrong;
+VERSION = "1.61"  # 1.61: the roof line of Show / hide also hides roof slopes and panels tiled by 3D Roof Tiles, tiles and all; 1.60: an end piece where the verge soffit meets the eaves soffit, closing the step between them (the roof showed through there); 1.59: a verge soffit under each barge board, from the boxed end at the eaves up to the peak, back to the wall (the underside of the roof showed between the wall and the barge board); 1.58: the debug file is only written when something goes wrong;
 #                 1.57: roof trusses on gable ends that are pieces of their own (not joined to the walls);
 #                 never takes the narrow end of a wall for a gable;
 #                 1.55: a roof truss with nothing left above the wall tops no longer stops the whole frame;
@@ -6243,7 +6243,7 @@ class FrameDialog(QDialog):
 # ---------------------------------------------------------------------------
 # (key, label, what its groups' names start with)
 SHOW_HIDE = [
-    ('roof', "Roof - roof panels, tiles, slates, sheeting", ("Roof panel", "Roof - ", "Sheeting - ")),
+    ('roof', "Roof - roof panels, tiles, slates, sheeting", ("Roof panel", "Roof - ", "Sheeting - ", "Tiled - ")),
     ('boards', "Fascia, barge and soffit boards (with finials)", ("Fascia", "Barge", "Soffit")),
     ('trusses', "Free-standing roof trusses", ("Roof truss",)),
 ]

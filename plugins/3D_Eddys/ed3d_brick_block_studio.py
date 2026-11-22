@@ -61,7 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "7.18"            # shown in the window title, so you can tell which file is loaded. 7.18: with "Bricks meet at the corners" ticked, walls that meet in a mitre (Floor Plan's angled corners) get their corner bricks cut on the mitre line instead of carried past the end of the wall - each wall prints flat with nothing hanging over, and the bricks meet on the mitre when glued; 7.17: laid from a corner, the bond keeps its own pattern course to course (Flemish headers over the middle of the stretchers, English header courses offset), with a header then a closer at the corner on alternate courses; the corner mortar of 7.15 taken out again (it showed as a bar in the joints); 7.16: with "Bricks meet at the corners" unticked the courses are still laid out from each corner - a whole brick or a header on alternate courses - so they don't end in short cut slivers there (nothing hangs past the wall edge); 7.15: with "Bricks meet at the corners" ticked, mortar fills the corner between the courses (the joints met there in a square notch you could see right through), set back half the joint depth; 7.14: C is called "Depth (mortar joint depth)" - how far the bricks stand out from the wall face is how deep the mortar joints are
+VERSION = "7.19"            # shown in the window title, so you can tell which file is loaded. 7.19: Find walls leaves out the door leaves, casements and other loose door/window parts built beside a wall (they were listed as walls); 7.18: with "Bricks meet at the corners" ticked, walls that meet in a mitre (Floor Plan's angled corners) get their corner bricks cut on the mitre line instead of carried past the end of the wall - each wall prints flat with nothing hanging over, and the bricks meet on the mitre when glued; 7.17: laid from a corner, the bond keeps its own pattern course to course (Flemish headers over the middle of the stretchers, English header courses offset), with a header then a closer at the corner on alternate courses; the corner mortar of 7.15 taken out again (it showed as a bar in the joints); 7.16: with "Bricks meet at the corners" unticked the courses are still laid out from each corner - a whole brick or a header on alternate courses - so they don't end in short cut slivers there (nothing hangs past the wall edge); 7.15: with "Bricks meet at the corners" ticked, mortar fills the corner between the courses (the joints met there in a square notch you could see right through), set back half the joint depth; 7.14: C is called "Depth (mortar joint depth)" - how far the bricks stand out from the wall face is how deep the mortar joints are
 
 
 PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
@@ -1565,6 +1565,10 @@ _NOT_WALLS = ("floor", "ledge", "plate", "roof", "chimney", "subframe", "glazing
 # words that mean 'not a wall' anywhere in a group's name or the names of the groups it's in
 _NEVER_WALLS = ("subframe", "chimney", "barge", "fascia", "soffit", "finial", "gutter", "downpipe",
                 "roof", "canopy", "fence", "glazing frame", "truss")
+# the loose parts Period Doors, Period Windows and Shop Fronts put in beside a wall, named
+# "<part> - <wall> - <door or window>": never walls, whatever wall name follows
+_PART_STARTS = ("door leaf", "casement", "glass", "head", "keystone head", "stone sill", "brick-on-edge",
+                "stone doorstep", "step", "top light", "pilasters", "sign lettering", "lobby", "shutter")
 _WALL_MAX = 0.6          # thickest wall looked for, as a fraction of a metre-drawn model (600 mm)
 
 
@@ -2194,6 +2198,8 @@ def find_building_walls(scene, inside_walls=False, inside_faces=False, top=None,
             continue                          # marked as not a wall by the plugin that made it
         name = str(getattr(g, 'name', '') or 'Wall')
         last = name.lower().split(" - ")[-1]
+        if " - " in name and name.lower().startswith(_PART_STARTS):
+            continue                          # a door leaf, casement ... beside its wall, not a wall
         if any(w_ in nm_.lower() for nm_ in [name] + parents.get(k, []) for w_ in _NEVER_WALLS):
             continue
         if "inside wall" in last:

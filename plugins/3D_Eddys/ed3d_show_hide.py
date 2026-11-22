@@ -12,7 +12,10 @@
 
 """
 3D Show / Hide - one small window, with a tab for each kind of thing you want out of the way
-while you work, in build order: the floors, plates and roof of a Floor Plan building (step 1),
+while you work. The first tab, 'Elements', has a tick for each kind of thing in the model - walls,
+floors, roof, roof tiles, windows, doors, shop fronts, bricks, chimneys, gutters, pipes, fences... -
+windows, doors and shop fronts built into their walls and bricks built into a wall too (just their
+own faces are hidden, the wall stays). The other tabs, in build order: the floors, plates and roof of a Floor Plan building (step 1),
 and the boards, roof panels and loose trusses of a Subframe (step 3). A Bridges tab hides the deck,
 parapets, face walls, end and wing walls or arch infill of a 3D Bridges & Arches bridge (version 2.16).
 The last tab, 'All groups',
@@ -40,7 +43,7 @@ from PySide6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGrid
                                QTreeWidgetItem, QHeaderView)
 
 PLUGIN_NAME = "3D Show / Hide"
-VERSION = "2.16"             # shown in the window title, so you can tell which file is loaded
+VERSION = "2.20"             # shown in the window title, so you can tell which file is loaded. 2.20: a Delete button by each line of the Elements tab (inside walls, the Subframe, the roof tiles...) - asks first, one undo step; 2.19: Elements - hiding built-in windows and doors hides their edges too (no wireframe left), and inside (dividing) walls have a tick of their own; 2.18: Delete... on the Groups tab - deletes the groups you click (a Subframe, inside walls...) so they can be built again, after asking, one undo step; 2.17: an Elements tab - a tick for each kind of thing in the model (walls, windows, doors, shop fronts, bricks, roof, tiles, chimneys, gutters...), windows and doors built into their walls too
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_show_hide.json")
 
 
@@ -98,6 +101,86 @@ def _set_print_tag(g, name):
         ext[PRINT_PIECE_KEY] = name
     else:
         ext.pop(PRINT_PIECE_KEY, None)
+
+
+def delete_groups_asking(parent, viewport, gs, what=None):
+    """Deletes groups (and everything in them) after asking, listing them - one undo step.
+    Returns True if they went."""
+    ids = set(id(g) for g in gs)
+    sc = getattr(viewport, 'scene', None)
+    where = []
+
+    def walk(lst, depth, gone):
+        if depth > 40 or not isinstance(lst, list):
+            return
+        for g in lst:
+            if g is None:
+                continue
+            if id(g) in ids and not gone:
+                where.append((lst, g))
+            for attr in ('children', 'groups'):
+                walk(getattr(g, attr, None), depth + 1, gone or id(g) in ids)
+    walk(getattr(sc, 'groups', None), 0, False)
+    if not where:
+        return False
+    names = [str(getattr(g, 'name', '') or 'Group') for _l, g in where]
+    txt = "\n".join("  " + n for n in names[:12]) + ("\n  ... and %d more" % (len(names) - 12)
+                                                     if len(names) > 12 else "")
+    it = "it" if len(where) == 1 else "them"
+    head = ("Delete the %s - %d group%s?" % (what, len(where), "" if len(where) == 1 else "s")) if what else \
+        ("Delete %d group%s, with everything in %s?" % (len(where), "" if len(where) == 1 else "s", it))
+    if QMessageBox.question(parent, PLUGIN_NAME, "%s\n\n%s\n\nCtrl+Z puts %s back." % (head, txt, it),
+                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        return False
+    try:
+        viewport.history.execute(delete_command(where))
+    except Exception as e:
+        QMessageBox.warning(parent, PLUGIN_NAME, "Couldn't delete %s:\n%s" % (it, e))
+        return False
+    try:
+        viewport.notify_scene_changed()
+    except Exception:
+        pass
+    return True
+
+
+def delete_command(where):
+    """One undo step that takes groups out of the model: where = [(the list each is in, group)]."""
+    try:
+        from core.history import Command
+    except Exception:
+        Command = object
+
+    class DeleteGroups(Command):
+        def __init__(self):
+            self.spots = []
+
+        def _tidy(self, scene):
+            try:
+                scene.selection.clear()
+            except Exception:
+                pass
+            try:
+                scene.version += 1
+            except Exception:
+                pass
+
+        def do(self, scene):
+            self.spots = []
+            for lst, g in where:
+                i = next((k for k, x in enumerate(lst) if x is g), None)
+                if i is not None:
+                    del lst[i]
+                self.spots.append(i)
+            self._tidy(scene)
+
+        def undo(self, scene):
+            for (lst, g), i in reversed(list(zip(where, self.spots))):
+                if i is not None:
+                    lst.insert(min(i, len(lst)), g)
+            self._tidy(scene)
+
+    return DeleteGroups()
 
 
 def plugin_module(stem):
@@ -462,6 +545,12 @@ class GroupsPage(QWidget):
         row.addWidget(b_join, 2, 0)
         row.addWidget(b_jh, 2, 1)
         row.addWidget(b_sep, 3, 0, 1, 2)
+        b_del = QPushButton("Delete...")
+        b_del.setToolTip("Deletes the groups you've clicked in the list (Ctrl+click for more) - or, if none are "
+                         "clicked, the ones ticked 'Pick' - so you can build them again (a Subframe, inside "
+                         "walls after a new opening...). It asks first, and one Ctrl+Z puts them all back.")
+        b_del.clicked.connect(self.delete_groups)
+        row.addWidget(b_del, 4, 0, 1, 2)
         lay.addLayout(row)
         self.lbl_n = QLabel()                 # how many are ticked 'Pick' (kept up to date)
         lay.addWidget(self.lbl_n)
@@ -741,6 +830,55 @@ class GroupsPage(QWidget):
                     " (%d couldn't be hidden.)" % len(still))
         self.lbl2.setText(msg)
 
+    def delete_groups(self):
+        """Deletes the clicked groups (or those ticked 'Pick'), after asking - one undo step."""
+        gs = self._clicked_groups()
+        if not gs:
+            gs = [self._items[p][0] for p in self._picked if p in self._items]
+        if not gs:
+            self.lbl2.setText("Click the groups to delete in the list first (Ctrl+click for more).")
+            return
+        # a group inside another one that's going too goes with it
+        ids = set(id(g) for g in gs)
+        sc = self.win.scene()
+        where = []                       # (list it's in, group)
+
+        def walk(lst, depth, gone):
+            if depth > 40 or not isinstance(lst, list):
+                return
+            for g in lst:
+                if g is None:
+                    continue
+                if id(g) in ids and not gone:
+                    where.append((lst, g))
+                for attr in ('children', 'groups'):
+                    walk(getattr(g, attr, None), depth + 1, gone or id(g) in ids)
+        walk(getattr(sc, 'groups', None), 0, False)
+        if not where:
+            return
+        names = [self._name(g) for _l, g in where]
+        txt = "\n".join("  " + n for n in names[:12]) + ("\n  ... and %d more" % (len(names) - 12)
+                                                         if len(names) > 12 else "")
+        if QMessageBox.question(self, PLUGIN_NAME, "Delete %d group%s, with everything in %s?\n\n%s\n\n"
+                                "Ctrl+Z puts %s back." % (len(where), "" if len(where) == 1 else "s",
+                                                           "it" if len(where) == 1 else "them", txt,
+                                                           "it" if len(where) == 1 else "them"),
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            self.win.viewport.history.execute(delete_command(where))
+        except Exception as e:
+            QMessageBox.warning(self, PLUGIN_NAME, "Couldn't delete them:\n%s" % e)
+            return
+        try:
+            self.win.viewport.notify_scene_changed()
+        except Exception:
+            pass
+        self._picked = set()
+        self.lbl2.setText("Deleted: %s. Ctrl+Z puts %s back." % (", ".join(names[:6]) + (
+            " and %d more" % (len(names) - 6) if len(names) > 6 else ""), "it" if len(names) == 1 else "them"))
+        self.win.changed()
+
     def separate_piece(self):
         gs = [g for g in self._targets() if _print_tag(g)]
         if not gs:
@@ -847,13 +985,418 @@ class GroupsPage(QWidget):
         hide_things(self.win.viewport, every, False)
 
 
-TAB_TIPS = {'floors': "Step 1, Floor Plan: each storey's walls and floor, the plates and the roof.",
+# ---------------------------------------------------------------------------
+# Elements: a tick for each kind of thing in the model
+# ---------------------------------------------------------------------------
+# (key, label) in the order shown
+ELEMENTS = [('walls', "Walls"), ('inside', "Inside (dividing) walls"), ('floors', "Floors & plates"), ('windows', "Windows"), ('doors', "Doors"),
+            ('shop', "Shop fronts"), ('bricks', "Bricks & blocks"), ('timber', "Timber cladding"),
+            ('roof', "Roof (slopes & panels)"), ('tiles', "Roof tiles & slates"), ('tin', "Corrugated iron"),
+            ('boards', "Fascia, barge & soffit boards"), ('frame', "Subframe (frame & trusses)"),
+            ('chimneys', "Chimneys"), ('gutters', "Gutters & downpipes"), ('pipes', "Soil & waste pipes"),
+            ('canopies', "Station canopies"), ('fences', "Fences & gates"), ('bridges', "Bridges & arches")]
+PLUGIN_KIND = {"3D Brick & Block Studio": 'bricks', "3D Wood Planking": 'timber', "3D Roof Tiles": 'tiles',
+               "3D Corrugated Iron": 'tin', "3D Chimneys": 'chimneys', "3D Period Doors": 'doors',
+               "3D Period Windows": 'windows', "3D Gutters & Downpipes": 'gutters',
+               "3D Soil & Waste Pipes": 'pipes', "3D Station Canopies": 'canopies',
+               "3D Fences & Gates": 'fences', "3D Shop Fronts": 'shop', "3D Bridges & Arches": 'bridges'}
+DEFAULT_LAYER_NAMES = {"3D Brick & Block Studio": "Walls - brick & block", "3D Wood Planking": "Walls - timber cladding",
+                       "3D Roof Tiles": "Roofs - tiles & slates", "3D Corrugated Iron": "Roofs - corrugated iron",
+                       "3D Chimneys": "Chimneys", "3D Period Doors": "Doors", "3D Period Windows": "Windows",
+                       "3D Gutters & Downpipes": "Gutters & downpipes", "3D Soil & Waste Pipes": "Soil & waste pipes",
+                       "3D Station Canopies": "Station canopies", "3D Fences & Gates": "Fences & gates",
+                       "3D Shop Fronts": "Shop fronts"}
+# words in a group's name (lower case) -> kind; the first that fits wins
+NAME_KINDS = [(('roof slope', 'roof panel'), 'roof', 'start'),
+              (('roof - ',), 'tiles', 'start'), (('sheeting - ',), 'tin', 'start'),
+              (('subframe', 'roof truss'), 'frame', 'start'),
+              (('fascia', 'barge', 'soffit'), 'boards', 'start'),
+              (('door leaf', 'glass - door leaf'), 'doors', 'start'),
+              (('casement ', 'glass - casements'), 'windows', 'start'),
+              (('shop front', 'lobby'), 'shop', 'in'),
+              (('inside wall', 'dividing wall', 'partition'), 'inside', 'in'),
+              ((' - wall', 'gable'), 'walls', 'in'),
+              (('wall',), 'walls', 'start'),
+              (('floor', 'base plate', 'top plate', 'ceiling', 'ledge', 'slab'), 'floors', 'in'),
+              (('chimney', 'pot', 'roof vent', 'doig'), 'chimneys', 'in'),
+              (('gutter', 'downpipe', 'hopper'), 'gutters', 'in'),
+              (('soil', 'waste', 'stack'), 'pipes', 'in'),
+              (('canopy',), 'canopies', 'in'), (('fence', 'gate'), 'fences', 'in'),
+              (('corrugated',), 'tin', 'in'), (('plank', 'cladding', 'weatherboard'), 'timber', 'in'),
+              (('ridge', 'tile', 'slate'), 'tiles', 'in'),
+              (('brick', 'walling', 'quoin', 'coping', 'rubble', 'block'), 'bricks', 'in'),
+              (('window',), 'windows', 'in'), (('door',), 'doors', 'in'),
+              (('bridge', 'arch', 'parapet', 'deck', 'pier', 'abutment'), 'bridges', 'in')]
+# the record 3D Period Windows / Doors / Shop Fronts keep on a wall with them built in
+OPENINGS_KEY = "ed3d_openings"
+BUILT_KIND = {'window': 'windows', 'door': 'doors', 'shopfront': 'shop'}
+BRICK_MATS = ("brick", "mortar", "block", "flint")
+PAINT_KINDS = ((("window paint",), 'windows'), (("door paint", "ironmongery"), 'doors'),
+               (("shop front paint", "stallriser", "lettering", "gilt", "granite", "vitrolite"), 'shop'))
+
+
+def _layer_kinds():
+    """{layer name: kind} - the layers 3D Layers & Colours puts each plugin's builds on."""
+    names = dict(DEFAULT_LAYER_NAMES)
+    lc = plugin_module("ed3d_layers_colours")
+    try:
+        if lc is not None and hasattr(lc, 'load_settings'):
+            names.update(lc.load_settings().get('layers') or {})
+    except Exception:
+        pass
+    return {lay: PLUGIN_KIND[pl] for pl, lay in names.items() if pl in PLUGIN_KIND and lay}
+
+
+def _kids(g):
+    out = []
+    for attr in ('children', 'groups'):
+        out += [c for c in _items(getattr(g, attr, None)) if getattr(c, 'mesh', None) is not None
+                or _items(getattr(c, 'children', None))]
+    return out
+
+
+def _has_faces(g):
+    return bool(_items(getattr(getattr(g, 'mesh', None), 'faces', None)))
+
+
+def kind_of(g, layers):
+    """What kind of thing a group is, or None (look inside it)."""
+    ext = getattr(g, 'ext', None)
+    if isinstance(ext, dict):
+        if isinstance(ext.get('ed3d_door_leaf'), dict):
+            return 'doors'
+        if isinstance(ext.get('ed3d_window_leaf'), dict):
+            return 'windows'
+    nm = str(getattr(g, 'name', '') or '')
+    low = nm.lower()
+    if low.startswith(('tiled - ', 'floor plan', 'top plate with walls')):
+        return None                                  # holders: what's inside them counts
+    lay = getattr(g, 'layer', None)
+    if isinstance(lay, str) and lay in layers:
+        return layers[lay]
+    for words, kind, how in NAME_KINDS:
+        if any((low.startswith(w) if how == 'start' else w in low) for w in words):
+            return kind
+    return None
+
+
+def _pos3(v):
+    for get in (lambda: (v.x(), v.y(), v.z()), lambda: (v.x, v.y, v.z), lambda: (v[0], v[1], v[2])):
+        try:
+            x, y, z = get()
+            return (float(x), float(y), float(z))
+        except Exception:
+            pass
+    return None
+
+
+def _newell(pts):
+    nx = ny = nz = 0.0
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    L = (nx * nx + ny * ny + nz * nz) ** 0.5
+    return (nx / L, ny / L, nz / L) if L > 1e-15 else None
+
+
+def _drop(n):
+    """The two axes to look at a face along (dropping its main one)."""
+    ax = max(range(3), key=lambda k: abs(n[k]))
+    return [k for k in range(3) if k != ax]
+
+
+def _pip(q, poly, ax):
+    i0, i1 = ax
+    x, y = q[i0], q[i1]
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        if (a[i1] > y) != (b[i1] > y):
+            t = (y - a[i1]) / (b[i1] - a[i1])
+            if x < a[i0] + t * (b[i0] - a[i0]):
+                inside = not inside
+    return inside
+
+
+def _inner_point(pts, n):
+    """A point inside a face (its middle, or the middle of one of its corners if it's L shaped)."""
+    ax = _drop(n)
+    c = tuple(sum(p[k] for p in pts) / len(pts) for k in range(3))
+    if _pip(c, pts, ax):
+        return c
+    for i in range(1, len(pts) - 1):
+        t = tuple((pts[0][k] + pts[i][k] + pts[i + 1][k]) / 3.0 for k in range(3))
+        if _pip(t, pts, ax):
+            return t
+    return c
+
+
+_BUILT_CACHE = {}
+
+
+def built_in_faces(g):
+    """{kind: [faces]} for a wall group: the faces of the windows, doors and shop fronts built into it
+    (found from the shapes the wall's record keeps of each one), and bricks or blocks built into it
+    (by their colour). The wall's own faces are never in it."""
+    mesh = getattr(g, 'mesh', None)
+    faces = _items(getattr(mesh, 'faces', None))
+    key = (id(mesh), len(faces))
+    got = _BUILT_CACHE.get(id(g))
+    if got is not None and got[0] == key:
+        return got[1]
+    out = {}
+    ext = getattr(g, 'ext', None)
+    rec = ext.get(OPENINGS_KEY) if isinstance(ext, dict) else None
+    cell = 0.05
+    grid = {}
+    shapes = []
+    for item in (rec.get('items') or []) if isinstance(rec, dict) else []:
+        kind = BUILT_KIND.get(item.get('kind', 'window'), 'windows')
+        for so in item.get('solids') or []:
+            fl = so.get('f') if isinstance(so, dict) else so
+            for f in fl or []:
+                pts = [tuple(float(c) for c in p) for p in f]
+                if len(pts) < 3:
+                    continue
+                n = _newell(pts)
+                if n is None:
+                    continue
+                d = sum(n[k] * pts[0][k] for k in range(3))
+                lo = [min(p[k] for p in pts) - 1e-5 for k in range(3)]
+                hi = [max(p[k] for p in pts) + 1e-5 for k in range(3)]
+                si = len(shapes)
+                shapes.append((kind, pts, n, d, lo, hi, _drop(n)))
+                rng = [range(int(lo[k] // cell), int(hi[k] // cell) + 1) for k in range(3)]
+                if len(rng[0]) * len(rng[1]) * len(rng[2]) > 20000:
+                    continue
+                for a in rng[0]:
+                    for b in rng[1]:
+                        for c_ in rng[2]:
+                            grid.setdefault((a, b, c_), []).append(si)
+    for f in faces:
+        pts = [q for q in (_pos3(v) for v in _items(getattr(f, 'vertices', None))) if q is not None]
+        if len(pts) < 3:
+            continue
+        hit = None
+        if shapes:
+            n = _newell(pts)
+            if n is not None:
+                c = _inner_point(pts, n)
+                for si in grid.get((int(c[0] // cell), int(c[1] // cell), int(c[2] // cell)), ()):
+                    kind, sp, sn, sd, lo, hi, ax = shapes[si]
+                    if not all(lo[k] <= c[k] <= hi[k] for k in range(3)):
+                        continue
+                    if abs(sum(sn[k] * n[k] for k in range(3))) < 0.999:
+                        continue
+                    if abs(sum(sn[k] * c[k] for k in range(3)) - sd) > 2e-5:
+                        continue
+                    if _pip(c, sp, ax):
+                        hit = kind
+                        break
+        if hit is None:
+            a = getattr(f, 'attrs', None)
+            mat = str(a.get('mat') or '').lower() if isinstance(a, dict) else ''
+            if mat and any(w in mat for w in BRICK_MATS):
+                hit = 'bricks'
+            elif mat and shapes:
+                # a corner the shapes missed: by its paint (only on a wall with windows / doors in it)
+                for words, kind in (PAINT_KINDS):
+                    if any(w in mat for w in words):
+                        hit = kind
+                        break
+        if hit is not None:
+            out.setdefault(hit, []).append(f)
+    # their edges too - so no wireframe is left when they're hidden - but not the ones they share with
+    # the wall (round the opening)
+    kind_of_face = {}
+    for k, fs in out.items():
+        for f in fs:
+            kind_of_face[id(f)] = k
+    if kind_of_face:
+        for e in _items(getattr(mesh, 'edges', None)):
+            fs = _items(getattr(e, 'faces', None))
+            if not fs:
+                continue
+            ks = set(kind_of_face.get(id(f)) for f in fs)
+            if len(ks) == 1 and None not in ks:
+                out.setdefault(('edges', ks.pop()), []).append(e)
+    if len(_BUILT_CACHE) > 400:
+        _BUILT_CACHE.clear()
+    _BUILT_CACHE[id(g)] = (key, out)
+    return out
+
+
+def model_elements(scene):
+    """{kind: [groups and faces]} for everything in the model."""
+    layers = _layer_kinds()
+    found = {}
+
+    def walk(g, depth):
+        if depth > 30 or getattr(g, 'billboard', False):
+            return
+        kind = kind_of(g, layers)
+        if kind is not None:
+            found.setdefault(kind, []).append(g)
+            if kind in ('walls', 'inside') and _has_faces(g):
+                try:
+                    for k, fs in built_in_faces(g).items():
+                        found.setdefault(k, []).extend(fs)
+                except Exception as e:
+                    print("%s: %s" % (PLUGIN_NAME, e))
+            return
+        for c in _kids(g):
+            walk(c, depth + 1)
+    for g in _items(getattr(scene, 'groups', None)):
+        walk(g, 0)
+    return found
+
+
+def _ent_hidden(e):
+    a = getattr(e, 'attrs', None)
+    if isinstance(a, dict) and getattr(e, 'mesh', None) is None and getattr(e, 'children', None) is None:
+        return bool(a.get('hidden')) or bool(getattr(e, 'hidden', False))    # a face (or an edge)
+    return bool(getattr(e, 'hidden', False))
+
+
+def set_hidden_ents(viewport, ents, hidden):
+    """Groups and faces hidden (or shown) the way IngeTrazo's own Edit > Hide does - one undo step."""
+    ents = [e for e in ents if _ent_hidden(e) != bool(hidden)]
+    if not ents:
+        return
+    try:
+        from core.history import HideCommand
+        viewport.history.execute(HideCommand(ents, bool(hidden)))
+    except Exception as e:
+        print("%s: Hide didn't take (%s) - doing it by hand" % (PLUGIN_NAME, e))
+    for e in ents:
+        if _ent_hidden(e) == bool(hidden):
+            continue
+        try:
+            a = getattr(e, 'attrs', None)
+            if isinstance(a, dict) and getattr(e, 'mesh', None) is None:
+                if hidden:
+                    a['hidden'] = True
+                else:
+                    a.pop('hidden', None)
+            if getattr(e, 'mesh', None) is not None or getattr(e, 'children', None) is not None \
+                    or not isinstance(a, dict) or hasattr(e, 'hidden'):
+                e.hidden = bool(hidden)
+        except Exception:
+            pass
+    try:
+        viewport.scene.version += 1
+    except Exception:
+        pass
+    try:
+        viewport.notify_scene_changed()
+    except Exception:
+        pass
+
+
+class ElementsPage(QWidget):
+    """A tick for each kind of thing in the model. Windows, doors and shop fronts built into their
+    walls, and bricks built into a wall, are hidden face by face - the wall stays."""
+    key = 'elements'
+    title = "Elements"
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.checks = {}
+        self._shape = None
+        self._found = {}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(3)
+        self.lbl = QLabel()
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl)
+        self.box = QWidget()
+        self.vb = QVBoxLayout(self.box)
+        self.vb.setContentsMargins(0, 0, 0, 0)
+        self.vb.setSpacing(1)
+        lay.addWidget(self.box)
+        lay.addStretch(1)
+
+    def refresh(self):
+        sc = self.win.scene()
+        self._found = model_elements(sc) if sc is not None else {}
+        shape = [(k, len(self._found[k])) for k, _l in ELEMENTS if self._found.get(k)]
+        if [k for k, _n in shape] != [k for k, _n in (self._shape or [])]:
+            while self.vb.count():
+                it = self.vb.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.deleteLater()
+            self.checks = {}
+            labels = dict(ELEMENTS)
+            for k, _n in shape:
+                roww = QWidget()
+                rl = QHBoxLayout(roww)
+                rl.setContentsMargins(0, 0, 0, 0)
+                cb = QCheckBox(labels[k])
+                cb.setToolTip("Untick to hide every %s in the model; tick to show them again. One Ctrl+Z "
+                              "step each time." % labels[k].lower())
+                cb.toggled.connect(lambda on, k_=k: self.toggle(k_, on))
+                rl.addWidget(cb, 1)
+                bd = QPushButton("Delete")
+                bd.setToolTip("Deletes every %s in the model (it asks first, listing them) - to build them "
+                              "again, or when they're not wanted. One Ctrl+Z puts them back. Windows and doors "
+                              "built into their walls are taken out with 'Take out ticked' in 3D Period "
+                              "Windows / Doors instead." % labels[k].lower())
+                try:
+                    bd.setMaximumWidth(64)
+                except Exception:
+                    pass
+                bd.clicked.connect(lambda _=False, k_=k: self.delete_kind(k_))
+                rl.addWidget(bd)
+                self.vb.addWidget(roww)
+                self.checks[k] = cb
+        self._shape = shape
+        for k, cb in self.checks.items():
+            ents = self._found.get(k, [])
+            cb.blockSignals(True)
+            cb.setChecked(not (ents and all(_ent_hidden(e) for e in ents)))
+            cb.blockSignals(False)
+        self.lbl.setText("Untick to hide. Windows, doors and shop fronts built into their walls (and bricks "
+                         "built into a wall) are hidden on their own - the wall stays." if shape else
+                         "Nothing in the model yet.")
+
+    def toggle(self, k, on):
+        f = model_elements(self.win.scene())
+        ents = f.get(k, []) + f.get(('edges', k), [])
+        set_hidden_ents(self.win.viewport, ents, not on)
+        self.win.changed()
+
+    def show_all(self):
+        ents = [e for es in model_elements(self.win.scene()).values() for e in es]
+        set_hidden_ents(self.win.viewport, ents, False)
+
+    def delete_kind(self, k):
+        sc = self.win.scene()
+        groups = [e for e in model_elements(sc).get(k, []) if getattr(e, 'mesh', None) is not None
+                  or getattr(e, 'children', None) is not None]
+        label = dict(ELEMENTS).get(k, k)
+        if not groups:
+            QMessageBox.information(self, PLUGIN_NAME, "The %s are all built into their walls - take them out "
+                                    "with 'Take out ticked' on the Whole building page of 3D Period Windows, "
+                                    "Doors or Shop Fronts." % label.lower())
+            return
+        if delete_groups_asking(self, self.win.viewport, groups, label.lower()):
+            self.win.changed()
+
+
+TAB_TIPS = {'elements': "A tick for each kind of thing in the model - built-in windows and doors too.",
+            'floors': "Step 1, Floor Plan: each storey's walls and floor, the plates and the roof.",
             'roof': "Step 3, Subframe: the roof panels, the fascia, barge and soffit boards, and loose trusses.",
             'bridges': "Bridges & Arches: the deck, parapets, face walls, end and wing walls, and arch infill.",
             'groups': "Every main group in the model: show or hide it, and pick what to print."}
 
 # the tabs, in order (the build order) - add new pages here
-PAGES = [FloorsPage, RoofPage, BridgesPage, GroupsPage]
+PAGES = [ElementsPage, FloorsPage, RoofPage, BridgesPage, GroupsPage]
 
 
 # ---------------------------------------------------------------------------

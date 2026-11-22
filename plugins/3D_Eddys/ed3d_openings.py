@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Openings"
-VERSION = "1.10"   # 1.10: the page tabs on two rows, so they all show at once
+VERSION = "1.13"   # 1.13: "Put it in the middle of the wall" button in the Placing openings window (M was IngeTrazo's Move key); 1.12: easier to centre - the middle of the wall pulls from further away; 1.11: placing with the grid - the opening (or the row) snaps to the middle of the wall when it comes near it, with the centre line shown and how far from the middle in the status; 1.10: the page tabs on two rows, so they all show at once
 
 
 def _ed3d_organise(scene, group):
@@ -3016,6 +3016,13 @@ class TapeState:
         if k_hi >= k_lo:
             k = max(k_lo, min(k_hi, k))
         xl = x_lo + k * G
+        # the middle of the wall pulls it in: near enough, the opening (or the row) is put dead centre
+        xm = (x_lo + x_hi) / 2.0
+        here = x - width / 2.0 + run / 2.0                # the middle of the row, where the mouse has it
+        self._mid = getattr(self, '_force_mid', False) or \
+            abs(here - xm) <= max(1.5 * G, 250.0, 0.08 * (x_hi - x_lo))
+        if self._mid:
+            xl = xm - run / 2.0
         if kind == 'window':
             h = p['win_h']
             y_top = w.y0 + w.height - max(0.0, p.get('top_keep', 0.0))   # K left above it
@@ -3057,6 +3064,13 @@ class TapeState:
         j1 = int(math.floor((min(y1, my + R) - y0) / G + 1e-9))
         if (i1 - i0 + 1) * (j1 - j0 + 1) > 1500:
             return []
+        # the middle of the wall: a dashed line up it (the opening snaps to it)
+        xm = (x_lo + x_hi) / 2.0
+        dash = max(60.0, min(200.0, (y1 - y0) / 30.0))
+        yy = y0
+        while yy < y1:
+            out.append((W(xm, yy), W(xm, min(y1, yy + dash))))
+            yy += 2.0 * dash
         for i_ in range(i0, i1 + 1):
             x = x_lo + i_ * G
             for j_ in range(j0, j1 + 1):
@@ -3157,9 +3171,16 @@ class TapeState:
             if got is not None:
                 xl = bbox(got[2][0])[0]
                 yb = bbox(got[2][0])[2]
-                return ("Grid: %.0f mm from the left end, %.0f mm up - click to cut it, or type a distance from "
-                        "where you clicked and press Enter (Esc = finished)" % (
-                            xl - getattr(got[0]['wall'], 'x_lo', 0.0), yb - got[0]['wall'].y0))
+                w_ = got[0]['wall']
+                x_lo = getattr(w_, 'x_lo', 0.0)
+                xm = (x_lo + getattr(w_, 'x_hi', x_lo + w_.length)) / 2.0
+                xr = bbox(got[2][-1])[1]
+                off = (xl + xr) / 2.0 - xm
+                where = "IN THE MIDDLE of the wall" if getattr(self, '_mid', False) or abs(off) < 0.5 else \
+                    "%.0f mm %s of the middle" % (abs(off), "left" if off < 0 else "right")
+                return ("Grid: %s (%.0f mm from the left end, %.0f mm up) - click to cut it ('Put it in the middle' button = dead centre), or "
+                        "type a distance from where you clicked and press Enter (Esc = finished)" % (
+                            where, xl - x_lo, yb - w_.y0))
             return "Grid: move the mouse over the wall - the opening follows it on the grid (Esc = start again)"
         d = self._dist()
         vv = self.dlg.values()
@@ -3237,6 +3258,16 @@ class TapeState:
     def key(self, ch):
         if self.p0 is None:
             return False
+        if ch == 'mid':
+            # M: dead centre on the wall under the mouse, and cut
+            if not self.grid_on() or self.hover is None:
+                return False
+            self._force_mid = True
+            try:
+                self.commit()
+            finally:
+                self._force_mid = False
+            return True
         if ch == 'back':
             self.typed = self.typed[:-1]
         elif ch in '0123456789' or (ch in '.,' and not any(c in self.typed for c in '.,')):
@@ -3362,6 +3393,11 @@ class PlacePanel(QDialog):
         self.lbl.setWordWrap(True)
         self.lbl.setStyleSheet("color: gray;")
         f.addRow(self.lbl)
+        b_mid = QPushButton("Put it in the middle of the wall")
+        b_mid.setToolTip("Click the wall first (the grid goes on it), then this: the opening - or the row of them - "
+                         "is cut dead centre on that wall.")
+        b_mid.clicked.connect(self.put_in_middle)
+        f.addRow(b_mid)
         row = QHBoxLayout()
         b_menu = QPushButton("Main menu")
         b_menu.setToolTip("Back to the Openings window (stops placing).")
@@ -3412,6 +3448,31 @@ class PlacePanel(QDialog):
         finally:
             self._busy = False
         self.show_what()
+
+    def put_in_middle(self, *_):
+        st = getattr(self.dlg, 'tape', None)
+        if st is None or st.p0 is None:
+            self.say("Click the wall first (the grid goes on it), then 'Put it in the middle'.", bad=True)
+            return
+        if not st.grid_on():
+            self.say("Tick 'Grid on the wall' (on the Placing page) to use this.", bad=True)
+            return
+        if st.hover is None:
+            st.hover = st.p0
+        # the wall the grid is on, even if the mouse has gone off it to come here
+        c = st.pick_wall(st.hover) or (st.cands[0] if st.cands else None)
+        if c is None:
+            self.say("Click the wall first.", bad=True)
+            return
+        st._force_mid = True
+        try:
+            st.commit()
+        finally:
+            st._force_mid = False
+        try:
+            self.dlg.viewport.update()
+        except Exception:
+            pass
 
     def kind_changed(self, *_):
         if self._busy:

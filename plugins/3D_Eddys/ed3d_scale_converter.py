@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
-VERSION = "1.14"           # 1.14: the bed list shows that size too; 1.13: an object kept whole for a resin printer is laid flat as one (its chimney pots no longer float off)
+VERSION = "1.16"           # 1.16: with 'Lay each piece flat' ticked, the Pieces list gives each piece's size as it lies on the bed (a roof slope no longer shows its tilted size); 1.15: clicking a piece on the bed picks the right row in the Pieces list (and shows its own size); 1.14: the bed list shows that size too; 1.13: an object kept whole for a resin printer is laid flat as one (its chimney pots no longer float off)
 ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
 
 
@@ -652,6 +652,7 @@ def _turn_to_down(n):
 _TURN_CACHE = {}       # which way up each piece lies (the same at any scale)
 _EDGE_CACHE = {}       # which edges are fold lines in the preview (the same at any scale or place)
 _SIZE_CACHE = {}
+_FLAT_SIZE_CACHE = {}         # the size of a piece laid flat, at a scale
 
 
 def _shape_key(tris, with_dir=True):
@@ -7776,12 +7777,30 @@ class StudioDialog(QDialog):
             if pc is not None and own_s.get(pc or ""):
                 bits.append("\u2192 " + self.target_name(own_s.get(pc or "", "")).split(" - ")[0])
             notes.append(", ".join(bits))
+        flat = self.cb_flat.isChecked()
+        try:
+            self.tbl.setHorizontalHeaderItem(1, QTableWidgetItem("Size (laid flat)" if flat else "Size (new)"))
+        except Exception:
+            pass
         for r, (n, col, tr) in enumerate(parts):
-            got = _SIZE_CACHE.get(id(tr))
-            if got is None or got[0] is not tr:
-                got = _remember(_SIZE_CACHE, id(tr), (tr, tris_size(tr)), most=400)
-            s = got[1]
-            s = (s[0] * k * f[0], s[1] * k * f[1], s[2] * k * f[2])
+            s = None
+            if flat and tr:
+                # as it will lie on the bed (a roof slope is a thin sheet, not its height on the house)
+                key = (id(tr), round(k * f[0], 9), round(k * f[1], 9), round(k * f[2], 9))
+                got = _FLAT_SIZE_CACHE.get(key)
+                if got is None or got[0] is not tr:
+                    try:
+                        fs = tris_size(lay_flat(scale_tris(tr, (k * f[0], k * f[1], k * f[2]))))
+                    except Exception:
+                        fs = None
+                    got = _remember(_FLAT_SIZE_CACHE, key, (tr, fs), most=400)
+                s = got[1]
+            if s is None:
+                got = _SIZE_CACHE.get(id(tr))
+                if got is None or got[0] is not tr:
+                    got = _remember(_SIZE_CACHE, id(tr), (tr, tris_size(tr)), most=400)
+                s = got[1]
+                s = (s[0] * k * f[0], s[1] * k * f[1], s[2] * k * f[2])
             sizes[r] = fmt_size(s, u)
             pm = QPixmap(14, 14)
             pm.fill(QColor(*col))
@@ -7790,7 +7809,8 @@ class StudioDialog(QDialog):
             self.tbl.setItem(r, 1, QTableWidgetItem(sizes[r]))
             self.tbl.setItem(r, 2, QTableWidgetItem(str(len(tr))))
             self.tbl.setItem(r, 3, QTableWidgetItem(notes[r] if r < len(notes) else ""))
-        self.canvas.piece_sizes = sizes
+        self._row_sizes = sizes
+        self._set_canvas_rows(getattr(self, '_canvas_rows', None))
         planned = self.plan_on()
         other = bool(self.plan and self.plan.get('pieces')) and not planned and bool(self.ents)
         self.lbl_pieces.setText("%d piece%s%s." % (len(parts), "" if len(parts) == 1 else "s",
@@ -7802,21 +7822,57 @@ class StudioDialog(QDialog):
         except Exception:
             pass
 
-    def piece_row_picked(self, *_):
-        rows = sorted({ix.row() for ix in self.tbl.selectionModel().selectedRows()}) \
-            if self.tbl.selectionModel() else []
-        if rows:
-            self.canvas.picked = rows[0]
-            self.canvas.update()
+    def _set_canvas_rows(self, rows):
+        """Which row of the Pieces list each piece in the preview is. On the bed the pieces are packed
+        (biggest first) and shared over beds, so the preview's order isn't the list's."""
+        n = len(getattr(self.canvas, 'parts', None) or [])
+        if rows is not None:
+            rows = list(rows)
+            if len(rows) != n:
+                rows = None
+        self._canvas_rows = rows
+        sz = getattr(self, '_row_sizes', None) or {}
+        self.canvas.piece_sizes = {ci: sz.get(r, "") for ci, r in enumerate(rows) if r is not None} \
+            if rows else {}
 
-    def piece_picked(self, i):
-        if i is None:
-            return
+    def _select_row_quietly(self, r):
         try:
             self.tbl.blockSignals(True)
-            self.tbl.selectRow(i)
+            if r is None:
+                self.tbl.clearSelection()
+            else:
+                self.tbl.selectRow(r)
+                it = self.tbl.item(r, 0)
+                if it is not None:
+                    self.tbl.scrollToItem(it)
         finally:
             self.tbl.blockSignals(False)
+
+    def piece_row_picked(self, *_):
+        sel = sorted({ix.row() for ix in self.tbl.selectionModel().selectedRows()}) \
+            if self.tbl.selectionModel() else []
+        if not sel:
+            return
+        r = sel[0]
+        rows = getattr(self, '_canvas_rows', None)
+        if rows is not None and r not in rows:
+            # on another bed: show that bed
+            beds = getattr(self, '_view_beds', None)
+            k = next((j for j, b in enumerate(beds or []) if r in b), None)
+            if k is not None and not getattr(self, '_gathered_on', False):
+                self._plan_view = k
+                self.refresh_preview()
+                self._select_row_quietly(r)
+                rows = getattr(self, '_canvas_rows', None)
+        if rows is None:
+            return
+        self.canvas.picked = rows.index(r) if r in rows else None
+        self.canvas.update()
+
+    def piece_picked(self, i):
+        rows = getattr(self, '_canvas_rows', None)
+        r = rows[i] if (i is not None and rows and 0 <= i < len(rows)) else None
+        self._select_row_quietly(r)
 
     # ------------------------------------------------------------------ preview
     def refresh_preview(self):
@@ -7826,10 +7882,12 @@ class StudioDialog(QDialog):
             except Exception as e:
                 self.canvas.set_parts([], None)
                 self.report("Couldn't draw the bed: %s" % e, bad=True)
+            self._set_canvas_rows(None)
             self.update_info()
             return
         if getattr(self, '_gathered_on', False):
             self.preview_gathered()
+            self._canvas_rows = None
             if self.ents:
                 try:
                     self.fill_piece_table(self.raw_parts())
@@ -7842,11 +7900,13 @@ class StudioDialog(QDialog):
             self.b_nextbed.setVisible(False)
             self.canvas.set_parts([], None)
             self._shown = None
+            self._canvas_rows = None
             self.fill_piece_table([])
             return
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import Qt
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        self._view_beds = None
         try:
             raw = self.raw_parts()
             self.fill_piece_table(raw)
@@ -7854,16 +7914,21 @@ class StudioDialog(QDialog):
             self.b_sendone.setVisible(False)
             if groups:
                 self.preview_planned_bed(groups)
+                self._set_canvas_rows(getattr(self, '_shown_rows', None))
             elif self.cb_preview.currentData() == 'bed':
                 self.b_nextbed.setVisible(False)
                 self._bed_note = []
                 parts, _notes, _w = self.make_parts({'use_scale': True, 'layout': 'bed', 'apply_fixes': False,
                                                     'per_piece': True})
                 beds = self._bed_split
+                rows = getattr(self, '_part_rows', None)
                 if beds and len(beds) > 1:
                     # too much for one bed: 'Next bed' shows each one
                     k = getattr(self, '_plan_view', 0) % len(beds)
                     parts = beds[k]
+                    br = getattr(self, '_bed_rows', None)
+                    rows = br[k] if br and k < len(br) else None
+                    self._view_beds = br
                     self.b_nextbed.setVisible(True)
                     self.b_sendone.setVisible(True)
                     s = tris_size([t for _n, _c, tr in parts for t in tr])
@@ -7878,6 +7943,7 @@ class StudioDialog(QDialog):
                 self.canvas.empty_text = "Nothing to show"
                 self.canvas.set_parts(parts, bed, None)
                 self._shown = None
+                self._set_canvas_rows(rows)
             else:
                 self.b_nextbed.setVisible(False)
                 self._bed_note = []
@@ -7885,7 +7951,9 @@ class StudioDialog(QDialog):
                 if getattr(self, '_shown', None) != shown:
                     self.canvas.set_parts(raw, None, self._marks)
                     self._shown = shown
+                self._set_canvas_rows(range(len(raw)))
         except Exception as e:
+            self._canvas_rows = None
             self.canvas.set_parts([], None)
             self.report("Couldn't draw the preview: %s" % e, bad=True)
         finally:
@@ -7903,6 +7971,8 @@ class StudioDialog(QDialog):
         anything worth a warning)."""
         notes, warn = [], False
         self._bed_split = None          # set by lay_on_bed when it takes more than one bed
+        self._bed_rows = None           # ...and which Pieces-list rows are on each of those beds
+        rows = None                     # the Pieces-list row of each piece
         if o.get('parts') is not None:
             # ready-made pieces (in mm, already scaled and mended) - the objects gathered on one bed
             parts = list(o['parts'])
@@ -7914,9 +7984,11 @@ class StudioDialog(QDialog):
             only = o.get('only')
             close = set((self.plan or {}).get('close', [])) if self.plan and self.plan.get('pieces') else set()
             parts = []
+            rows = []
             for i, (n, c, tr) in enumerate(raw):
                 if only is not None and i not in only:
                     continue
+                rows.append(i)
                 tr = scale_tris(tr, (k * f[0], k * f[1], k * f[2]))
                 if pcs[i] is not None and pcs[i] in close:
                     tr, filled, left = close_all_holes(tr)
@@ -7928,6 +8000,7 @@ class StudioDialog(QDialog):
             if not o.get('per_piece', True) and len(parts) > 1 and o.get('layout', 'keep') != 'bed':
                 # all as one, where they are (on the bed they're laid out first, then joined - below)
                 parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
+                rows = None
         if o.get('apply_fixes') and o.get('parts') is None:
             tot = {}
             fixed = []
@@ -7953,19 +8026,27 @@ class StudioDialog(QDialog):
                     warn = True
                     notes.append("%s: %d%% of it is thinner than %s (about %.2f mm thick)." % (
                         n, int(round(share * 100)) or 1, what, th))
+        if rows is not None and len(rows) == len(parts):
+            rows = [r for r, p in zip(rows, parts) if p[2]]
+        else:
+            rows = None
         parts = [p for p in parts if p[2]]
+        self._part_rows = rows
         lay = o.get('layout', 'keep')
         if lay == 'bed':
             parts = self.lay_on_bed(parts, flat=self.cb_flat.isChecked() and o.get('parts') is None)
             if self._bed_split and not o.get('per_piece', True):
                 # one file holding each bed's pieces (resin STL)
                 nb = len(self._bed_split)
+                self._bed_rows = None
+                self._part_rows = None
                 self._bed_split = [[("%s - bed %d of %d" % (o.get('name') or self.name(), k + 1, nb), b[0][1],
                                      [t for _n, _c, tr in b for t in tr])] for k, b in enumerate(self._bed_split)]
                 parts = [p for b in self._bed_split for p in b]
             elif not o.get('per_piece', True) and len(parts) > 1:
                 # one file holding them all (resin STL): laid out side by side on the plate first
                 parts = [(o.get('name') or self.name(), parts[0][1], [t for _n, _c, tr in parts for t in tr])]
+                self._part_rows = None
         elif lay == 'centre' and parts:
             allt = stand_centred([t for _n, _c, tr in parts for t in tr])
             i = 0
@@ -7993,6 +8074,11 @@ class StudioDialog(QDialog):
                                   0.0 if self.edge_gap() > 0 else None)
                 if len(beds) > 1:
                     self._bed_split = [[(parts[i][0], parts[i][1], tr) for i, tr in b] for b in beds]
+                    pr = getattr(self, '_part_rows', None)
+                    self._bed_rows = [[pr[i] for i, _tr in b] for b in beds] \
+                        if pr is not None and len(pr) == len(parts) else None
+                    if pr is not None:
+                        self._part_rows = [r for b in (self._bed_rows or []) for r in b] or None
                     return [p for b in self._bed_split for p in b]
             parts = [(n, c, tr) for (n, tr), (_n, c, _t) in zip(placed, parts)]
         elif parts:
@@ -8824,6 +8910,7 @@ class StudioDialog(QDialog):
         _bx, _by, _bz, _gap, keep = self.printer_settings(pr)
         parts, _n, _w = self.make_parts({'use_scale': True, 'layout': 'keep', 'apply_fixes': False,
                                          'per_piece': True, 'only': set(idx)})
+        self._shown_rows = getattr(self, '_part_rows', None)
         if self.cb_flat.isChecked():
             parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
         parts, bed = self.lay_for_printer(parts, pr)
