@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Windows"
-VERSION = "2.11"  # shown in the window title, so you can tell which file is loaded. 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
+VERSION = "2.14"  # shown in the window title, so you can tell which file is loaded. 2.14: faces of the frame missed by the colouring (round arched tops) take the colour of the part they join on to - they showed white; 2.13: a Mortar joint depth setting (Z) for brick sills, heads and arches (it was always 3 mm); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the windows are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
 
 
 def _ed3d_organise(scene, group):
@@ -79,7 +79,7 @@ DEFAULTS = {
     'sill': 'stone', 'sill_shape': 'weathered', 'sill_h': 75.0, 'sill_p': 50.0, 'horn': 100.0,
     'head': 'brick', 'head_h': 215.0, 'head_p': 10.0, 'bearing': 100.0,
     'keystone': False, 'key_w': 150.0, 'key_up': 40.0, 'key_p': 15.0,
-    'brick_w': 102.5, 'brick_t': 65.0, 'joint': 10.0,
+    'brick_w': 102.5, 'brick_t': 65.0, 'joint': 10.0, 'joint_d': 3.0,
 }
 INT_KEYS = ('cols', 'rows', 'cols_b', 'rows_b', 'leaves', 'pivot_col', 'pivot_row')
 CHOICE_KEYS = ('style', 'top', 'arch_bars', 'sill', 'sill_shape', 'head')
@@ -760,6 +760,13 @@ def build_window(sh, v):
 # ---------------------------------------------------------------------------
 # Sills
 # ---------------------------------------------------------------------------
+def joint_depth(v, room):
+    """How far the mortar sits back from the face of the bricks (the depth of the joints), kept
+    inside the brickwork it's in."""
+    k = float(v.get('joint_d', 3.0) or 0.0)
+    return max(0.2, min(k, 0.8 * max(1.0, room)))
+
+
 def build_sill(sh, v, fd):
     """Under the opening, from the wall face out past the front of the frame."""
     x0, x1, y0, _ = sh['box']
@@ -790,7 +797,7 @@ def build_sill(sh, v, fd):
         a = xa + i * (bw + J)
         out.append(along_x(sec, a, a + bw))
     # mortar behind the joints, set back so the joints show
-    k = 3.0
+    k = joint_depth(v, F - b)
     if shape == 'square':
         mort = [(b, y0 - h + 1.0), (F - k, y0 - h + 1.0), (F - k, y0 - k), (b, y0 - k)]
     elif shape == 'chamfer':
@@ -975,7 +982,7 @@ def build_head(sh, v, fd):
                 chord = step * r_out / max(r_in, 1.0)
                 sag = chord * chord / (8.0 * r_out)
                 if mb > ma:
-                    out.append(_mortar(_band_piece(sh, ma, mb, hh - 1.0 - sag, zb, zfront - 3.0, inset=1.0)))
+                    out.append(_mortar(_band_piece(sh, ma, mb, hh - 1.0 - sag, zb, zfront - joint_depth(v, zfront - zb), inset=1.0)))
         if key:
             out.append(_keystone_arch(sh, v, hh, zb, zfront))
         return out
@@ -996,7 +1003,7 @@ def build_head(sh, v, fd):
         for a, b in runs:
             out.append(prism([(a, y1), (b, y1), (b, y1 + hh), (a, y1 + hh)], zb, zfront))
         out.append(_mortar(prism([(xa + 1, y1), (xb - 1, y1), (xb - 1, y1 + hh - 3),
-                                  (xa + 1, y1 + hh - 3)], zb, zfront - 3.0)))
+                                  (xa + 1, y1 + hh - 3)], zb, zfront - joint_depth(v, zfront - zb))))
     if key:
         out.append(_flat_keystone(cx, y1, hh, v, zb, zfront))
     return out
@@ -2301,7 +2308,7 @@ def _wall_meshes(scene, top=None):
 
 # groups the plugins build (and everything inside them) aren't walls: the subframe and its glazing
 # frames and trusses, windows, doors and so on - their holes aren't openings to fill
-NOT_WALLS = ("subframe", "glazing", "truss", "window", "door", "gutter", "downpipe", "chimney",
+NOT_WALLS = ("subframe", "glazing", "truss", "window", "door", "shop front", "gutter", "downpipe", "chimney",
              "canopy", "fence", "gate", "pipe", "barge", "finial", "fascia", "soffit")
 
 
@@ -2388,7 +2395,7 @@ def solids_from_rec(data):
     return out
 
 
-_KEEP_TAGS = ('part', 'kind', 'mortar')
+_KEEP_TAGS = ('part', 'kind', 'mortar', 'paint')
 
 
 def tagged_to_rec(solids):
@@ -2435,7 +2442,8 @@ def item_solids(item, own_kind):
     # kept by an older version (shape only, no part names), or not kept: made again by the other
     # plugin, so each part gets its own colour (an untagged one was all painted as the frame)
     import sys as _sys
-    want = "ed3d_period_doors" if item.get('kind') == 'door' else "ed3d_period_windows"
+    want = {'door': "ed3d_period_doors", 'shopfront': "ed3d_shop_fronts"}.get(item.get('kind'),
+                                                                          "ed3d_period_windows")
     for nm, mod in list(_sys.modules.items()):
         if nm.endswith(want) and hasattr(mod, 'build_into_wall'):
             try:
@@ -2453,7 +2461,8 @@ def item_solids(item, own_kind):
     if kept:
         return kept
     raise ValueError("it was made by %s, which isn't loaded" %
-                     ("3D Period Doors" if item.get('kind') == 'door' else "3D Period Windows"))
+                     {'door': "3D Period Doors", 'shopfront': "3D Shop Fronts"}.get(item.get('kind'),
+                                                                                  "3D Period Windows"))
 
 
 class _PlainFace:
@@ -3226,7 +3235,8 @@ def wall_swap_command(swaps):
 # (The same in 3D Period Windows and 3D Period Doors.)
 # ---------------------------------------------------------------------------
 PAINT_RGB = (("mortar", (200, 194, 178)), ("knob", (40, 40, 44)), ("hinge", (40, 40, 44)),
-             ("rail", (40, 40, 44)), ("hanger", (40, 40, 44)), ("brick", (170, 82, 60)),
+             ("lettering", (214, 178, 84)), ("tiling", (40, 86, 70)), ("granite", (150, 146, 148)),
+             ("shop", (96, 30, 40)), ("rail", (40, 40, 44)), ("hanger", (40, 40, 44)), ("brick", (170, 82, 60)),
              ("stone", (205, 198, 182)), ("door", (52, 96, 72)), ("window", (242, 242, 236)))
 
 
@@ -3288,6 +3298,64 @@ def _face_samples(pts, hls, n, U, V, most=24):
     return out
 
 
+def _fill_unpainted(new_mesh, painted, pts_of):
+    """Faces the colouring missed (pieces of a frame split where glazing bars or a head join it,
+    on a curve where no single part lies in exactly the same plane) take the colour of the part
+    they join on to: a coloured neighbour sharing an edge, facing nearly the same way. Only colours
+    just put on from the window / door / shop front are passed on, and never onto a much bigger
+    face, so the wall and its bricks are left as they are."""
+    faces = list(_items(getattr(new_mesh, 'faces', None)))
+    info = {}
+    edge_of = {}
+
+    def key(p):
+        return (round(p[0] * 1e6), round(p[1] * 1e6), round(p[2] * 1e6))
+    for f in faces:
+        pts, hls = pts_of(f)
+        if len(pts) < 3:
+            continue
+        n = _newell(pts)
+        a = 0.0
+        for i in range(len(pts)):
+            a_, b_ = pts[i], pts[(i + 1) % len(pts)]
+            a += 0.5 * v_dot(n, v_cross(a_, b_))
+        info[id(f)] = (f, n, abs(a))
+        for lp in [pts] + hls:
+            for i in range(len(lp)):
+                e = frozenset((key(lp[i]), key(lp[(i + 1) % len(lp)])))
+                edge_of.setdefault(e, []).append(id(f))
+    done = 0
+    for _pass in range(4):
+        changed = False
+        for fid, (f, n, area) in info.items():
+            if fid in painted or getattr(f, 'attrs', None):
+                continue
+            pts, hls = pts_of(f)
+            best = None
+            for lp in [pts] + hls:
+                for i in range(len(lp)):
+                    e = frozenset((key(lp[i]), key(lp[(i + 1) % len(lp)])))
+                    for oid in edge_of.get(e, ()):
+                        if oid == fid or oid not in painted:
+                            continue
+                        of, on_, oa = info[oid]
+                        if v_dot(on_, n) < 0.95 or area > 10.0 * max(oa, 1e-12):
+                            continue
+                        if best is None or v_dot(on_, n) > best[0]:
+                            best = (v_dot(on_, n), of)
+            if best is not None:
+                try:
+                    f.attrs = dict(best[1].attrs)
+                    painted.add(fid)
+                    done += 1
+                    changed = True
+                except Exception:
+                    pass
+        if not changed:
+            break
+    return done
+
+
 def paint_wall(scene, new_mesh, old_mesh, sols):
     """Colours the faces of a wall with its windows / doors built in. Returns the faces painted."""
     import sys as _sys
@@ -3310,7 +3378,8 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
         a = None
         if lc is not None:
             try:
-                row = lc._pick_row(palette, [name], "3D Period Doors" if kind == 'door' else "3D Period Windows")
+                row = lc._pick_row(palette, [name], {'door': "3D Period Doors", 'shopfront': "3D Shop Fronts"}.get(
+                    kind, "3D Period Windows"))
                 if row is not None:
                     # a colour changed in 3D Layers & Colours' own table is used even when the model
                     # already has that material (otherwise the model's material, which may be yours, stays)
@@ -3356,6 +3425,7 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
         return 0
     TOL = 2e-5
     count = 0
+    painted = set()
     for f in _items(getattr(new_mesh, 'faces', None)):
         pts, hls = pts_of(f)
         if len(pts) < 3:
@@ -3398,8 +3468,11 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
         try:
             f.attrs = dict(a)
             count += 1
+            if best is not None:
+                painted.add(id(f))
         except Exception:
             pass
+    count += _fill_unpainted(new_mesh, painted, pts_of)
     return count
 
 
@@ -3491,14 +3564,16 @@ FIELDS = {
                                                                  "(a brick's width)."),
     'brick_t': ("Brick thickness", 20.0, 200.0, 1, " mm", "Width of each brick as seen in a soldier "
                                                           "course, brick arch or brick sill."),
-    'joint': ("Mortar joint", 0.0, 30.0, 1, " mm", ""),
+    'joint': ("Mortar joint", 0.0, 30.0, 1, " mm", "How wide the mortar joints are between the bricks."),
+    'joint_d': ("Mortar joint depth", 0.2, 50.0, 1, " mm", "How far the mortar sits back from the face of the "
+                                                           "bricks (brick sills, soldier heads and brick arches)."),
 }
 
 # each size has a letter, shown next to its box and on the 'Sizes' drawing
 LETTERS = {'frame_w': 'A', 'frame_d': 'B', 'sash_w': 'C', 'sash_d': 'D', 'bottom_rail': 'E',
            'meet_w': 'F', 'bar_w': 'G', 'bar_d': 'H', 'mullion_w': 'J', 'glass_t': 'K', 'rise': 'L',
            'sill_h': 'M', 'sill_p': 'N', 'horn': 'P', 'head_h': 'Q', 'head_p': 'R', 'bearing': 'S',
-           'key_w': 'T', 'key_up': 'U', 'key_p': 'V', 'brick_w': 'W', 'brick_t': 'X', 'joint': 'Y'}
+           'key_w': 'T', 'key_up': 'U', 'key_p': 'V', 'brick_w': 'W', 'brick_t': 'X', 'joint': 'Y', 'joint_d': 'Z'}
 
 TABS = [
     ("Window", ('style', 'top', 'rise', 'flat', 'bars_back', 'join', 'remove_face', 'cut', 'lift', 'flip', 'open', 'sash_open', 'open_angle',
@@ -3508,7 +3583,7 @@ TABS = [
     ("Sill && head", ('sill', 'sill_shape', 'sill_h', 'sill_p', 'horn', 'head', 'head_h', 'head_p', 'bearing',
                       'keystone', 'key_w', 'key_up', 'key_p')),
     ("Sizes", ('frame_w', 'frame_d', 'sash_w', 'sash_d', 'bottom_rail', 'meet_w', 'bar_w', 'bar_d',
-               'brick_w', 'brick_t', 'joint')),
+               'brick_w', 'brick_t', 'joint', 'joint_d')),
 ]
 
 
@@ -3527,7 +3602,7 @@ KEY_NOTES = [('A', 'frame_w', "frame width"), ('B', 'frame_d', "frame stands out
              ('S', 'bearing', "lintel runs past the opening"), ('T', 'key_w', "keystone width"),
              ('U', 'key_up', "keystone rises above the head"), ('V', 'key_p', "keystone sticks out more"),
              ('W', 'brick_w', "sill brick height"), ('X', 'brick_t', "brick thickness"),
-             ('Y', 'joint', "mortar joint")]
+             ('Y', 'joint', "mortar joint"), ('Z', 'joint_d', "mortar joint depth (set back)")]
 
 
 class WindowKey(QWidget):
@@ -4683,8 +4758,12 @@ class PeriodWindowsTool(Tool):
                     vals = dict(DEFAULTS)
                     vals.update(w_.get('values') or {})
                     for so in got:
-                        so.paint = paint_name(so, w_.get('kind', 'window'), vals)
-                        so.paint_kind = w_.get('kind', 'window')
+                        kd = w_.get('kind', 'window')
+                        if kd not in ('window', 'door') and isinstance(getattr(so, 'paint', None), str):
+                            so.paint_kind = kd           # a shop front: coloured as it was made
+                            continue
+                        so.paint = paint_name(so, kd, vals)
+                        so.paint_kind = kd
                     sols += got
                     kept.append(w_)
                 except ValueError as e:

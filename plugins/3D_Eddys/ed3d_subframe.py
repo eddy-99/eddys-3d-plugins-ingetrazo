@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.58"  # 1.58: the debug file is only written when something goes wrong;
+VERSION = "1.60"  # 1.60: an end piece where the verge soffit meets the eaves soffit, closing the step between them (the roof showed through there); 1.59: a verge soffit under each barge board, from the boxed end at the eaves up to the peak, back to the wall (the underside of the roof showed between the wall and the barge board); 1.58: the debug file is only written when something goes wrong;
 #                 1.57: roof trusses on gable ends that are pieces of their own (not joined to the walls);
 #                 never takes the narrow end of a wall for a gable;
 #                 1.55: a roof truss with nothing left above the wall tops no longer stops the whole frame;
@@ -3442,7 +3442,7 @@ def fp_roof_boards(roof_groups, p, want_fascia=True, want_soffit=True):
             w = (-n_out[1], n_out[0])
             k0, a0, b0 = ln['e'][0]
             O = a0 if a0[2] <= b0[2] else b0
-            pcs, apexes, boxes, side_soffits = [], [], [], []
+            pcs, apexes, boxes, side_soffits, verge_soffits = [], [], [], [], []
             for k, a, b in ln['e']:
                 s = slopes[k]
                 xa = ((a[0] - O[0]) * w[0] + (a[1] - O[1]) * w[1]) / SCALE
@@ -3475,6 +3475,14 @@ def fp_roof_boards(roof_groups, p, want_fascia=True, want_soffit=True):
                 lo, hi = ((xa, ya), (xb, yb_)) if ya <= yb_ else ((xb, yb_), (xa, ya))
                 V = a if a[2] <= b[2] else b
                 c_ = corners.get(ckey(V))
+                # the verge soffit starts where the box end stops (or at the eaves, if there's no box)
+                xs_ = lo[0]
+                ye_ = None                              # the eaves soffit's bottom, if it meets here
+                if c_ is not None and abs(hi[0] - lo[0]) > 1e-6:
+                    sg_ = 1.0 if hi[0] > lo[0] else -1.0
+                    xs_ = lo[0] + sg_ * min(max(c_[0], bt), 0.9 * abs(hi[0] - lo[0]))
+                    ye_ = (c_[1] - O[2]) / SCALE
+                verge_soffits.append((k, a, b, lo, hi, xs_, H, ye_))
                 if c_ is not None and abs(hi[0] - lo[0]) > 1e-6:
                     ln_ = max(c_[0], bt)
                     sg = 1.0 if hi[0] > lo[0] else -1.0
@@ -3515,6 +3523,36 @@ def fp_roof_boards(roof_groups, p, want_fascia=True, want_soffit=True):
             else:
                 out.append(("Barge boards%s - %s (%d)" % (" and finial" if p.get('finials', True) and any(len(l_) > 1 for l_ in tops.values())
                                                            else "", " & ".join(names), nb), 'barge', so.mapped(tw)))
+            # the verge soffits: under each barge board, back to the wall, closing the underside of the
+            # roof between the wall and the board (it showed there), from the box end up to the peak
+            for k, a, b, lo, hi, xs_, H, ye_ in (verge_soffits if want_soffit else []):
+                if abs(hi[0] - lo[0]) < 1e-6 or abs(hi[0] - xs_) < bt:
+                    continue
+                u_, L_ = plan_u(a, b)
+                kk = (hi[1] - lo[1]) / (hi[0] - lo[0])
+                y_lo = lo[1] - H + kk * (xs_ - lo[0])          # the barge board's bottom edge there
+                o = _wall_behind(a, u_, n_out, L_, O[2] + (y_lo + bt) * SCALE, p.get('_all_faces'), 1.0)
+                if o is None:
+                    problems.append("Verge soffit under %s: couldn't find the gable wall there." % slopes[k]['name'])
+                    continue
+
+                def ybot(x, lo=lo, H=H, kk=kk):
+                    return lo[1] - H + kk * (x - lo[0])
+                band = clean([(xs_, ybot(xs_)), (hi[0], ybot(hi[0])), (hi[0], ybot(hi[0]) + bt),
+                              (xs_, ybot(xs_) + bt)])
+                pieces_ = [band] if band else []
+                # where it starts, above the end of the eaves soffit: an upright end piece closing the
+                # step between the two (the underside of the roof showed through it)
+                if ye_ is not None and ybot(xs_) + bt > ye_ + 0.5 * bt:
+                    sgn = 1.0 if hi[0] > lo[0] else -1.0
+                    xe0, xe1 = sorted((xs_, xs_ - sgn * bt))
+                    end_ = clean([(xe0, ye_), (xe1, ye_), (xe1, ybot(xs_) + bt), (xe0, ybot(xs_) + bt)])
+                    if end_:
+                        pieces_.append(end_)
+                vso = merged_slab(pieces_, lambda x, y, o=o: -o, lambda x, y: 0.0) if pieces_ else None
+                if vso is not None:
+                    out.append(("Soffit board - verge of %s (%d)" % (slopes[k]['name'], nb), 'soffit',
+                                vso.mapped(tw)))
             # the level soffits under the shallow sides, from the eaves soffits' ends, back to the wall
             for k, a, b, xa, xb, ylev in (side_soffits if want_soffit else []):
                 u_, L_ = plan_u(a, b)

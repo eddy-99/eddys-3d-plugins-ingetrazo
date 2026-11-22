@@ -61,11 +61,12 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Brick & Block Studio"
-VERSION = "7.13"            # shown in the window title, so you can tell which file is loaded
+VERSION = "7.18"            # shown in the window title, so you can tell which file is loaded. 7.18: with "Bricks meet at the corners" ticked, walls that meet in a mitre (Floor Plan's angled corners) get their corner bricks cut on the mitre line instead of carried past the end of the wall - each wall prints flat with nothing hanging over, and the bricks meet on the mitre when glued; 7.17: laid from a corner, the bond keeps its own pattern course to course (Flemish headers over the middle of the stretchers, English header courses offset), with a header then a closer at the corner on alternate courses; the corner mortar of 7.15 taken out again (it showed as a bar in the joints); 7.16: with "Bricks meet at the corners" unticked the courses are still laid out from each corner - a whole brick or a header on alternate courses - so they don't end in short cut slivers there (nothing hangs past the wall edge); 7.15: with "Bricks meet at the corners" ticked, mortar fills the corner between the courses (the joints met there in a square notch you could see right through), set back half the joint depth; 7.14: C is called "Depth (mortar joint depth)" - how far the bricks stand out from the wall face is how deep the mortar joints are
 
 
 PLAIN_PAINT = (("walling - brick", (181, 86, 60)), ("walling", (190, 182, 160)), ("quoin", (218, 208, 182)),
-               ("heads", (218, 208, 182)), ("coping", (196, 190, 178)), ("backing", (205, 200, 188)))
+               ("heads", (218, 208, 182)), ("coping", (196, 190, 178)), ("backing", (205, 200, 188)),
+               ("mortar", (200, 194, 178)))
 
 
 def _part_attrs(scene, name):
@@ -1026,27 +1027,71 @@ def offs_ok(offset_mode, bond):
     return str(offset_mode or 'bond') == 'bond' and bond not in ('stack', 'third')
 
 
-def _corner_row(row, r, unit, l, hl, J, W, lo, hi, d, min_cut):
+def _corner_row(row, r, unit, l, hl, J, W, lo, hi, d, min_cut, course=None, x0=0.0):
     """One course laid from the corner(s) instead of from the bond's own start (see bond_layout).
-    With a corner at both ends, each half is laid from its own corner and a cut brick goes in the
-    middle (as a bricklayer would)."""
-    def from_corner(par, hd_of):
-        out, x = [], 0.0
-        if r % 2 != par:
-            first = hl - d
-            if first > J * 0.5:
-                out.append((d, hl, False))
-                x = hl + J
-            else:
-                x = d
-        while x < W + l:
-            for L in unit:
-                out.append((x, x + L, hd_of(L)))
-                x += L + J
-        return out
+    The bond's own pattern is kept course to course (so Flemish headers sit over the middle of the
+    stretchers below, English header courses are offset a quarter brick...) - it's only slid along
+    so a whole brick starts at the corner on the courses this wall turns the corner (lo/hi = 0 or 1,
+    the even or odd courses), and the other courses start d in from it with whatever piece the bond
+    leaves there (half a brick in stretcher bond, a header and closer in Flemish). With a corner at
+    both ends, each half is laid from its own corner and a cut brick goes in the middle (as a
+    bricklayer would). course(r) -> (unit, shift) is the bond's own rule; x0 its start."""
     hd_of = lambda L: abs(L - hl) < 1e-9 and abs(hl - l) > 1e-9
-    left = from_corner(lo, hd_of) if lo is not None else None
-    right = [(W - ex, W - sx, h) for sx, ex, h in from_corner(hi, hd_of)] if hi is not None else None
+
+    def natural(rr):
+        """The bond's own course rr, long enough to cover the wall however it's slid along:
+        [(start, end, header?)] and where its stretchers start."""
+        un, sh = course(rr) if course is not None else (unit, 0.0)
+        period = sum(un) + len(un) * J
+        x = ((sh + x0) % period) - period
+        reach = 2.0 * W + 4.0 * period
+        x -= period * (int(reach / period) + 2)
+        pcs, starts = [], []
+        while x < reach:
+            for L in un:
+                pcs.append((x, x + L, hd_of(L)))
+                if not hd_of(L):
+                    starts.append(x)
+                x += L + J
+        return pcs, (starts or [p_[0] for p_ in pcs])
+
+    def from_corner(par, mirror):
+        """This course laid from the corner at x = 0 (in mirrored terms for the high end)."""
+        ro = r if r % 2 == par else r + 1          # a course this wall turns the corner on
+        def flip(pcs):
+            return [(W - ex, W - sx, h) for sx, ex, h in pcs] if mirror else pcs
+        own, _ = natural(ro)
+        own = flip(own)
+        st = [sx for sx, ex, h in own if not h] or [sx for sx, ex, h in own]
+        # slide it so the stretcher nearest the corner starts right at the corner
+        s0 = min(st, key=abs)
+        mine, _ = natural(r)
+        mine = sorted((sx - s0, ex - s0, h) for sx, ex, h in flip(mine))
+        dd = (d[1] if mirror else d[0]) if isinstance(d, tuple) else d
+        start = 0.0 if r % 2 == par else dd       # the other wall's brick end fills 0..d
+        out = []
+        for sx, ex, h in mine:
+            if ex <= start + 1e-9 or sx > W + l:
+                continue
+            if sx < start:
+                if ex - start < max(J * 0.5, 1e-9):
+                    continue                       # a sliver: the next brick starts the course
+                sx = start
+            out.append((sx, ex, h))
+        # the courses that don't turn the corner: a header at the corner, then the closer - the
+        # way a bricklayer does it (the bond alone would put the closer at the corner, and the other
+        # wall's brick end cuts that down to a sliver)
+        if r % 2 != par and len(out) >= 2 and out[0][1] < hl - 1e-9 and abs(out[1][0] - out[0][1] - J) < 1e-6:
+            b_ = out[1][1]
+            if b_ - (hl + J) >= J:
+                out[0:2] = [(start, hl, hd_of(hl)), (hl + J, b_, False)]
+            else:
+                out[0:2] = [(start, b_, False)]
+        return out
+    if course is None:
+        course = lambda rr: (unit, 0.0)
+    left = from_corner(lo, False) if lo is not None else None
+    right = [(W - ex, W - sx, h) for sx, ex, h in from_corner(hi, True)] if hi is not None else None
     if left is not None and right is None:
         return left
     if right is not None and left is None:
@@ -1134,7 +1179,8 @@ def bond_layout(l, w, J, hl, bond, header_every, offset_mode, offset_fixed, offs
                 x = ex + J
                 row.append((sx, ex, abs(L - hl) < 1e-9 and abs(hl - l) > 1e-9))
         if lo_c is not None or hi_c is not None:
-            row = _corner_row(row, r, unit, l, hl, J, W, lo_c, hi_c, cd, max(min_end, 0.3 * l))
+            row = _corner_row(row, r, unit, l, hl, J, W, lo_c, hi_c, cd, max(min_end, 0.3 * l),
+                              course=lambda rr: _course(rr, l, hl, J, bond, header_every), x0=x0)
         runs = segments(y, y + cw) if (segments is not None and not ghost) else [(0.0, W)]
         joints = []
         for a, b in runs:
@@ -1904,6 +1950,23 @@ def _take_wall_ends(found):
                 pass
 
 
+def _is_mitre(faces, P, n, tol):
+    """Is the wall's end at corner P cut at an angle (a mitre)? Looks for an upright face of the
+    wall reaching the corner whose normal is neither along nor square to the wall's face."""
+    for fd in faces or ():
+        fn = fd.get('n') if isinstance(fd, dict) else None
+        pts = fd.get('pts') if isinstance(fd, dict) else None
+        if not fn or not pts or abs(fn[2]) > 0.1:
+            continue
+        c = abs(_vdot(fn, n))
+        if not (0.15 < c < 0.97):
+            continue
+        near = sum(1 for q in pts if math.hypot(q[0] - P[0], q[1] - P[1]) < tol)
+        if near >= 2:
+            return True
+    return False
+
+
 def _corner_ends(walls):
     """At each outside corner between two walls being bricked, the courses are bonded round the
     corner: on alternate courses one wall's brick or the other's runs right to the corner (the
@@ -1946,7 +2009,14 @@ def _corner_ends(walls):
                 if _vdot(b['n'], d) < 0.5:
                     continue                  # an inside corner: nothing sticks out
                 first = a['len'] > b['len'] + tol or (abs(a['len'] - b['len']) <= tol and a['i'] < b['i'])
-                a['f'].grow.append(d + (0 if first else 1,))
+                # a mitred corner (the wall's end is cut at an angle, as Floor Plan's angled corners
+                # are): the bricks are cut on the mitre line rather than carried past the end. How far
+                # the mitre runs out for each unit of brick depth: tan of half the turn at the corner.
+                mk = 0.0
+                if _is_mitre(walls[a['i']].get('faces'), P, a['n'], tol * 50):
+                    turn = math.acos(max(-1.0, min(1.0, _vdot(a['n'], b['n']))))
+                    mk = math.tan(turn / 2.0)
+                a['f'].grow.append(d + (0 if first else 1, mk))
                 break
 
 
@@ -2163,7 +2233,7 @@ def find_building_walls(scene, inside_walls=False, inside_faces=False, top=None,
         zs = [q[2] for q in pieces[0][0]]
         k_ = 1000.0 if max(max(xs) - min(xs), max(zs) - min(zs)) < 50.0 else 1.0
         n_notch = len(outline_notches([(x, z) for x, z in zip(xs, zs)]))
-        out.append({'name': name, 'face': wf, 'group': g, 'fd': fd,
+        out.append({'name': name, 'face': wf, 'group': g, 'fd': fd, 'faces': w_['faces'],
                     'bricked': _mesh_has_walling(mesh) or _has_walling(fd, recs, boxes),
                     'length': (max(xs) - min(xs)) * k_, 'height': (max(zs) - min(zs)) * k_,
                     'openings': len(pieces[0][1]) + n_notch})
@@ -3638,11 +3708,66 @@ def worn_unit_solid(poly, d, c):
     return [(f, []) for f in faces]
 
 
+def _clip_strip(poly, xa, xb):
+    """The part of a polygon (x, y) between x = xa and x = xb."""
+    def clip(P, keep, cut):
+        out = []
+        n = len(P)
+        for i in range(n):
+            a, b = P[i], P[(i + 1) % n]
+            ia, ib = keep(a), keep(b)
+            if ia:
+                out.append(a)
+            if ia != ib:
+                t = (cut - a[0]) / (b[0] - a[0])
+                out.append((cut, a[1] + (b[1] - a[1]) * t))
+        return out
+    P = clip(list(poly), lambda q: q[0] >= xa, xa) if poly else []
+    P = clip(P, lambda q: q[0] <= xb, xb) if P else []
+    return P if len(P) >= 3 else None
+
+
+def _area2(poly):
+    s = 0.0
+    for i in range(len(poly)):
+        (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % len(poly)]
+        s += x1 * y2 - x2 * y1
+    return s / 2.0
+
+
+def mitre_unit_solid(poly, d, lo_k, hi_k, W, eps):
+    """A unit whose end at a mitred corner (x = 0 and/or x = W) runs out along the mitre: its front
+    (at depth d) reaches lo_k * d past the corner at x = 0, hi_k * d past it at x = W, so the
+    bricks of the two walls meet on the mitre line."""
+    P = _ccw(poly)
+
+    def front(q):
+        x, y = q
+        if lo_k and abs(x) <= eps:
+            x -= lo_k * d
+        elif hi_k and abs(x - W) <= eps:
+            x += hi_k * d
+        return (x, y, d)
+    top = [front(q) for q in P]
+    bot = [(x, y, 0.0) for x, y in P]
+    faces = [top, bot[::-1]]
+    n = len(P)
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append([bot[i], bot[j], top[j], top[i]])
+    return [(f, []) for f in faces]
+
+
 def unit_faces(u, back=True):
     """The solid for one unit (poly, depth, kind, shade[, extra]): a plain block, a worn one,
     or a rounded coping stone."""
     poly, d = u[0], u[1]
     extra = u[4] if len(u) > 4 else None
+    if extra and extra[0] == 'mitre':
+        faces = mitre_unit_solid(poly, d, extra[1], extra[2], extra[3], extra[4])
+        if not back:
+            faces = [f for f in faces if not all(abs(q[2]) < 1e-12 for q in f[0])]
+        return faces
     if extra and extra[0] == 'round':
         faces = rounded_coping_solid(extra[1], d)
     elif extra and extra[0] == 'worn':
@@ -4159,8 +4284,10 @@ FIELDS = [
      "The length of one brick or block. Stone: the length of an average stone."),
     ("Walling", 'height', "B   Height", 1.0, 5000.0, 1, " mm",
      "The height of one brick or block. Stone: an average course (or stone) height."),
-    ("Walling", 'depth', "C   Depth", 0.05, 2000.0, 2, " mm",
-     "How far the bricks or stones stand out from the wall face."),
+    ("Walling", 'depth', "C   Depth (mortar joint depth)", 0.05, 2000.0, 2, " mm",
+     "How far the bricks or stones stand out from the wall face. The wall face behind them is the "
+     "mortar, so this is how deep the mortar joints are: more for deep, raked-out joints, less for "
+     "flush ones. For printing, deep enough to show at your scale (20 mm is about 0.25 mm in OO)."),
     ("Walling", 'joint', "D   Mortar joint", 0.0, 500.0, 2, " mm",
      "The gap between units. Dry-stone and slate: the gaps between stones. For printing, about "
      "your nozzle width or more."),
@@ -4259,7 +4386,7 @@ FIELDS = [
 # ---------------------------------------------------------------------------
 # The key: a drawing showing what each lettered size is (laid out like 3D Subframe's)
 # ---------------------------------------------------------------------------
-KEY_NOTES = ["A  brick or stone length", "B  brick or stone height", "C  stands out from the wall",
+KEY_NOTES = ["A  brick or stone length", "B  brick or stone height", "C  stands out from the wall (mortar joint depth)",
              "D  mortar joint", "E  header width (brick end)", "F  quoin long face", "G  quoin short face",
              "H  quoin height", "I  quoins stand out further", "J  coping height",
              "K  coping stone length", "L  coping overhang", "M  rubble pile length", "N  rubble pile width",
@@ -5984,10 +6111,24 @@ def _course_from_ground(p, fr):
     p['_course_r0'] = k if k >= 0 else k % 3600       # (the bond repeats, so counting on is fine)
 
 
-def _carry_round_corner(fr, grow, p):
+def _carry_round_corner(fr, grow, p, flat=False):
     """Makes the face longer by a brick's depth at the ends marked by _corner_ends, so the walling
-    covers the corner where the next wall's walling stands out."""
+    covers the corner where the next wall's walling stands out. flat: the bricks stay on this face
+    (nothing past its edge), but the courses are still laid out from the corner."""
     if not grow or p.get('swap'):
+        return
+    if flat:
+        lo = hi = None
+        u = fr['u']
+        for g in grow:
+            par = g[3] if len(g) > 3 else 0
+            du = u.x() * g[0] + u.y() * g[1] + u.z() * g[2]
+            if du > 0.5:
+                hi = par
+            elif du < -0.5:
+                lo = par
+        if lo is not None or hi is not None:
+            p['_corners'] = (lo, hi, 0.0)
         return
     try:
         if fr['v'].z() < 0.999:
@@ -6000,10 +6141,20 @@ def _carry_round_corner(fr, grow, p):
     u = fr['u']
     eps = max(fr['W'], fr['H']) * 1e-6 + 1e-12
     lo = hi = None
+    d_lo = d_hi = d
+    mitre = {}
     for g in grow:
         par = g[3] if len(g) > 3 else 0
+        mk = g[4] if len(g) > 4 else 0.0
         g = g[:3]
         du = u.x() * g[0] + u.y() * g[1] + u.z() * g[2]
+        if mk > 0 and abs(du) > 0.5:
+            # a mitre: laid from the corner, nothing past the end; the corner bricks are cut on it
+            if du > 0.5:
+                hi, d_hi, mitre['hi'] = par, 0.0, mk
+            else:
+                lo, d_lo, mitre['lo'] = par, 0.0, mk
+            continue
         if du > 0.5:
             hi = par
             W = fr['W']
@@ -6016,7 +6167,9 @@ def _carry_round_corner(fr, grow, p):
             fr['origin'] = fr['origin'] - u * d
             fr['W'] = fr['W'] + d
     if lo is not None or hi is not None:
-        p['_corners'] = (lo, hi, d)
+        p['_corners'] = (lo, hi, d if not mitre else (d_lo, d_hi))
+    if mitre:
+        p['_mitre'] = mitre
 
 
 def _to_metres(p):
@@ -6279,12 +6432,26 @@ class BrickBlockStudioTool(Tool):
             p = _to_metres(p)        # every size in the window is in mm; this wall is drawn in metres
         if p.get('soldier_len') is None:
             p['soldier_len'] = p['length']
-        _carry_round_corner(fr, getattr(face, 'grow', None), p)
+        _carry_round_corner(fr, getattr(face, 'grow', None), p, flat=getattr(face, 'grow_flat', False))
         W, H = fr['W'], fr['H']
         gap = p.get('hole_gap') or 0.0
         holes = [_grow(h, gap) if gap > 0 else h for h in fr['holes']]   # units stop a hair short
         _course_from_ground(p, fr)
         res = wall_units(p, W, H, fr['outline'], holes, fr['hole_ids'], self._seed(fr))
+        mit = p.get('_mitre')
+        if mit:
+            # the units at a mitred corner: cut on the mitre (see mitre_unit_solid)
+            eps_ = max(W, H) * 1e-6 + 1e-9
+            lo_k, hi_k = mit.get('lo', 0.0), mit.get('hi', 0.0)
+            for i_, u in enumerate(res['walling']):
+                if len(u) > 4 and u[4]:
+                    continue
+                xs_ = [q[0] for q in u[0]]
+                at_lo = lo_k and min(xs_) <= eps_
+                at_hi = hi_k and max(xs_) >= W - eps_
+                if at_lo or at_hi:
+                    extra_ = ('mitre', lo_k if at_lo else 0.0, hi_k if at_hi else 0.0, W, eps_)
+                    res['walling'][i_] = type(u)(list(u[:4]) + [extra_]) if isinstance(u, (list, tuple)) else u
         to_w = self._mapper(fr)
         mat = p['material']
         mat_name = MATERIAL_NAMES.get(mat, "Walling").split(" (")[0]
@@ -6341,12 +6508,13 @@ class BrickBlockStudioTool(Tool):
         self._remember(vals)
         vals['soldier_holes'] = None          # every opening in every wall is dressed
         try:
-            if getattr(getattr(dialog, 'cb_corners', None), 'isChecked', lambda: False)():
-                _corner_ends(walls)           # close up the outside corners
-            else:
-                for w in walls:               # off: each wall's bricks stay on its own face (prints flat)
-                    for f in [w['face']] + list(getattr(w['face'], 'more', [])):
-                        f.grow = []
+            meet = getattr(getattr(dialog, 'cb_corners', None), 'isChecked', lambda: False)()
+            # the courses are laid out from each outside corner either way (no cut slivers there);
+            # ticked, the bricks also carry on round the corner, closing it up
+            _corner_ends(walls)
+            for w in walls:               # off: each wall's bricks stay on its own face (prints flat)
+                for f in [w['face']] + list(getattr(w['face'], 'more', [])):
+                    f.grow_flat = not meet
         except Exception:
             pass
         jobs, bad, units = [], [], 0

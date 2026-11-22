@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.28"  # 3.28: video link for Bridges & Arches; 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.31"  # 3.31: the Make... menu only lists the jobs whose plugins are all installed (Make a shop needs Shop Fronts, Make a low relief building needs Low Relief); 3.30: Low Relief button (Scale & print), and a "Make a low relief building" job with a Low relief step before Scale & print; 3.29: Shop Fronts button (Doors & windows), and a "Make a shop" job with a Shop front step after the windows; 3.28: video link for Bridges & Arches; 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -91,6 +91,7 @@ PLUGINS = [
     ("3D Quick Links", "Ctrl+Alt+A", "Links", "links"),
     ("3D Wood Planking", "Ctrl+Alt+O", "Planks", "planks"),
     ("3D Period Doors", "Ctrl+Alt+D", "Doors", "door"),
+    ("3D Shop Fronts", "Ctrl+Alt+Shift+S", "Shop front", "shopfront"),
     ("3D Fences & Gates", "Ctrl+Alt+F", "Fences", "fence"),
     ("3D Wrap", "Ctrl+Alt+U", "Wrap", "wrap"),
     ("3D Chimneys", "Ctrl+Alt+H", "Chimneys", "chimney"),
@@ -111,6 +112,7 @@ PLUGINS = [
     ("3D Check for Updates", "Ctrl+Alt+Shift+U", "Updates", "update"),
     ("3D Card Kit", "Ctrl+Alt+Shift+K", "Card kit", "cardkit"),
     ("3D Realistic Wall", "Ctrl+Shift+W", "Stone face", "realwall"),
+    ("3D Low Relief", "Ctrl+Alt+Shift+L", "Low relief", "lowrelief"),
 ]
 
 
@@ -408,6 +410,26 @@ def make_icon(kind):
             p.drawRect(QRectF(16.7, y, 3.8, 8))
         p.setPen(QPen(QColor(30, 30, 30), 2.0))
         p.drawPoint(QPointF(20.5, 16.5))
+    elif kind == "shopfront":
+        # a little Victorian shop: cornice, fascia with its sign, two windows and a door
+        maroon, gold = QColor(110, 34, 46), QColor(214, 178, 84)
+        p.setPen(QPen(QColor(60, 16, 24), 1.0))
+        p.setBrush(maroon)
+        p.drawRect(QRectF(2, 4, 28, 3))                          # cornice
+        p.drawRect(QRectF(3, 7, 26, 7))                          # fascia
+        p.drawRect(QRectF(3, 14, 26, 16))                        # the shop front
+        p.setPen(QPen(gold, 1.2))
+        p.drawLine(QPointF(8, 10.5), QPointF(24, 10.5))          # the name on the sign
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(190, 220, 240))
+        p.drawRect(QRectF(5, 16, 7, 9))                          # windows
+        p.drawRect(QRectF(20, 16, 7, 9))
+        p.setBrush(QColor(80, 22, 32))
+        p.drawRect(QRectF(13.5, 16, 5, 14))                      # door
+        p.setBrush(QColor(190, 220, 240))
+        p.drawRect(QRectF(14.5, 17, 3, 5))
+        p.setBrush(QColor(205, 198, 182))
+        p.drawRect(QRectF(12.5, 29, 7, 2))                       # step
     elif kind == "planks":
         p.setPen(QPen(QColor(80, 50, 25), 1.0))
         for i, w in enumerate((5.5, 6.5, 5.0, 6.0)):
@@ -675,6 +697,26 @@ def make_icon(kind):
         p.setPen(dark)
         p.setBrush(QColor(225, 225, 220))
         p.drawRect(QRectF(5, 25, 22, 4))
+    elif kind == "lowrelief":
+        # a house front cut off shallow behind its face: gable front, short side, red cut line
+        p.setPen(QPen(QColor(90, 40, 28), 1.0))
+        p.setBrush(QColor(176, 84, 56))
+        p.drawPolygon(QPolygonF([QPointF(3, 29), QPointF(3, 14), QPointF(13, 5), QPointF(23, 14),
+                                 QPointF(23, 29)]))                                  # the front, gable end
+        p.setBrush(QColor(140, 64, 42))
+        p.drawPolygon(QPolygonF([QPointF(23, 29), QPointF(23, 14), QPointF(29, 11), QPointF(29, 26)]))  # short side
+        p.setBrush(QColor(95, 95, 105))
+        p.drawPolygon(QPolygonF([QPointF(13, 5), QPointF(19, 2), QPointF(29, 11), QPointF(23, 14)]))   # roof
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(235, 240, 245))
+        p.drawRect(QRectF(6, 17, 5, 5))
+        p.drawRect(QRectF(15, 17, 5, 5))
+        p.setBrush(QColor(60, 40, 30))
+        p.drawRect(QRectF(10.5, 23, 5, 6))                                          # door
+        dp = QPen(QColor(220, 30, 30), 1.6)
+        dp.setStyle(Qt.DashLine)
+        p.setPen(dp)
+        p.drawLine(QPointF(29, 0.5), QPointF(29, 31))                                # the cut
     elif kind == "realwall":
         # a wall of rough stones, carved in
         p.setPen(QPen(QColor(70, 60, 50), 1.0))
@@ -852,11 +894,11 @@ DIVIDER = "|"          # in the saved layout: a divider between groups of button
 GROUPS = [
     ("Walls", ["3D Brick & Block Studio", "3D Realistic Wall", "3D Wrap", "3D Wood Planking", "3D Subframe", "3D Floor Plan"]),
     ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
-    ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows"]),
+    ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows", "3D Shop Fronts"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
     ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
-    ("Scale & print", ["3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In", "3D Card Kit"]),
+    ("Scale & print", ["3D Low Relief", "3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In", "3D Card Kit"]),
     ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar", "3D Check for Updates"]),
 ]
 MAIN_ID = "main"
@@ -1519,6 +1561,18 @@ PROJECTS = [
         (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
         ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a low relief building", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
+        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
+        ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
+        ("3D Layers & Colours", "Colours"), ("3D Low Relief", "Low relief"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a shop", [
+        ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Shop Fronts", "Shop front"), ("3D Period Doors", "Doors"),
+        ("3D Chimneys", "Chimneys"), (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
+        ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Make a station building", [
         ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
         ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
@@ -1568,7 +1622,7 @@ PROJECTS = [
 ]
 # the Make... menu, sorted into groups (any job not listed here goes under 'More')
 PROJECT_GROUPS = [
-    ("Buildings", ["Make a building", "Make a station building", "Make a goods shed or engine shed",
+    ("Buildings", ["Make a building", "Make a low relief building", "Make a shop", "Make a station building", "Make a goods shed or engine shed",
                    "Make a timber building", "Make a tin shed", "Make a factory chimney"]),
     ("Railway & outside", ["Make a bridge or arches", "Make a station canopy", "Make fences and gates"]),
     ("Locos, wagons & parts", ["Make a riveted part (loco or wagon)", "Make a boiler with a dome"]),
@@ -1640,11 +1694,23 @@ def add_make_button(tb, win):
     menu = QMenu(btn)
     menu.setObjectName(TOOLBAR_NAME + "_makemenu")
     steps_of = dict(PROJECTS)
+
+    def can_do(name):
+        """Every plugin the job needs is installed (a choice step needs just one of its plugins)."""
+        try:
+            for plug, _note in steps_of[name]:
+                opts = [p_ for p_, _n in plug] if isinstance(plug, list) else [plug]
+                if not any(find_tool_class(o) is not None for o in opts):
+                    return False
+        except Exception:
+            return True
+        return True
+    steps_of = {n: st for n, st in steps_of.items() if can_do(n)}
     listed = set()
     groups = [(g, [n for n in names if n in steps_of]) for g, names in PROJECT_GROUPS]
     for g, names in PROJECT_GROUPS:
         listed.update(names)
-    rest = [n for n, _ in PROJECTS if n not in listed]
+    rest = [n for n, _ in PROJECTS if n not in listed and n in steps_of]
     if rest:
         groups.append(("More", rest))
     for g, names in groups:
@@ -2990,7 +3056,7 @@ EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
               "pieces_in", "blend", "subframe", "floor_plan", "openings", "plugins_toolbar",
-              "update_checker", "realistic_wall")
+              "update_checker", "realistic_wall", "shop_fronts")
 EDDY_EXTRA_NAMES = ()
 
 

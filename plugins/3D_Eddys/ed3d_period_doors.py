@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Doors"
-VERSION = "2.11"  # shown in the window title, so you can tell which file is loaded. 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
+VERSION = "2.21"  # shown in the window title, so you can tell which file is loaded. 2.21: faces of the frame missed by the colouring (inside a fanlight arch, behind a brick arch) take the colour of the part they join on to - they showed white; 2.20: the preview no longer draws the block the steps cut out of the plinth (it showed as a big box round the steps); 2.19: the flight of steps down runs right through to the back of the wall too (the doorway is cut to the bottom of the wall, so it left a slot behind the steps), and cuts the plinth under it to match; 2.18: the doorstep runs right through to the back of the wall (it stopped at the wall face, leaving a slot under the door when printed), and a Mortar joint depth setting (AC) for brick steps, heads and arches (it was always 3 mm); 2.17: the steps allow for a building that has been scaled in IngeTrazo (they came out too tall), and stop at the bottom of the plinth in front of the door; 2.16: the steps go down to the bottom of the building (its plinth), not to 0 - a building standing above 0 had them going on below the plinth; 2.15: the steps go down to the ground again (2.14 stopped them on top of the plinth - too short); 2.13: the steps down no longer go deeper each time the wall is built again (the ground is found from the plain wall, not its built-in steps); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the doors are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: a window built into the same wall keeps its own colours (brick head and all) when the doors are built again
 
 
 def _ed3d_organise(scene, group):
@@ -97,7 +97,7 @@ DEFAULTS = {
     'flight': True, 'flight_to': 'ground', 'cut_below': True, 'rise_max': 180.0, 'going': 280.0,
     'head': 'brick', 'head_h': 215.0, 'head_p': 10.0, 'bearing': 100.0,
     'keystone': False, 'key_w': 150.0, 'key_up': 40.0, 'key_p': 15.0,
-    'brick_w': 102.5, 'brick_t': 65.0, 'joint': 10.0,
+    'brick_w': 102.5, 'brick_t': 65.0, 'joint': 10.0, 'joint_d': 3.0,
 }
 INT_KEYS = ('cols', 'rows', 'cols_b', 'rows_b', 'leaves', 'fan_cols')
 CHOICE_KEYS = ('style', 'top', 'panel', 'hinge', 'fanlight', 'arch_bars', 'step', 'head', 'flight_to')
@@ -1031,13 +1031,22 @@ def boarded_leaf(R, v, zb, zf, style, hinge_right, ov):
     return [s for s in out if s], info
 
 
+def _step_back(v):
+    """Where the doorstep and the steps down start at the back: the back of the wall (they sit in
+    the bottom of the doorway, which is cut right down to the bottom of the wall, so stopping at
+    the wall face would leave a slot through the wall when printed)."""
+    return min(v.get('_base', 0.0), v.get('_base_sh', v.get('_base', 0.0)))
+
+
 def build_step(sh, v, fd):
     """A doorstep in the bottom of the opening, standing out from the wall."""
     x0, x1, y0, _ = sh['box']
     F = fd + v['step_p']
     xa, xb = x0 - v['horn'], x1 + v['horn']
     h = v['step_h'] if v['step'] == 'stone' else v['brick_w']
-    b = v.get('_base_sh', v.get('_base', 0.0))
+    # the step sits in the bottom of the doorway, so it runs right through to the back of the wall
+    # (stopping at the wall face left a slot under the door, through the wall, when printed)
+    b = _step_back(v)
     sec = [(b, y0), (F, y0), (F, y0 + h), (b, y0 + h)]
     if v['step'] == 'stone':
         return [along_x(sec, xa, xb)]
@@ -1045,10 +1054,17 @@ def build_step(sh, v, fd):
     J = v['joint']
     for a, c in _soldiers(xa, xb, v['brick_t'] + J, J):
         out.append(along_x(sec, a, c))
-    k = 3.0
+    k = joint_depth(v, F - b)
     mort = [(b, y0 + 1.0), (F - k, y0 + 1.0), (F - k, y0 + h - k), (b, y0 + h - k)]
     out.append(_mortar(along_x(mort, xa + 1.0, xb - 1.0)))
     return out
+
+
+def joint_depth(v, room):
+    """How far the mortar sits back from the face of the bricks (the depth of the joints), kept
+    inside the brickwork it's in."""
+    k = float(v.get('joint_d', 3.0) or 0.0)
+    return max(0.2, min(k, 0.8 * max(1.0, room)))
 
 
 def flight_count(v):
@@ -1070,7 +1086,7 @@ def build_flight(sh, v, fd):
     F = fd + v['step_p']
     g = max(50.0, v.get('going', 280.0))
     xa, xb = x0 - v['horn'], x1 + v['horn']
-    b = v.get('_base_sh', v.get('_base', 0.0))
+    b = _step_back(v)                       # right through to the back of the wall, like the doorstep
     yg = y0 - n * r
     sec = [(b, yg), (F + n * g, yg)]
     for i in range(n, 0, -1):
@@ -1099,7 +1115,7 @@ def step_cutter(sh, v, fd):
     F = fd + v['step_p']
     g = max(50.0, v.get('going', 280.0))
     xa, xb = x0 - v['horn'], x1 + v['horn']
-    b = v.get('_base_sh', v.get('_base', 0.0))
+    b = _step_back(v)
     yg = y0 - n * r
     sec = [(b, yg - 1.0), (F + n * g, yg - 1.0), (F + n * g, y0 + hs), (b, y0 + hs)]
     so = along_x(sec, xa, xb)
@@ -1133,15 +1149,107 @@ def _building_low(scene, g):
         for gg, m in pl:
             if id(gg) in skip:
                 continue
-            mesh = getattr(gg, 'mesh', None)
-            for f in _items(getattr(mesh, 'faces', None)):
-                for p in _items(getattr(f, 'vertices', None)):
-                    q = _pos(p)
-                    if q is not None:
-                        z = _wmap(m, q)[2]
-                        low = z if low is None else min(low, z)
+            rec = wall_record(gg)
+            if rec:
+                # a wall with windows, doors or a shop front built in: the plain wall kept with it,
+                # not its built-in steps (they made the steps go deeper every time it was built)
+                pts = [p for pts_, _h in rec['orig'] for p in pts_]
+            else:
+                pts = [q for q in (_pos(p) for f in _items(getattr(getattr(gg, 'mesh', None), 'faces', None))
+                                   for p in _items(getattr(f, 'vertices', None))) if q is not None]
+            for q in pts:
+                z = _wmap(m, tuple(q))[2]
+                low = z if low is None else min(low, z)
         return low
     return None
+
+
+def _surface_below(scene, g, pc, nw, uw, half, zmax):
+    """(height, group name): the top of whatever the steps would stand on - the highest face of the
+    building facing up (not the plugins' own work) under points just in front of the doorway, below
+    the door. A base plate the building stands on is the ground, so the steps stop on top of it, not
+    at its bottom. (None, None) if there's nothing there."""
+    best, name = None, None
+    for t in _items(getattr(scene, 'groups', None)):
+        pl = _placements(t)
+        if not any(gg is g for gg, _m in pl):
+            continue
+        skip = _plugin_built([t])
+        probes = [v_add(v_add(pc, v_mul(nw, d)), v_mul(uw, s))
+                  for d in (0.005, 0.03, 0.08) for s in (-0.5 * half, 0.0, 0.5 * half)]
+        for gg, m in pl:
+            if id(gg) in skip:
+                continue
+            rec = wall_record(gg)
+            if rec:
+                faces = [[tuple(p) for p in pts_] for pts_, _h in rec['orig']]
+            else:
+                faces = [[q for q in (_pos(p) for p in _items(getattr(f, 'vertices', None))) if q is not None]
+                         for f in _items(getattr(getattr(gg, 'mesh', None), 'faces', None))]
+            for fpts in faces:
+                if len(fpts) < 3:
+                    continue
+                wp = [_wmap(m, tuple(q)) for q in fpts]
+                if _newell(wp)[2] < 0.9:
+                    continue                       # not a face looking up
+                zf_ = sum(p[2] for p in wp) / len(wp)
+                if zf_ > zmax - 1e-4 or (best is not None and zf_ <= best):
+                    continue
+                poly2 = [(p[0], p[1]) for p in wp]
+                if any(_inside_pt((q[0], q[1]), poly2) for q in probes):
+                    best, name = zf_, str(getattr(gg, 'name', '') or 'a group with no name')
+        return best, name
+    return None, None
+
+
+def _scale_along(m, d):
+    """How much a group's placement stretches a (unit) direction: 1 unless the group has been scaled."""
+    if m is None:
+        return 1.0
+    try:
+        q = m.mapVector(QVector3D(*d))
+        k = math.sqrt(q.x() ** 2 + q.y() ** 2 + q.z() ** 2)
+    except Exception:
+        a_, b_ = _wmap(m, (0.0, 0.0, 0.0)), _wmap(m, d)
+        k = v_len(v_sub(b_, a_))
+    return k if k > 1e-9 else 1.0
+
+
+def _bottom_under(scene, g, pc, nw, uw, half, ztop):
+    """(height, group name): the underside of whatever the steps stand in front of - the nearest face
+    looking down, below the top of the plinth, under the same points just in front of the doorway. So
+    the steps stop at the bottom of the plinth that's really there, whatever else goes lower."""
+    best, name = None, None
+    for t in _items(getattr(scene, 'groups', None)):
+        pl = _placements(t)
+        if not any(gg is g for gg, _m in pl):
+            continue
+        skip = _plugin_built([t])
+        probes = [v_add(v_add(pc, v_mul(nw, d)), v_mul(uw, s))
+                  for d in (0.005, 0.03, 0.08) for s in (-0.5 * half, 0.0, 0.5 * half)]
+        for gg, m in pl:
+            if id(gg) in skip:
+                continue
+            rec = wall_record(gg)
+            if rec:
+                faces = [[tuple(p) for p in pts_] for pts_, _h in rec['orig']]
+            else:
+                faces = [[q for q in (_pos(p) for p in _items(getattr(f, 'vertices', None))) if q is not None]
+                         for f in _items(getattr(getattr(gg, 'mesh', None), 'faces', None))]
+            for fpts in faces:
+                if len(fpts) < 3:
+                    continue
+                wp = [_wmap(m, tuple(q)) for q in fpts]
+                if _newell(wp)[2] > -0.9:
+                    continue                       # not a face looking down
+                zf_ = sum(p[2] for p in wp) / len(wp)
+                if zf_ >= ztop - 1e-4 or (best is not None and zf_ <= best):
+                    continue
+                poly2 = [(p[0], p[1]) for p in wp]
+                if any(_inside_pt((q[0], q[1]), poly2) for q in probes):
+                    best, name = zf_, str(getattr(gg, 'name', '') or 'a group with no name')
+        return best, name
+    return None, None
 
 
 def door_drop(frame, poly, mesh, v, scene=None, group=None):
@@ -1165,8 +1273,26 @@ def door_drop(frame, poly, mesh, v, scene=None, group=None):
             vz = _wvec(m, V)[2]
             if vz < 0.5:
                 return 0.0
+            vz = vz * _scale_along(m, V)       # a building group that has been scaled
             low = _building_low(scene, group) if scene is not None and group is not None else None
-            zg = 0.0 if low is None else min(0.0, low)
+            zg = 0.0 if low is None else low     # the bottom of the building, even if it stands above 0
+            try:
+                xs_ = [q[0] for q in poly]
+                xc_ = (min(xs_) + max(xs_)) / 2.0
+                pc_ = _wmap(m, v_add(O, v_add(v_mul(U, xc_ * SCALE), v_mul(V, y0 * SCALE))))
+                top_, _nm = _surface_below(scene, group, pc_, v_norm(_wvec(m, N)), v_norm(_wvec(m, U)),
+                                           (max(xs_) - min(xs_)) / 2.0 * SCALE, pw[2])
+            except Exception:
+                top_ = None
+            if top_ is not None and top_ > zg + 0.02:
+                # standing on a plinth: the steps stop at the bottom of the plinth in front of the door
+                try:
+                    bot_, _bn = _bottom_under(scene, group, pc_, v_norm(_wvec(m, N)), v_norm(_wvec(m, U)),
+                                              (max(xs_) - min(xs_)) / 2.0 * SCALE, top_)
+                except Exception:
+                    bot_ = None
+                if bot_ is not None:
+                    zg = bot_
             return max(0.0, (pw[2] - zg) / SCALE / vz)
         else:
             zlow = _mesh_low_z(mesh) if mesh is not None else None
@@ -1596,7 +1722,7 @@ def build_head(sh, v, fd):
                 chord = step * r_out / max(r_in, 1.0)
                 sag = chord * chord / (8.0 * r_out)
                 if mb > ma:
-                    out.append(_mortar(_band_piece(sh, ma, mb, hh - 1.0 - sag, zb, zfront - 3.0, inset=1.0)))
+                    out.append(_mortar(_band_piece(sh, ma, mb, hh - 1.0 - sag, zb, zfront - joint_depth(v, zfront - zb), inset=1.0)))
         if key:
             out.append(_keystone_arch(sh, v, hh, zb, zfront))
         return out
@@ -1617,7 +1743,7 @@ def build_head(sh, v, fd):
         for a, b in runs:
             out.append(prism([(a, y1), (b, y1), (b, y1 + hh), (a, y1 + hh)], zb, zfront))
         out.append(_mortar(prism([(xa + 1, y1), (xb - 1, y1), (xb - 1, y1 + hh - 3),
-                                  (xa + 1, y1 + hh - 3)], zb, zfront - 3.0)))
+                                  (xa + 1, y1 + hh - 3)], zb, zfront - joint_depth(v, zfront - zb))))
     if key:
         out.append(_flat_keystone(cx, y1, hh, v, zb, zfront))
     return out
@@ -2457,7 +2583,7 @@ def preview_items(sh, v):
 
     items = []
     for grp, sols in parts.items():
-        if grp == 'info':
+        if grp in ('info', 'cutter'):         # the cutter only cuts the plinth: it's never built
             continue
         for s in sols:
             if getattr(s, 'mortar', False):
@@ -3216,7 +3342,7 @@ def _wall_meshes(scene, top=None):
 
 # groups the plugins build (and everything inside them) aren't walls: the subframe and its glazing
 # frames and trusses, windows, doors and so on - their holes aren't openings to fill
-NOT_WALLS = ("subframe", "glazing", "truss", "window", "door", "gutter", "downpipe", "chimney",
+NOT_WALLS = ("subframe", "glazing", "truss", "window", "door", "shop front", "gutter", "downpipe", "chimney",
              "canopy", "fence", "gate", "pipe", "barge", "finial", "fascia", "soffit")
 
 
@@ -3303,7 +3429,7 @@ def solids_from_rec(data):
     return out
 
 
-_KEEP_TAGS = ('part', 'kind', 'mortar')
+_KEEP_TAGS = ('part', 'kind', 'mortar', 'paint')
 
 
 def tagged_to_rec(solids):
@@ -3350,7 +3476,8 @@ def item_solids(item, own_kind):
     # kept by an older version (shape only, no part names), or not kept: made again by the other
     # plugin, so each part gets its own colour (an untagged one was all painted as the frame)
     import sys as _sys
-    want = "ed3d_period_doors" if item.get('kind') == 'door' else "ed3d_period_windows"
+    want = {'door': "ed3d_period_doors", 'shopfront': "ed3d_shop_fronts"}.get(item.get('kind'),
+                                                                          "ed3d_period_windows")
     for nm, mod in list(_sys.modules.items()):
         if nm.endswith(want) and hasattr(mod, 'build_into_wall'):
             try:
@@ -3368,7 +3495,8 @@ def item_solids(item, own_kind):
     if kept:
         return kept
     raise ValueError("it was made by %s, which isn't loaded" %
-                     ("3D Period Doors" if item.get('kind') == 'door' else "3D Period Windows"))
+                     {'door': "3D Period Doors", 'shopfront': "3D Shop Fronts"}.get(item.get('kind'),
+                                                                                  "3D Period Windows"))
 
 
 class _PlainFace:
@@ -4348,7 +4476,8 @@ def below_swap_command(swaps, walls=()):
 # (The same in 3D Period Windows and 3D Period Doors.)
 # ---------------------------------------------------------------------------
 PAINT_RGB = (("mortar", (200, 194, 178)), ("knob", (40, 40, 44)), ("hinge", (40, 40, 44)),
-             ("rail", (40, 40, 44)), ("hanger", (40, 40, 44)), ("brick", (170, 82, 60)),
+             ("lettering", (214, 178, 84)), ("tiling", (40, 86, 70)), ("granite", (150, 146, 148)),
+             ("shop", (96, 30, 40)), ("rail", (40, 40, 44)), ("hanger", (40, 40, 44)), ("brick", (170, 82, 60)),
              ("stone", (205, 198, 182)), ("door", (52, 96, 72)), ("window", (242, 242, 236)))
 
 
@@ -4410,6 +4539,64 @@ def _face_samples(pts, hls, n, U, V, most=24):
     return out
 
 
+def _fill_unpainted(new_mesh, painted, pts_of):
+    """Faces the colouring missed (pieces of a frame split where glazing bars or a head join it,
+    on a curve where no single part lies in exactly the same plane) take the colour of the part
+    they join on to: a coloured neighbour sharing an edge, facing nearly the same way. Only colours
+    just put on from the window / door / shop front are passed on, and never onto a much bigger
+    face, so the wall and its bricks are left as they are."""
+    faces = list(_items(getattr(new_mesh, 'faces', None)))
+    info = {}
+    edge_of = {}
+
+    def key(p):
+        return (round(p[0] * 1e6), round(p[1] * 1e6), round(p[2] * 1e6))
+    for f in faces:
+        pts, hls = pts_of(f)
+        if len(pts) < 3:
+            continue
+        n = _newell(pts)
+        a = 0.0
+        for i in range(len(pts)):
+            a_, b_ = pts[i], pts[(i + 1) % len(pts)]
+            a += 0.5 * v_dot(n, v_cross(a_, b_))
+        info[id(f)] = (f, n, abs(a))
+        for lp in [pts] + hls:
+            for i in range(len(lp)):
+                e = frozenset((key(lp[i]), key(lp[(i + 1) % len(lp)])))
+                edge_of.setdefault(e, []).append(id(f))
+    done = 0
+    for _pass in range(4):
+        changed = False
+        for fid, (f, n, area) in info.items():
+            if fid in painted or getattr(f, 'attrs', None):
+                continue
+            pts, hls = pts_of(f)
+            best = None
+            for lp in [pts] + hls:
+                for i in range(len(lp)):
+                    e = frozenset((key(lp[i]), key(lp[(i + 1) % len(lp)])))
+                    for oid in edge_of.get(e, ()):
+                        if oid == fid or oid not in painted:
+                            continue
+                        of, on_, oa = info[oid]
+                        if v_dot(on_, n) < 0.95 or area > 10.0 * max(oa, 1e-12):
+                            continue
+                        if best is None or v_dot(on_, n) > best[0]:
+                            best = (v_dot(on_, n), of)
+            if best is not None:
+                try:
+                    f.attrs = dict(best[1].attrs)
+                    painted.add(fid)
+                    done += 1
+                    changed = True
+                except Exception:
+                    pass
+        if not changed:
+            break
+    return done
+
+
 def paint_wall(scene, new_mesh, old_mesh, sols):
     """Colours the faces of a wall with its windows / doors built in. Returns the faces painted."""
     import sys as _sys
@@ -4432,7 +4619,8 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
         a = None
         if lc is not None:
             try:
-                row = lc._pick_row(palette, [name], "3D Period Doors" if kind == 'door' else "3D Period Windows")
+                row = lc._pick_row(palette, [name], {'door': "3D Period Doors", 'shopfront': "3D Shop Fronts"}.get(
+                    kind, "3D Period Windows"))
                 if row is not None:
                     # a colour changed in 3D Layers & Colours' own table is used even when the model
                     # already has that material (otherwise the model's material, which may be yours, stays)
@@ -4478,6 +4666,7 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
         return 0
     TOL = 2e-5
     count = 0
+    painted = set()
     for f in _items(getattr(new_mesh, 'faces', None)):
         pts, hls = pts_of(f)
         if len(pts) < 3:
@@ -4510,8 +4699,11 @@ def paint_wall(scene, new_mesh, old_mesh, sols):
         try:
             f.attrs = dict(a)
             count += 1
+            if best is not None:
+                painted.add(id(f))
         except Exception:
             pass
+    count += _fill_unpainted(new_mesh, painted, pts_of)
     return count
 
 
@@ -4639,7 +4831,9 @@ FIELDS = {
     'brick_w': ("Step brick height", 30.0, 300.0, 1, " mm", "Height of a brick-on-edge step (a brick's width)."),
     'brick_t': ("Brick thickness", 20.0, 200.0, 1, " mm", "Width of each brick as seen in a soldier "
                                                           "course, brick arch or brick step."),
-    'joint': ("Mortar joint", 0.0, 30.0, 1, " mm", ""),
+    'joint': ("Mortar joint", 0.0, 30.0, 1, " mm", "How wide the mortar joints are between the bricks."),
+    'joint_d': ("Mortar joint depth", 0.2, 50.0, 1, " mm", "How far the mortar sits back from the face of the "
+                                                           "bricks (brick steps, soldier heads and brick arches)."),
 }
 
 # each size has a letter, shown next to its box and on the 'Sizes' drawing
@@ -4647,7 +4841,7 @@ LETTERS = {'frame_w': 'A', 'frame_d': 'B', 'stile_w': 'C', 'leaf_t': 'D', 'botto
            'lock_w': 'F', 'top_rail': 'G', 'muntin_w': 'H', 'panel_d': 'J', 'board_w': 'K', 'rise': 'L',
            'step_h': 'M', 'step_p': 'N', 'horn': 'P', 'head_h': 'Q', 'head_p': 'R', 'bearing': 'S',
            'key_w': 'T', 'key_up': 'U', 'key_p': 'V', 'brick_w': 'W', 'brick_t': 'X', 'joint': 'Y',
-           'fan_h': 'Z', 'rise_max': 'AA', 'going': 'AB'}
+           'fan_h': 'Z', 'rise_max': 'AA', 'going': 'AB', 'joint_d': 'AC'}
 
 TABS = [
     ("Door", ('style', 'top', 'rise', 'leaves', 'hinge', 'flat', 'bars_back', 'join', 'remove_face',
@@ -4659,7 +4853,7 @@ TABS = [
     ("Fanlight, knob", ('fanlight', 'fan_h', 'transom_w', 'fan_cols', 'knob', 'knob_d', 'knob_p')),
     ("Step && head", ('step', 'step_h', 'step_p', 'horn', 'flight', 'flight_to', 'cut_below', 'rise_max', 'going', 'head', 'head_h', 'head_p', 'bearing',
                       'keystone', 'key_w', 'key_up', 'key_p')),
-    ("Sizes", ('frame_w', 'frame_d', 'leaf_t', 'leaf_set', 'brick_w', 'brick_t', 'joint')),
+    ("Sizes", ('frame_w', 'frame_d', 'leaf_t', 'leaf_set', 'brick_w', 'brick_t', 'joint', 'joint_d')),
 ]
 
 
@@ -4679,12 +4873,13 @@ KEY_NOTES = [('A', 'frame_w', "frame width"), ('B', 'frame_d', "frame stands out
              ('U', 'key_up', "keystone rises above the head"), ('V', 'key_p', "keystone sticks out more"),
              ('W', 'brick_w', "step brick height"), ('X', 'brick_t', "brick thickness"),
              ('Y', 'joint', "mortar joint"), ('Z', 'fan_h', "fanlight height"),
-             ('AA', 'rise_max', "most a step can rise"), ('AB', 'going', "step going (tread)")]
+             ('AA', 'rise_max', "most a step can rise"), ('AB', 'going', "step going (tread)"),
+             ('AC', 'joint_d', "mortar joint depth (set back)")]
 
 
 class DoorKey(QWidget):
     """A drawing that shows what each lettered size is, with what it's set to now."""
-    W_, H_ = 360.0, 1125.0
+    W_, H_ = 360.0, 1140.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -5878,8 +6073,12 @@ class PeriodDoorsTool(Tool):
                     vals = dict(DEFAULTS)
                     vals.update(w_.get('values') or {})
                     for so in got:
-                        so.paint = paint_name(so, w_.get('kind', 'window'), vals)
-                        so.paint_kind = w_.get('kind', 'window')
+                        kd = w_.get('kind', 'window')
+                        if kd not in ('window', 'door') and isinstance(getattr(so, 'paint', None), str):
+                            so.paint_kind = kd           # a shop front: coloured as it was made
+                            continue
+                        so.paint = paint_name(so, kd, vals)
+                        so.paint_kind = kd
                     sols += got
                     kept.append(w_)
                 except ValueError as e:
