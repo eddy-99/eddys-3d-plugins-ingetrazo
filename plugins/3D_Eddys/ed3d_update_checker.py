@@ -16,6 +16,8 @@ Reads IngeTrazo's extension catalog (the same list the Extensions window shows) 
 compares Eddy's entries in it with the ones installed on this computer:
   - Updates ready: a plugin you have, with a newer version in the catalog
   - New plugins: ones you haven't got yet
+Each update says what's new in it: the notes are read from the new copy's own version notes
+(the 'Version 7.13: ...' lines at the top of each plugin), from the version you have onwards.
 Tick the ones you want and click 'Update ticked': each one is downloaded from the address
 the catalog gives, checked against the catalog's SHA-256 fingerprint (a different file is
 refused and nothing is changed), and installed by IngeTrazo's own extension installer.
@@ -38,7 +40,7 @@ import threading
 from tools.base import Tool
 
 PLUGIN_NAME = "3D Check for Updates"
-VERSION = "1.2"           # 1.2: reads IngeTrazo's catalog, checks each download's SHA-256, startup check off by default
+VERSION = "1.3"           # 1.3: says what's new in each update (read from the new copy's own version notes); 1.2: reads IngeTrazo's catalog, checks each download's SHA-256, startup check off by default
 
 GITHUB_OWNER = "eddy-99"
 GITHUB_REPO = "eddys-3d-plugins-ingetrazo"
@@ -177,6 +179,140 @@ def plugin_folders():
     return [d for d in (here, root, os.path.join(root, "3D_Eddys")) if os.path.isdir(d)]
 
 
+# ---------------------------------------------------------------------------
+# What's new: read from each plugin's own version notes
+# ---------------------------------------------------------------------------
+_VERSION_LINE = re.compile(r"""^VERSION\s*=\s*["']([^"']+)["'][ \t]*(?:#(.*))?$""", re.M)
+_NOTE_START = re.compile(r"(?:^\s*|(?<=[;.])\s+)(\d+\.\d+(?:\.\d+)?)\s*:\s")
+_DOC_NOTE = re.compile(r"^Version\s+(\d+(?:\.\d+)*)\s*:\s*(.*?)(?=^Version\s+\d|^\s*$|\Z)", re.M | re.S)
+_NOT_A_NOTE = re.compile(r"[;,.]?\s*shown in the window title,? so you can tell which file is loaded\.?\s*", re.I)
+
+
+def own_version(text):
+    """The plugin's own VERSION = "..." from its source."""
+    m = _VERSION_LINE.search(text or "")
+    return m.group(1).strip() if m else None
+
+
+def version_notes(text):
+    """{version: note} from a plugin's source: the 'Version x.y: ...' paragraphs at the top
+    and the 'x.y: ...; x.x: ...' notes after VERSION = "..."."""
+    notes = {}
+    text = text or ""
+    head = text[:60000]
+    for m in _DOC_NOTE.finditer(head):
+        note = " ".join(m.group(2).split())
+        if note:
+            notes[m.group(1)] = note
+    m = _VERSION_LINE.search(text)
+    comment = (m.group(2) or "") if m else ""
+    comment = _NOT_A_NOTE.sub("; ", comment.replace("\\'", "'").replace('\\"', '"')).strip()
+    starts = list(_NOTE_START.finditer(comment))
+    for i, s in enumerate(starts):
+        end = starts[i + 1].start() if i + 1 < len(starts) else len(comment)
+        note = " ".join(comment[s.end():end].split()).strip(" ;")
+        v = s.group(1)
+        if note and len(note) > len(notes.get(v, "")):
+            notes[v] = note
+    return notes
+
+
+def source_text(data):
+    """The plugin's Python source from a download (a .py file, or a .zip holding one)."""
+    if data[:2] == b"PK":
+        import io
+        import zipfile
+        best = ""
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for n in z.namelist():
+                if n.lower().endswith(".py") and not n.endswith("__init__.py"):
+                    t = z.read(n).decode("utf-8", "replace")
+                    if own_version(t) and len(t) > len(best):
+                        best = t
+        return best
+    return data.decode("utf-8", "replace")
+
+
+def installed_own_version(ident):
+    """The VERSION written in the copy of ``ident`` IngeTrazo installed, or None."""
+    try:
+        from core.extensions import user_plugins_dir
+        target = os.path.join(str(user_plugins_dir()), ident)
+    except Exception:
+        return None
+    paths = []
+    if os.path.isdir(target):
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            paths += [os.path.join(root, f) for f in files
+                      if f.endswith(".py") and f != "__init__.py"]
+    elif os.path.isfile(target + ".py"):
+        paths.append(target + ".py")
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                v = own_version(f.read())
+            if v:
+                return v
+        except Exception:
+            pass
+    return None
+
+
+def whats_new(row):
+    """Fills row['news'] = [(version, note), ...] newest first, for versions after the one you
+    have, and row['own_new'] / row['own_mine'], the plugins' own version numbers. Quietly
+    leaves them empty if the notes can't be read."""
+    row['news'], row['own_new'], row['own_mine'] = [], None, installed_own_version(row['stem'])
+    try:
+        data = fetch(row['url'], MAX_DOWNLOAD)
+        if hashlib.sha256(data).hexdigest() != row['sha']:
+            return
+        text = source_text(data)
+    except Exception:
+        return
+    row['own_new'] = own_version(text)
+    notes = version_notes(text)
+    low = version_key(row['own_mine']) if row['own_mine'] else None
+    high = version_key(row['own_new']) if row['own_new'] else None
+    picked = []
+    for v, note in notes.items():
+        k = version_key(v)
+        if high is not None and k > high:
+            continue
+        if low is not None and k <= low:
+            continue
+        picked.append((k, v, note))
+    picked.sort(reverse=True)
+    if low is None:
+        picked = picked[:1]                  # not sure what you have: just the latest change
+    row['news'] = [(v, note) for _k, v, note in picked[:12]]
+
+
+def news_text(row, limit=None):
+    """One plain line per change: '7.13: ...'."""
+    lines = []
+    for v, note in row.get('news') or []:
+        if limit and len(note) > limit:
+            note = note[:limit].rsplit(" ", 1)[0] + "..."
+        lines.append("%s: %s" % (v, note))
+    return lines
+
+
+def news_html(rows):
+    import html
+    out = []
+    for r in rows:
+        if not r.get('news'):
+            continue
+        a = r.get('own_mine') or r['mine'] or "?"
+        b = r.get('own_new') or r['theirs']
+        out.append("<p><b>%s</b> &nbsp;%s &rarr; %s</p><ul>" % (html.escape(r['name']), html.escape(a), html.escape(b)))
+        out += ["<li><b>%s</b>: %s</li>" % (html.escape(v), html.escape(n)) for v, n in r['news']]
+        out.append("</ul>")
+    return "".join(out)
+
+
 def friendly_error(e):
     t = str(e)
     if "403" in t or "rate limit" in t.lower():
@@ -210,6 +346,11 @@ def check(progress=None):
             a, b = version_key(e["version"]), version_key(mine)
             row['state'] = 'update' if a > b else ('newer_here' if a < b else 'same')
         rows.append(row)
+    for r in rows:
+        if r['state'] == 'update':
+            if progress:
+                progress(len(entries), len(entries), "What's new: " + r['name'])
+            whats_new(r)
     return rows
 
 
@@ -482,7 +623,8 @@ def open_url(target):
 INFO_TEXT = (
     "<b>%s</b> (version %s)<br><br>"
     "Reads IngeTrazo's extension catalog and compares Eddy's plugins in it with the ones on this computer.<br><br>"
-    "<b>Update ready</b> - there's a newer version of a plugin you have.<br>"
+    "<b>Update ready</b> - there's a newer version of a plugin you have. The <b>What's new</b> box "
+    "underneath says what has changed since your version (click a plugin to see just its changes).<br>"
     "<b>New plugin</b> - one you haven't got yet.<br>"
     "<b>Put in by hand</b> - not installed from the catalog; IngeTrazo's Extensions window can switch it.<br>"
     "<b>Yours is newer</b> - nothing to do.<br><br>"
@@ -501,7 +643,7 @@ INFO_TEXT = (
 def make_window(parent=None):
     from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                    QTreeWidget, QTreeWidgetItem, QCheckBox, QMessageBox,
-                                   QHeaderView, QAbstractItemView)
+                                   QHeaderView, QAbstractItemView, QTextBrowser)
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont, QColor, QBrush
 
@@ -527,7 +669,7 @@ def make_window(parent=None):
 
             self.tree = QTreeWidget()
             self.tree.setColumnCount(4)
-            self.tree.setHeaderLabels(["Plugin", "Yours", "In catalog", "What it is"])
+            self.tree.setHeaderLabels(["Plugin", "Yours", "New", "What it is / what's new"])
             self.tree.setRootIsDecorated(True)
             self.tree.setSelectionMode(QAbstractItemView.NoSelection)
             hd = self.tree.header()
@@ -536,7 +678,15 @@ def make_window(parent=None):
             hd.setSectionResizeMode(2, QHeaderView.ResizeToContents)
             hd.setStretchLastSection(True)
             self.tree.itemChanged.connect(lambda *_a: self.count_ticked())
-            lay.addWidget(self.tree, 1)
+            self.tree.itemClicked.connect(self.show_news_for)
+            lay.addWidget(self.tree, 3)
+
+            self.news_head = QLabel("<b>What's new</b>")
+            lay.addWidget(self.news_head)
+            self.news = QTextBrowser()
+            self.news.setOpenExternalLinks(False)
+            self.news.setPlaceholderText("What has changed in each update shows here.")
+            lay.addWidget(self.news, 2)
 
             self.auto = QCheckBox("Check when IngeTrazo starts (at most once a day)")
             self.auto.setChecked(auto_check_on())
@@ -619,11 +769,20 @@ def make_window(parent=None):
                 top.setFirstColumnSpanned(True)
                 for r in sorted(mine, key=lambda r: r['name'].lower()):
                     what = r['about'] or STATE_TEXT.get(r['state'], "")
+                    tip = what
                     if r['state'] in ('newer_here', 'off'):
-                        what = STATE_TEXT[r['state']]
-                    it = QTreeWidgetItem([r['name'], r['mine'] or ("-" if r['state'] != 'new' else ""),
-                                          r['theirs'] or "-", what])
-                    it.setToolTip(3, what)
+                        what = tip = STATE_TEXT[r['state']]
+                    elif r['state'] == 'update':
+                        if r.get('news'):
+                            what = "New: " + r['news'][0][1]
+                            tip = "What's new:\n" + "\n".join(news_text(r))
+                        else:
+                            what = tip = "A newer version (no notes on what changed)"
+                    yours = r.get('own_mine') or r['mine']
+                    new = r.get('own_new') or r['theirs']
+                    it = QTreeWidgetItem([r['name'], yours or ("-" if r['state'] != 'new' else ""),
+                                          new or "-", what])
+                    it.setToolTip(3, tip)
                     if r['state'] in ('update', 'new'):
                         it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                         it.setCheckState(0, Qt.Checked if tick else Qt.Unchecked)
@@ -646,6 +805,22 @@ def make_window(parent=None):
                 text = "All your plugins are up to date (checked %s)." % time.strftime("%H:%M")
             self.busy(False, text)
             self.count_ticked()
+            self.show_news_for(None)
+
+        def show_news_for(self, item, _col=0):
+            """The 'What's new' box: every update's changes, or just the one clicked."""
+            from PySide6.QtCore import Qt
+            ups = [r for r in self.rows if r['state'] == 'update']
+            stem = item.data(0, Qt.UserRole) if item is not None else None
+            pick = [r for r in ups if r['stem'] == stem] if stem else ups
+            if stem and not pick:
+                pick = ups                       # clicked something that isn't an update
+            body = news_html(pick)
+            if not body:
+                body = ("<p>No notes on what changed.</p>" if pick else
+                        "<p>Nothing to update.</p>")
+            self.news.setHtml(body)
+            self.news_head.setText("<b>What's new</b>" + (" in %s" % pick[0]['name'] if stem and len(pick) == 1 else ""))
 
         def ticked(self):
             from PySide6.QtCore import Qt
@@ -669,7 +844,7 @@ def make_window(parent=None):
             todo = [r for r in self.rows if r['stem'] in stems]
             if not todo:
                 return
-            names = "\n".join("  %s  %s" % (r['name'], r['theirs']) for r in todo)
+            names = "\n".join("  %s  %s" % (r['name'], r.get('own_new') or r['theirs']) for r in todo)
             if QMessageBox.question(self, PLUGIN_NAME,
                                     "Download and put in place:\n\n%s\n\nYour old copies are kept in the "
                                     "Plugin backups folder." % names) != QMessageBox.Yes:
@@ -695,7 +870,7 @@ def make_window(parent=None):
             done, failed = result
             msg = ""
             if done:
-                msg += "Done:\n" + "\n".join("  %s  %s" % (r['name'], r['theirs']) for r in done)
+                msg += "Done:\n" + "\n".join("  %s  %s" % (r['name'], r.get('own_new') or r['theirs']) for r in done)
                 msg += "\n\nRestart IngeTrazo to use the new versions."
             if failed:
                 msg += ("\n\n" if msg else "") + "Not done:\n" + "\n".join(
@@ -704,6 +879,8 @@ def make_window(parent=None):
             for r in done:
                 r['state'] = 'same'
                 r['mine'] = r['theirs']
+                r['own_mine'] = r.get('own_new') or r.get('own_mine')
+                r['news'] = []
             self.show_rows(self.rows)
             if done:
                 self.status.setText("Restart IngeTrazo to use the new versions.")
@@ -761,12 +938,24 @@ def _tell(win, rows):
         bits.append("%d update%s" % (n_up, "" if n_up == 1 else "s"))
     if n_new:
         bits.append("%d new plugin%s" % (n_new, "" if n_new == 1 else "s"))
-    lines = "\n".join("  %s  %s" % (r['name'], r['theirs']) for r in worth_telling(rows)[:8])
+    short, full = [], []
+    for r in worth_telling(rows)[:8]:
+        ver = r.get('own_new') or r['theirs']
+        short.append("%s  %s" % (r['name'], ver))
+        if r['state'] == 'new':
+            short.append("    New plugin")
+            continue
+        notes = news_text(r, 110)
+        if notes:
+            short.append("    " + notes[0])
+            full.append("%s  %s\n%s" % (r['name'], ver, "\n".join("  " + n for n in news_text(r))))
     box = QMessageBox(win)
     box.setWindowTitle(PLUGIN_NAME)
     box.setIcon(QMessageBox.Information)
     box.setText("Eddy's 3D plugins: %s ready." % " and ".join(bits))
-    box.setInformativeText(lines)
+    box.setInformativeText("\n".join(short))
+    if full:
+        box.setDetailedText("What's new\n\n" + "\n\n".join(full))
     show = box.addButton("Show me", QMessageBox.AcceptRole)
     box.addButton("Later", QMessageBox.RejectRole)
     box.setModal(False)
@@ -834,7 +1023,9 @@ EDDY_TIPS = {
     'Info': "What this window does.",
     'Check when IngeTrazo starts (at most once a day)':
         "Checks by itself a little after IngeTrazo opens, and only tells you when something new is ready.",
-    '@tree': "Tick the updates and new plugins you want, then click Update ticked.",
+    '@tree': "Tick the updates and new plugins you want, then click Update ticked. "
+             "Click one to see what's new in it.",
+    '@news': "What has changed in each update, since the version you have.",
 }
 EDDY_TIPS_END = None
 
