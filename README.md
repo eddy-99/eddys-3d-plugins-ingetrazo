@@ -52,15 +52,16 @@ left it.
 ### The easy way: from IngeTrazo, all in one go
 
 1. In IngeTrazo, go to **Extensions**, then **Manage extensions**.
-2. Search **Eddy** and install **3D Check for Updates** first. Then restart IngeTrazo.
-3. Go to **Extensions** in the top bar, click **3D Check for Updates**, then click **Check now**.
+2. Search **Eddy**, click **Download** on **3D Check for Updates**, then **Yes**. Restart IngeTrazo.
+3. Go to **Extensions**, then **Productivity**, then **3D Check for Updates** (or press Ctrl+Alt+Shift+U).
+   It checks straight away.
 4. All the plugins are listed under **New plugins**, already ticked. Untick any you don't want.
-5. Click **Update ticked**, then restart IngeTrazo. You'll find them all under **Extensions** in
+5. Click **Update ticked**, then **Yes**. When it says Done, restart IngeTrazo. You'll find them all under **Extensions** in
    the top bar, in **3D Plugins by Eddy**.
 
 Tip: tick **Check when IngeTrazo starts** and it tells you when something new comes out.
 
-Only want one or two? Search **Eddy** in **Manage extensions** and install just those instead.
+Only want one or two? Search **Eddy** in **Manage extensions** and click **Download** on just those instead.
 
 ### From this page (by hand)
 
