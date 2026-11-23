@@ -42,19 +42,25 @@ Every part they make is a closed, watertight solid with flat faces, ready to pri
 | 3D Quick Links | Ctrl+Alt+A | A small window over the work area with your folders, files and web pages: one click opens them. Keep a set of links for each job or video, add them with the buttons or by dragging them on. |
 | 3D Plugins Toolbar | Ctrl+Alt+B | A toolbar with a button for each plugin, and a "3D Plugins by Eddy" submenu under Extensions. Split it into small toolbars of your own, and make workflow toolbars: the steps for a job (like making a building) in order, any plugin as often as you like, each step with its own note - the next step lights up and each gets a tick as you go. |
 | 3D Better Icons | Ctrl+Alt+Y | Clearer colour icons for IngeTrazo's own toolbar buttons, drawn sharp at any size, with optional names under the icons (Ctrl+Alt+Q turns the names on or off). Remove the file to get the original icons back. |
-| 3D Check for Updates | Ctrl+Alt+Shift+U | Finds new versions of these plugins, and new plugins, in IngeTrazo's extensions catalogue. Tick the ones you want and click Update ticked: each one is checked to make sure it's the real file, then put in for you, with your old copy kept as a backup. Tick "Check when IngeTrazo starts" (off until you tick it) and it tells you, at most once a day, when something new is ready. |
+| 3D Check for Updates | Ctrl+Alt+Shift+U | Finds new versions of these plugins, and new plugins, in IngeTrazo's extensions catalogue. Tick the ones you want and click Update ticked: each one is checked to make sure it's the real file, then put in for you, with your old copy kept as a backup. Install it first and it can put in the whole set in one go. Tick "Check when IngeTrazo starts" (off until you tick it) and it tells you, at most once a day, when something new is ready. |
 
 Every window has pop-up notes on its boxes when you hover over them, and opens where you last
 left it.
 
 ## Installing
 
-### The easy way: from IngeTrazo
+### The easy way: from IngeTrazo, all in one go
 
 1. In IngeTrazo, go to **Extensions**, then **Manage extensions**.
-2. Search **Eddy** and click **Download** on the plugins you want.
-3. Restart IngeTrazo. You'll find them under **Extensions** in the top bar, in **3D Plugins by Eddy**
-   (that menu comes with **3D Plugins Toolbar**, so download that one too).
+2. Search **Eddy** and install **3D Check for Updates** first. Then restart IngeTrazo.
+3. Go to **Extensions** in the top bar, click **3D Check for Updates**, then click **Check now**.
+4. All the plugins are listed under **New plugins**, already ticked. Untick any you don't want.
+5. Click **Update ticked**, then restart IngeTrazo. You'll find them all under **Extensions** in
+   the top bar, in **3D Plugins by Eddy**.
+
+Tip: tick **Check when IngeTrazo starts** and it tells you when something new comes out.
+
+Only want one or two? Search **Eddy** in **Manage extensions** and install just those instead.
 
 ### From this page (by hand)
 
