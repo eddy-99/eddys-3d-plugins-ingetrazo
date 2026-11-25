@@ -31,7 +31,7 @@
                 mono-pitch / lean-to, saltbox, a flat roof with a fall, or gables on the walls you
                 pick. Eaves and verge overhangs, and the gable ends and raised walls under it are
                 filled in to meet it. Each slope is its own piece, ready for Subframe to frame and
-                Roof Tiles to cover. (Shapes without inside corners for now - L, T and U to come.)
+                Roof Tiles to cover. L, T and U shapes (square corners) take a hip or gable roof.
 
 Every wall section, floor and plate is its own plain group, so Scale Studio's Pieces page
 can lay each one flat on the print bed. Sizes are real-world mm, like the other plugins -
@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Floor Plan"
-VERSION = "2.13"  # 2.13: hiding the roof also hides the tiles 3D Roof Tiles put on it
+VERSION = "2.14"  # 2.14: the roof goes on L, T and U shapes too (hip or gable, with valleys where the wings meet); 2.13: hiding the roof also hides the tiles 3D Roof Tiles put on it
 
 
 def _ed3d_organise(scene, group):
@@ -978,12 +978,435 @@ def fill_solid(poly, z0, planes):
     return S.fix()
 
 
+# ---------------------------------------------------------------------------
+# Roofs on L, T and U shapes (any shape with square corners): the shape is covered by the
+# biggest rectangles that fit in it, each gets a roof of its own (hip, or gabled along its
+# length), and where they overlap the highest wins - which makes the valleys by itself
+# ---------------------------------------------------------------------------
+def _inside(poly, q):
+    x, y = q
+    c = False
+    n = len(poly)
+    for i in range(n):
+        (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            c = not c
+    return c
+
+
+def _square_cornered(poly):
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        if abs(a[0] - b[0]) > 1e-6 and abs(a[1] - b[1]) > 1e-6:
+            return False
+    return True
+
+
+def _rects(poly):
+    """The biggest rectangles (x0, y0, x1, y1) that fit in a square-cornered outline."""
+    xs = sorted(set(round(q[0], 6) for q in poly))
+    ys = sorted(set(round(q[1], 6) for q in poly))
+    cell = [[_inside(poly, ((xs[i] + xs[i + 1]) / 2.0, (ys[j] + ys[j + 1]) / 2.0))
+             for j in range(len(ys) - 1)] for i in range(len(xs) - 1)]
+    found = []
+    nx, ny = len(xs) - 1, len(ys) - 1
+    for i0 in range(nx):
+        for i1 in range(i0, nx):
+            for j0 in range(ny):
+                for j1 in range(j0, ny):
+                    if all(cell[i][j] for i in range(i0, i1 + 1) for j in range(j0, j1 + 1)):
+                        found.append((i0, j0, i1, j1))
+    best = [r for r in found if not any(o != r and o[0] <= r[0] and o[1] <= r[1] and o[2] >= r[2]
+                                        and o[3] >= r[3] for o in found)]
+    return [(xs[a], ys[b], xs[c + 1], ys[d + 1]) for a, b, c, d in best]
+
+
+def _on_outline(poly, a, b):
+    """True if the side a-b of a rectangle runs along the outline (for more than 1 mm)."""
+    n = len(poly)
+    for i in range(n):
+        p, q = poly[i], poly[(i + 1) % n]
+        if abs(a[1] - b[1]) < 1e-6 and abs(p[1] - q[1]) < 1e-6 and abs(p[1] - a[1]) < 1e-6:
+            lo, hi = max(min(a[0], b[0]), min(p[0], q[0])), min(max(a[0], b[0]), max(p[0], q[0]))
+        elif abs(a[0] - b[0]) < 1e-6 and abs(p[0] - q[0]) < 1e-6 and abs(p[0] - a[0]) < 1e-6:
+            lo, hi = max(min(a[1], b[1]), min(p[1], q[1])), min(max(a[1], b[1]), max(p[1], q[1]))
+        else:
+            continue
+        if hi - lo > 1.0:
+            return True
+    return False
+
+
+def _clip_cv(poly, conv):
+    """poly cut down to the convex outline conv (counter-clockwise)."""
+    n = len(conv)
+    for i in range(n):
+        a, b = conv[i], conv[(i + 1) % n]
+        poly = clip_half(poly, a, (-(b[1] - a[1]), b[0] - a[0]))
+        if len(poly) < 3:
+            return None
+    return clean(poly)
+
+
+def _minus_cv(polys, cut):
+    """Convex pieces less a convex cut: convex pieces."""
+    out = []
+    n = len(cut)
+    for P in polys:
+        rest = list(P)
+        for i in range(n):
+            a, b = cut[i], cut[(i + 1) % n]
+            inn = (-(b[1] - a[1]), b[0] - a[0])
+            outside = clean(clip_half(rest, a, (-inn[0], -inn[1])))
+            if outside and abs(area2(outside)) > 1e-3:
+                out.append(outside)
+            rest = clip_half(rest, a, inn)
+            if len(rest) < 3:
+                break
+    return out
+
+
+def _union(polys, tol=0.01):
+    """Convex pieces lying side by side joined into outlines (the shared sides taken out)."""
+    key = lambda q: (round(q[0] / tol), round(q[1] / tol))
+    pts = {}
+    for P in polys:
+        for q in P:
+            pts.setdefault(key(q), q)
+    allp = list(pts.values())
+    edges = {}
+    for P in polys:
+        n = len(P)
+        for i in range(n):
+            a, b = P[i], P[(i + 1) % n]
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L < tol:
+                continue
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            mids = []
+            for q in allp:
+                s = (q[0] - a[0]) * ux + (q[1] - a[1]) * uy
+                if tol < s < L - tol and abs((q[0] - a[0]) * uy - (q[1] - a[1]) * ux) < tol:
+                    mids.append((s, q))
+            chain = [a] + [q for s, q in sorted(mids)] + [b]
+            for c, d in zip(chain[:-1], chain[1:]):
+                kc, kd = key(c), key(d)
+                if kc == kd:
+                    continue
+                if edges.get((kd, kc), 0) > 0:
+                    edges[(kd, kc)] -= 1
+                else:
+                    edges[(kc, kd)] = edges.get((kc, kd), 0) + 1
+    nxt = {}
+    for (kc, kd), m in edges.items():
+        for _ in range(m):
+            nxt.setdefault(kc, []).append(kd)
+    loops = []
+    while any(nxt.values()):
+        start = next(k for k, v in nxt.items() if v)
+        loop, k = [start], nxt[start].pop()
+        guard = 0
+        while k != start and guard < 100000:
+            loop.append(k)
+            if not nxt.get(k):
+                break
+            k = nxt[k].pop()
+            guard += 1
+        poly = [pts[k_] for k_ in loop]
+        if len(poly) >= 3 and area2(poly) > 1e-3:
+            c_ = clean(poly)
+            if c_:
+                loops.append(c_)
+    return loops
+
+
+class RoofSurf:
+    """The roof over an L, T or U shape: a roof on each of the biggest rectangles, the highest
+    winning where they overlap. rects: [(rectangle, {side: plane})]."""
+    def __init__(self, rects):
+        self.rects = rects
+        self.regs = [_envelope_regions(R, pl) for R, pl in rects]
+
+    def _in(self, r, q, eps=1e-6):
+        R = self.rects[r][0]
+        return (R[0][0] - eps <= q[0] <= R[2][0] + eps) and (R[0][1] - eps <= q[1] <= R[2][1] + eps)
+
+    def z(self, q, default=None):
+        best = None
+        for r, (R, pl) in enumerate(self.rects):
+            if self._in(r, q):
+                zz = min(_plane_z(p_, q) for p_ in pl.values())
+                best = zz if best is None else max(best, zz)
+        return default if best is None else best
+
+    def cells(self, domain=None):
+        """[(convex region, plane)] covering the roof (or the part of it over domain)."""
+        out = []
+        for r, (R, pl) in enumerate(self.rects):
+            for i, reg in self.regs[r].items():
+                base = _clip_cv(reg, domain) if domain else reg
+                if not base or abs(area2(base)) < 1e-3:
+                    continue
+                pi = pl[i]
+                pieces = [base]
+                for s, (R2, pl2) in enumerate(self.rects):
+                    if s == r:
+                        continue
+                    eps = 1e-6 if s < r else -1e-6     # where two are level, the first keeps it
+                    for j, reg2 in self.regs[s].items():
+                        pj = pl2[j]
+                        cut = _clip_plane(list(reg2), (pj[0] - pi[0], pj[1] - pi[1]), pj[2] - pi[2] + eps)
+                        cut = clean(cut) if len(cut) >= 3 else None
+                        if cut and abs(area2(cut)) > 1e-3:
+                            pieces = _minus_cv(pieces, cut)
+                    if not pieces:
+                        break
+                out += [(pc, pi) for pc in pieces]
+        return out
+
+
+def _plane_key(pl):
+    return (round(pl[0], 6), round(pl[1], 6), round(pl[2], 2))
+
+
+def roof_surfs(p, outline, zw):
+    """(tops, unders, depth by plane key, eaves notes) for a roof on a square-cornered shape."""
+    typ = p.get('roof_type', 'gable_len')
+    if typ not in ('hip', 'gable_len', 'gable_across'):
+        raise ValueError("On an L, T or U shape the roof can be a hip or a gable roof for now - pick "
+                         "'Hip' or 'Gable' as the roof type.")
+    if not _square_cornered(outline):
+        raise ValueError("The roof on a shape with inside corners needs square corners for now "
+                         "(L, T and U shapes).")
+    a = math.tan(math.radians(p['roof_pitch'])) if p['roof_pitch'] > 0 else 0.0
+    b = math.tan(math.radians(p['roof_pitch2'])) if p['roof_pitch2'] > 0 else a
+    if a <= 0:
+        raise ValueError("The roof needs a pitch.")
+    tops, unders, depth = [], [], {}
+    rects = [r + (None,) for r in _rects(outline)]
+    if typ != 'hip' and len(rects) > 1:
+        # gables: the longest block keeps its gables on the outside walls; a wing off its side runs
+        # in only as far as its ridge, so the wing's roof meets it in valleys (no gable inside it).
+        # A wing across it gets its ridge across; one alongside it, a ridge alongside
+        rects.sort(key=lambda r: (-max(r[2] - r[0], r[3] - r[1]), -(r[2] - r[0]) * (r[3] - r[1])))
+        mx0, my0, mx1, my1, _ = rects[0]
+        m_along_x = (mx1 - mx0) >= (my1 - my0)
+        cx, cy = (mx0 + mx1) / 2.0, (my0 + my1) / 2.0
+        fixed = [(mx0, my0, mx1, my1, m_along_x)]
+        seen = set()
+        for x0, y0, x1, y1, _ in rects[1:]:
+            if m_along_x:
+                # off the front or back of the main block
+                if y1 > my1 + 1e-6 and y0 < my1:
+                    y0 = max(y0, cy)
+                elif y0 < my0 - 1e-6 and y1 > my0:
+                    y1 = min(y1, cy)
+                out_ = y1 > my1 + 1e-6 or y0 < my0 - 1e-6
+                along = not (out_ and (x1 - x0) < (y1 - y0))     # a narrow wing off the side: across
+            else:
+                if x1 > mx1 + 1e-6 and x0 < mx1:
+                    x0 = max(x0, cx)
+                elif x0 < mx0 - 1e-6 and x1 > mx0:
+                    x1 = min(x1, cx)
+                out_ = x1 > mx1 + 1e-6 or x0 < mx0 - 1e-6
+                along = out_ and (y1 - y0) < (x1 - x0)
+            k_ = tuple(round(c_, 3) for c_ in (x0, y0, x1, y1))
+            if k_ in seen or x1 - x0 < 1.0 or y1 - y0 < 1.0:
+                continue
+            seen.add(k_)
+            fixed.append((x0, y0, x1, y1, along))
+        rects = fixed
+    for x0, y0, x1, y1, ridge_x in rects:
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        along_x = (x1 - x0) >= (y1 - y0) if ridge_x is None else ridge_x
+        sides = []          # (a, b, tan or None)
+        for k in range(4):
+            A, B = corners[k], corners[(k + 1) % 4]
+            level_x = abs(A[1] - B[1]) < 1e-9          # runs along x: front or back
+            if typ == 'hip':
+                tn = a if level_x else b
+            else:
+                tn = a if level_x == along_x else None  # the long sides slope, the ends are gables
+            sides.append((A, B, tn))
+        # pushed out over the walls where the side is on the outline
+        out_d = [(p['eave_over'] if tn else p['verge_over']) if _on_outline(outline, A, B) else 0.0
+                 for A, B, tn in sides]
+        coords = (y0, x1, y1, x0)
+        if not tops:
+            main_sides = (coords, list(out_d))
+        else:
+            # a wing's side on the same wall line as the first block's side overhangs the same,
+            # so the eaves and verges line up
+            for k in range(4):
+                if out_d[k] > 0 and abs(coords[k] - main_sides[0][k]) < 1e-6 and main_sides[1][k] > 0:
+                    out_d[k] = main_sides[1][k]
+        X0, Y0, X1, Y1 = x0 - out_d[3], y0 - out_d[0], x1 + out_d[1], y1 + out_d[2]
+        R = [(X0, Y0), (X1, Y0), (X1, Y1), (X0, Y1)]
+        tp, up = {}, {}
+        for k, (A, B, tn) in enumerate(sides):
+            if not tn:
+                continue
+            u = _unit(A, B)
+            nx, ny = -u[1], u[0]                       # into the rectangle
+            c = zw - tn * (A[0] * nx + A[1] * ny)
+            dv = p['roof_t'] * math.sqrt(1.0 + tn * tn)
+            up[k] = (tn * nx, tn * ny, c)
+            tp[k] = (tn * nx, tn * ny, c + dv)
+            depth[_plane_key(tp[k])] = dv
+        tops.append((R, tp))
+        # under the roof only over the walls themselves (not out over the eaves), for filling
+        # the gables in
+        unders.append(([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], up))
+    return RoofSurf(tops), RoofSurf(unders), depth, (a, b)
+
+
+def _face_name(pl):
+    """Which way a roof slope faces, from the way it falls."""
+    gx, gy = -pl[0], -pl[1]
+    if abs(gy) >= abs(gx):
+        return "front" if gy < 0 else "back"
+    return "right" if gx > 0 else "left"
+
+
+def build_roof_lshape(p, outline, zw):
+    """The roof on an L, T or U shape: ([Piece], under-roof surface, notes)."""
+    tops, unders, depth, (a, b) = roof_surfs(p, outline, zw)
+    by_plane = {}
+    for reg, pl in tops.cells():
+        by_plane.setdefault(_plane_key(pl), (pl, []))[1].append(reg)
+    pieces, zmax, counts = [], zw, {}
+    for k_, (pl, regs) in sorted(by_plane.items(), key=lambda kv: kv[0]):
+        dv = depth.get(k_, p['roof_t'])
+        for reg in _union(regs):
+            zs_ = [_plane_z(pl, q) for q in reg]
+            if max(zs_) - min(zs_) < 1e-6 and abs(area2(reg)) < 1.0:
+                continue
+            side = _face_name(pl)
+            counts[side] = counts.get(side, 0) + 1
+            pieces.append((side, counts[side], reg, pl, dv, zs_))
+    out = []
+    for kk, (side, num, reg, pl, dv, zs_) in enumerate(pieces):
+        nm = "Roof slope %d (%s%s)" % (kk + 1, side, (" %d" % num) if counts[side] > 1 else "")
+        pc = Piece(nm, 'roof', -2, reg, min(zs_) - dv, max(zs_))
+        pc.custom = slab_on_plane(reg, pl, dv)
+        out.append(pc)
+        zmax = max(zmax, max(zs_))
+    pitches = sorted(set(round(math.degrees(math.atan(t_)), 1) for t_ in (a, b) if t_))
+    if p.get('roof_type') != 'hip':
+        pitches = [round(math.degrees(math.atan(a)), 1)]
+    notes = dict(slopes=len(out), rise=zmax - zw, top=zmax, pitches=pitches)
+    return out, unders, notes
+
+
+def is_eave_wall(unders, a, b, zw):
+    """True if the roof comes down onto the wall whose outside runs a-b (no gable to fill)."""
+    for t_ in (0.02, 0.25, 0.5, 0.75, 0.98):
+        q = (a[0] + t_ * (b[0] - a[0]), a[1] + t_ * (b[1] - a[1]))
+        if unders.z(q, zw) > zw + 0.5:
+            return False
+    return True
+
+
+def fill_solid_l(poly, z0, unders):
+    """fill_solid for the roof on an L, T or U shape: a wall's top following the underside of the roof."""
+    cells = unders.cells(poly)
+    allpl = []
+    for R, pl in unders.rects:
+        allpl += list(pl.values())
+    under = lambda q: unders.z(q, z0)
+    S = PSolid()
+    S.add([(x, y, z0) for x, y in reversed(poly)])
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        ts = {0.0, 1.0}
+        for x_ in range(len(allpl)):
+            for y_ in range(x_ + 1, len(allpl)):
+                p1, p2 = allpl[x_], allpl[y_]
+                fa, fb = _plane_z(p1, a) - _plane_z(p2, a), _plane_z(p1, b) - _plane_z(p2, b)
+                if (fa < -1e-9 and fb > 1e-9) or (fa > 1e-9 and fb < -1e-9):
+                    ts.add(fa / (fa - fb))
+        for R, pl in unders.rects:
+            for k in range(2):
+                for v_ in (R[0][k], R[2][k]):
+                    da, db = a[k] - v_, b[k] - v_
+                    if (da < -1e-9 and db > 1e-9) or (da > 1e-9 and db < -1e-9):
+                        ts.add(da / (da - db))
+        top = []
+        for t_ in sorted(ts):
+            r = (a[0] + t_ * (b[0] - a[0]), a[1] + t_ * (b[1] - a[1]))
+            top.append((r[0], r[1], under(r)))
+        # corners in the middle of a straight run taken out
+        k = 1
+        while k < len(top) - 1:
+            p0, p1_, p2 = top[k - 1], top[k], top[k + 1]
+            d1 = [p1_[j] - p0[j] for j in range(3)]
+            d2 = [p2[j] - p1_[j] for j in range(3)]
+            cr = (d1[1] * d2[2] - d1[2] * d2[1], d1[2] * d2[0] - d1[0] * d2[2], d1[0] * d2[1] - d1[1] * d2[0])
+            if math.sqrt(sum(c_ * c_ for c_ in cr)) < 1e-6 * (1.0 + math.sqrt(sum(c_ * c_ for c_ in d1)) *
+                                                              math.sqrt(sum(c_ * c_ for c_ in d2))):
+                top.pop(k)
+            else:
+                k += 1
+        pts = [(a[0], a[1], z0), (b[0], b[1], z0)] + list(reversed(top))
+        f_ = []
+        for q in pts:
+            if not f_ or max(abs(q[j] - f_[-1][j]) for j in range(3)) > 1e-6:
+                f_.append(q)
+        while len(f_) > 1 and max(abs(f_[0][j] - f_[-1][j]) for j in range(3)) <= 1e-6:
+            f_.pop()
+        if len(f_) >= 3:
+            S.add(f_)
+    by_plane = {}
+    for reg, pl in cells:
+        by_plane.setdefault(_plane_key(pl), (pl, []))[1].append(reg)
+    for pl, regs in by_plane.values():
+        for reg in _union(regs):
+            S.add([(x, y, _plane_z(pl, (x, y))) for x, y in reg])
+    return _weld(S).fix()
+
+
+def _weld(S, tol=1e-4):
+    """Corners of one face lying part way along a side of another get put into that side too, so
+    the solid is closed up with no gaps (slicers like that)."""
+    pts = {}
+    for f in S.faces:
+        for q in f:
+            pts.setdefault(tuple(round(c / tol) for c in q), q)
+    allp = list(pts.values())
+    out = []
+    for f in S.faces:
+        nf = []
+        n = len(f)
+        for i in range(n):
+            a, b = f[i], f[(i + 1) % n]
+            nf.append(a)
+            d = [b[j] - a[j] for j in range(3)]
+            L = math.sqrt(sum(c * c for c in d))
+            if L < tol:
+                continue
+            u = [c / L for c in d]
+            mids = []
+            for q in allp:
+                w = [q[j] - a[j] for j in range(3)]
+                s_ = sum(w[j] * u[j] for j in range(3))
+                if tol < s_ < L - tol:
+                    perp = [w[j] - s_ * u[j] for j in range(3)]
+                    if math.sqrt(sum(c * c for c in perp)) < tol * 10:
+                        mids.append((s_, q))
+            nf += [q for s_, q in sorted(mids)]
+        out.append(nf)
+    S.faces = out
+    return S
+
+
 def build_roof(p, outline, zw, us, names):
     """The roof slopes on top of the walls (zw = the top of the walls, or of the top plate):
-    ([Piece], under-roof planes {side: plane}, notes)."""
+    ([Piece], under-roof planes {side: plane}, notes). On an L, T or U shape the under-roof
+    is a RoofSurf instead."""
     if not is_convex(outline):
-        raise ValueError("The roof can only go on a shape without inside corners for now (a rectangle, or any "
-                         "shape with every corner pointing out). L, T and U roofs are coming next.")
+        return build_roof_lshape(p, outline, zw)
     tans = roof_tans(p, outline)
     n = len(outline)
     ds = [p['eave_over'] if tans[i] else p['verge_over'] for i in range(n)]
@@ -1154,11 +1577,13 @@ def build_plan(p, outline):
             wall_at = {pc.name: (idx, pc) for idx, pc in enumerate(pieces) if pc.kind == 'wall' and pc.storey == kg}
             drop = set()
             for quad, i in wall_quads(outline, t, p['joint'], kg):
-                if i in unders:
+                lshape = isinstance(unders, RoofSurf)
+                if (is_eave_wall(unders, outline[i], outline[(i + 1) % n_out], zw) if lshape
+                        else i in unders):
                     continue                            # the roof slopes down onto this wall
                 parts = split_quad(quad, us[i], p['split_len'], gap)
                 for j, pc in enumerate(parts):
-                    sol = fill_solid(pc, zw, unders)
+                    sol = fill_solid_l(pc, zw, unders) if lshape else fill_solid(pc, zw, unders)
                     rise = max(q[2] for f_ in sol.faces for q in f_) - zw
                     if rise <= 1e-6:
                         continue
@@ -1168,7 +1593,8 @@ def build_plan(p, outline):
                         drop.add(below[0])
                         g_ = Piece("%s - %s with gable%s" % (label, names[i], part_txt), 'gable', kg, pc,
                                    below[1].z0, zw + rise)
-                        g_.custom = fill_solid(pc, below[1].z0, unders)
+                        g_.custom = (fill_solid_l(pc, below[1].z0, unders) if lshape
+                                     else fill_solid(pc, below[1].z0, unders))
                     else:
                         g_ = Piece("%s - Gable on %s%s" % (label, names[i], part_txt), 'gable', kg, pc, zw, zw + rise)
                         g_.custom = sol
@@ -1849,8 +2275,8 @@ INFO_TEXT = ("<b>How to use it</b><br>"
              "(RA), the overhangs at the eaves (RD) and the gable ends (RE) and the thickness (RF). Each slope "
              "is its own piece, and the gable ends (and the raised walls under a lean-to) are built up to meet "
              "it - the roof makes its own gables, so the Gables page is only used for 'Join each gable to its "
-             "wall'. Then frame it with Subframe and cover it with Roof Tiles. For now the roof goes on shapes "
-             "without inside corners (rectangles and the like) - L, T and U shapes are coming.<br><br>"
+             "wall'. Then frame it with Subframe and cover it with Roof Tiles. On L, T and U shapes (square "
+             "corners) the roof can be hip or gable, with valleys where the wings meet.<br><br>"
              "Sizes are real-world mm - Scale Studio takes it down to your model scale.")
 
 

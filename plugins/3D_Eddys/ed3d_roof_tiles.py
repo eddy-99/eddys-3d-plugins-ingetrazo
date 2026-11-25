@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "1.5"  # 1.5: the finials stay on the ridge tiles - one piece to print, not loose bits; 1.4: on a roof that is already there (Floor Plan's roof slopes, Subframe's roof panels) the tiles go straight onto it - no second roof (backing sheet) under them - and into the same group as that slope, so it prints as one piece; 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
+VERSION = "1.7"  # 1.7: on L, T and U roofs the hip tiles stop the tiles only along the hip (no bare strips), tiles no longer cut into bits on odd-shaped slopes (no stray lines), and a wing's ridge gets tiles on both sides; 1.6: hip roofs get hip tiles (the ridge tiles carried down each hip, each slope with its half) and the tiles stop short of them; 1.5: the finials stay on the ridge tiles - one piece to print, not loose bits; 1.4: on a roof that is already there (Floor Plan's roof slopes, Subframe's roof panels) the tiles go straight onto it - no second roof (backing sheet) under them - and into the same group as that slope, so it prints as one piece; 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
 
 
 def _ed3d_organise(scene, group):
@@ -549,6 +549,139 @@ def build_ridge(outline, v, zr0, up=(0.0, 1.0)):
     return out, count
 
 
+def _union(polys, tol=0.001):
+    """Pieces lying side by side joined into outlines (the shared sides taken out)."""
+    key = lambda q: (round(q[0] / tol), round(q[1] / tol))
+    pts = {}
+    for P in polys:
+        for q in P:
+            pts.setdefault(key(q), q)
+    allp = list(pts.values())
+    edges = {}
+    for P in polys:
+        if area2(P) < 0:
+            P = list(reversed(P))
+        n = len(P)
+        for i in range(n):
+            a, b = P[i], P[(i + 1) % n]
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L < tol:
+                continue
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            mids = []
+            for q in allp:
+                s_ = (q[0] - a[0]) * ux + (q[1] - a[1]) * uy
+                if tol < s_ < L - tol and abs((q[0] - a[0]) * uy - (q[1] - a[1]) * ux) < tol:
+                    mids.append((s_, q))
+            chain = [a] + [q for s_, q in sorted(mids)] + [b]
+            for c, d in zip(chain[:-1], chain[1:]):
+                kc, kd = key(c), key(d)
+                if kc == kd:
+                    continue
+                if edges.get((kd, kc), 0) > 0:
+                    edges[(kd, kc)] -= 1
+                else:
+                    edges[(kc, kd)] = edges.get((kc, kd), 0) + 1
+    nxt = {}
+    for (kc, kd), m in edges.items():
+        for _ in range(m):
+            nxt.setdefault(kc, []).append(kd)
+    loops = []
+    while any(nxt.values()):
+        start = next(k for k, v_ in nxt.items() if v_)
+        loop, k = [start], nxt[start].pop()
+        guard = 0
+        while k != start and guard < 100000:
+            loop.append(k)
+            if not nxt.get(k):
+                return None                 # didn't close up: keep the bits as they were
+            k = nxt[k].pop()
+            guard += 1
+        poly = [pts[k_] for k_ in loop]
+        if area2(poly) <= 0:
+            return None                     # a hole: keep the bits as they were
+        c_ = clean(poly)
+        if c_:
+            loops.append(c_)
+    return loops
+
+
+def build_hip(P, Q, m, v, zr0):
+    """This slope's half of the hip tiles down the hip from P to Q (local mm, the slope's
+    outline counter-clockwise so the slope lies to the left of P->Q). m: the direction
+    between the two slopes (x, y, z in this face's terms). The edge is turned to lie level
+    along the top, so the ridge's own maker lays the hip tiles."""
+    dx, dy = Q[0] - P[0], Q[1] - P[1]
+    if math.hypot(dx, dy) < 1.0:
+        return [], 0
+    phi = math.pi - math.atan2(dy, dx)          # P->Q turned to point along -x
+    c, sn = math.cos(phi), math.sin(phi)
+    rot = lambda p: (c * p[0] - sn * p[1], sn * p[0] + c * p[1])
+    Pr, Qr = rot(P), rot(Q)
+    y1 = Pr[1]
+    uy, uz = sn * m[0] + c * m[1], m[2]
+    L = math.hypot(uy, uz)
+    up = (uy / L, uz / L) if L > 1e-9 and uz / L > 0.05 else (0.0, 1.0)
+    rect = [Pr, (Qr[0], y1), (Qr[0], y1 - 10.0), (Pr[0], y1 - 10.0)]
+    vh = dict(v, crest='none', finial='none', _ridge_cuts=())
+    sols, n = build_ridge(rect, vh, zr0, up)
+    back = lambda q: (c * q[0] + sn * q[1], -sn * q[0] + c * q[1], q[2])
+    out = []
+    for so in sols:
+        so = so.mapped(back)
+        so.hip = True
+        out.append(so)
+    return out, n
+
+
+def find_hips(slopes, tol=2.0):
+    """The hips: sloping edges two roof slopes share, where the roof turns down (not a valley).
+    slopes: [[to_world, outline, ...]]. Returns, per slope, [(P, Q, m)] in its own terms."""
+    info = []
+    for s_ in slopes:
+        tw, outline = s_[0], s_[1]
+        O = tw((0.0, 0.0, 0.0))
+        U = v_norm(v_sub(tw((1.0, 0.0, 0.0)), O))
+        V = v_norm(v_sub(tw((0.0, 1.0, 0.0)), O))
+        N = v_norm(v_sub(tw((0.0, 0.0, 1.0)), O))
+        W = [tw((x, y, 0.0)) for x, y in outline]
+        cx = sum(p[0] for p in W) / len(W)
+        cy = sum(p[1] for p in W) / len(W)
+        cz = sum(p[2] for p in W) / len(W)
+        info.append((U, V, N, W, (cx, cy, cz)))
+    near = lambda a, b: v_len(v_sub(a, b)) / SCALE <= tol
+    hips = [[] for _ in slopes]
+    for i, (U, V, N, W, cen) in enumerate(info):
+        n = len(W)
+        for k in range(n):
+            A, B = W[k], W[(k + 1) % n]
+            e = v_sub(B, A)
+            le = v_len(e)
+            if le / SCALE < 10.0:
+                continue
+            if abs(e[2]) / le < 0.02:
+                # level: this slope's own ridge is done by the ridge; one lower down (where a wing's
+                # ridge runs into it) is done like a hip
+                ys = [q[1] for q in slopes[i][1]]
+                pa, pb = slopes[i][1][k], slopes[i][1][(k + 1) % n]
+                if max(pa[1], pb[1]) >= max(ys) - 1.0:
+                    continue
+            for j, (U2, V2, N2, W2, cen2) in enumerate(info):
+                if j == i or v_dot(N, N2) > 0.9999:
+                    continue
+                m2 = len(W2)
+                if not any((near(A, W2[q]) and near(B, W2[(q + 1) % m2])) or
+                           (near(B, W2[q]) and near(A, W2[(q + 1) % m2])) for q in range(m2)):
+                    continue
+                if v_dot(v_sub(cen2, A), N) >= 0:
+                    continue                    # the other slope rises above this one: a valley
+                mw = v_norm(v_add(N, N2))
+                m = (v_dot(mw, U), v_dot(mw, V), v_dot(mw, N))
+                hips[i].append((slopes[i][1][k], slopes[i][1][(k + 1) % n], m))
+                break
+    return hips
+
+
 # ---------------------------------------------------------------------------
 # Laying the tiles
 # ---------------------------------------------------------------------------
@@ -588,6 +721,35 @@ def lay_tiles(outline, holes, v):
         for so in rs:
             so.ridge = True
         solids += rs
+    hip_count = 0
+    if v.get('ridge') and v.get('_hips'):
+        # hip tiles down each hip, the tiles stopped short of them like the ridge
+        a = max(1.0, v['ridge_w'])
+        stopd = a + (cgap if printing else -0.4 * a)
+        zr0 = base if printing else 2.0 * t
+        for P, Q, m in v['_hips']:
+            dx, dy = Q[0] - P[0], Q[1] - P[1]
+            ln = math.hypot(dx, dy)
+            if ln < 1.0:
+                continue
+            nx, ny = -dy / ln, dx / ln              # into the slope (left of P->Q)
+            ux, uy = dx / ln, dy / ln
+            e = max(stopd, 0.0)
+            # only a strip along the hip itself is kept clear of tiles (not the whole slope beyond it)
+            strip = [(P[0] - ux * e - nx * e, P[1] - uy * e - ny * e),
+                     (Q[0] + ux * e - nx * e, Q[1] + uy * e - ny * e),
+                     (Q[0] + ux * e + nx * stopd, Q[1] + uy * e + ny * stopd),
+                     (P[0] - ux * e + nx * stopd, P[1] - uy * e + ny * stopd)]
+            strip = clean(strip)
+            if strip and stopd > 0:
+                tile_parts = [pc for pc in (clean(q_) for p_ in tile_parts
+                                            for q_ in subtract_convex(p_, strip)) if pc]
+            hs, nh = build_hip(P, Q, m, v, zr0)
+            for so in hs:
+                so.ridge = True
+            solids += hs
+            hip_count += nh
+    lay_tiles.hips = hip_count
     if backing > 0:
         # a solid sheet under the tiles, the shape of the roof (less its openings)
         sheet = list(parts)
@@ -668,6 +830,9 @@ def lay_tiles(outline, holes, v):
             pieces = [pc for pc in pieces if abs(area2(pc)) > 0.02 * W * g * 0.05]
             if not pieces:
                 continue
+            if len(pieces) > 1:
+                # the bits of one tile cut by the slope's own (hidden) lines joined back into one
+                pieces = _union(pieces) or pieces
             nc = 8 * CORRUGATIONS if prof == 'corrugated' else 16
             cuts = [xa + W * k / float(nc) for k in range(1, nc)] if prof else []
 
@@ -2575,10 +2740,13 @@ class RoofTilesTool(Tool):
         clear = max(10.0, v.get('cgap', 0.0) if v.get('print_mode') else v.get('gap', 0.0))
         went_round = 0
         apart = bool(v.get('ridge_apart', True))
-        ridge_sols, fin_sols = [], []
+        ridge_sols, fin_sols, hip_sols = [], [], []
+        hips_of = find_hips(slopes) if v.get('ridge') else [[] for _ in slopes]
+        nhips = 0
         on_roof = 0
         for i, (tw, outline, holes, up, from_group, host) in enumerate(slopes):
             cuts = []
+            my_hips = hips_of[i]
             if chims:
                 ch = chimney_holes(tw, outline, chims, clear)
                 if ch:
@@ -2586,18 +2754,21 @@ class RoofTilesTool(Tool):
                     holes = list(holes) + ch
                     cuts = ridge_cuts(ch, outline, max(1.0, v.get('ridge_w', 0.0)) + clear)
             try:
-                vs = dict(v, _up=up, _ridge_cuts=cuts)
+                vs = dict(v, _up=up, _ridge_cuts=cuts, _hips=my_hips)
                 if host is not None:
                     # on a roof that's there already: it is the backing
                     vs.update(backing=0.0, _sink=0.2)
                 sols, count = lay_tiles(outline, holes, vs)
                 nr = getattr(lay_tiles, 'ridges', 0)
-                if v.get('ridge') and not nr and not from_group:
+                nh = getattr(lay_tiles, 'hips', 0)
+                if v.get('ridge') and not nr and not nh and not from_group:
                     problems.append("Slope %d: no level top edge for a ridge (a hip end?)" % (i + 1))
             except Exception as e:
                 problems.append("Slope %d: %s" % (i + 1, e))
                 continue
             # split before mapping: the tags don't survive mapped()
+            hps = [s for s in sols if getattr(s, 'hip', False)]
+            sols = [s for s in sols if not getattr(s, 'hip', False)]
             fins = [s for s in sols if getattr(s, 'finial', False)]
             rids = [s for s in sols if getattr(s, 'ridge', False) and not getattr(s, 'finial', False)]
             tiles = [s for s in sols if not getattr(s, 'ridge', False) and not getattr(s, 'finial', False)]
@@ -2623,6 +2794,13 @@ class RoofTilesTool(Tool):
                     fin_sols += [s.mapped(tw) for s in fins]
                 else:
                     pieces.append(("Slope %d - %s" % (k, fin_word), [s.mapped(tw) for s in fins]))
+            if hps:
+                nhips += nh
+                if apart:
+                    hip_sols += [s.mapped(tw) for s in hps]
+                else:
+                    pieces.append(("Slope %d - hip halves - %d hip %s" % (k, nh, word),
+                                   [s.mapped(tw) for s in hps]))
             if fl:
                 pieces.append(("Slope %d - flashing" % k, [s.mapped(tw) for s in fl]))
             if host is not None:
@@ -2642,6 +2820,9 @@ class RoofTilesTool(Tool):
             elif fin_sols:
                 rp.append(("Ridge - %s" % fin_word, fin_sols))
             slope_parts.append(("Ridge (%d pieces)" % len(rp) if len(rp) > 1 else None, rp, None))
+        if hip_sols:
+            # the hips on their own too, both halves of each together
+            slope_parts.append((None, [("Hips - %d hip %s" % (nhips, word), hip_sols)], None))
         top = "Roof - %s%s" % (tile_name, " (for 3D printing)" if v['print_mode'] else "")
         if len(slope_parts) == 1 and slope_parts[0][0] and slope_parts[0][2] is None:
             slope_parts = [(top, slope_parts[0][1], None)]  # one slope: its group is the roof
@@ -2649,8 +2830,9 @@ class RoofTilesTool(Tool):
         if nf is None:
             return
         npieces = sum(len(sp_[1]) for sp_ in slope_parts if sp_[2] is None)
-        msg = "Added %d tiles%s on %d slope(s), %d faces." % (
-            total, (" and %d ridge tiles" % ridges) if ridges else "", nslopes, nf)
+        msg = "Added %d tiles%s%s on %d slope(s), %d faces." % (
+            total, (" and %d ridge tiles" % ridges) if ridges else "",
+            (" and %d hip tiles" % nhips) if nhips else "", nslopes, nf)
         if on_roof:
             msg += ("\nOn the roof that was there already (%d slope%s): no backing sheet, and each slope's "
                     "tiles are in a group with it ('%s...'), so in Scale Studio's Pieces page a slope and its "
