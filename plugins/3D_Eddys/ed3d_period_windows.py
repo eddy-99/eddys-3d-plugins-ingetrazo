@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Period Windows"
-VERSION = "2.17"  # shown in the window title, so you can tell which file is loaded. 2.17: on the Whole building page, clicking a window or door already built in lights up its own edges in the model (not the whole wall), so you can see which one it is; 2.16: a separate casement is only as thick as a casement, not right through the wall, so it lies flat on the print bed; 2.15: "Casements as separate pieces" - casements and top lights come out as pieces of their own, a small gap smaller than the frame, to print flat and glue in open; "Make one on its own" builds a window with no wall; 2.14: faces of the frame missed by the colouring (round arched tops) take the colour of the part they join on to - they showed white; 2.13: a Mortar joint depth setting (Z) for brick sills, heads and arches (it was always 3 mm); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the windows are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
+VERSION = "2.31"  # shown in the window title, so you can tell which file is loaded. 2.31: the checking files (wall copies in Claude outputs, the _faces.txt file) are no longer written - a problem is printed instead; 2.30: found the triangle across a pane - where a glazing bar runs half a millimetre into the one it meets, the joining leaves an outline that doubles back on itself (a spike of no width), which IngeTrazo fills wrongly; the spikes are now taken out. And faces are no longer cut into pieces (2.29 did that, leaving stray lines on the frames); 2.29: every L or T shaped face in a wall with windows (where glazing bars meet - the joining often leaves a tiny step there) is cut into plain convex pieces, which IngeTrazo always draws right - the triangle across a pane is gone; faces with no area left out; 2.28: glazing bars meeting are no longer joined into one T-shaped face when the wall is tidied (IngeTrazo filled it in wrongly, showing a triangle across a pane); 2.27: tidying a wall after joining could fill in panes at the back of the wall (seen from inside) - each tidied face is now checked against what it replaces, and left as it was if it covers more; 2.26: after building, the openings are listed again straight away (the ones just built in bold) - no need to click Find; 2.25: a problem finding the openings is written to the _faces.txt file, for checking; 2.24: the openings are listed again after building (the new inside/outside check could stop the list - it can not now); 2.23: each wall joined with its windows is also kept in Claude outputs (windows_join_01.json...), for checking; 2.22: the inside/outside check looks right across the building (a line in from a bay side goes out through the gap behind the bay, so it has to reach the main building back wall); 2.21: the inside/outside check for a bay side also works when the bay walls are all in one group (and writes what it decided to a _faces.txt file next to this one); 2.20: a bay side facing in towards the middle of the building (towards the other bay) has its outside face found properly - its window went on the inside; 2.19: windows on a bay's sides are found again (2.18 left them out when looking for the gap behind a bay); 2.18: on the Whole building page, the big gap in the main wall behind a bay (or anything built out in front of it) is no longer listed as an opening, and windows on a bay are named with their bay (Bay 1 - Ground floor - ...) when the names would be the same; 2.17: on the Whole building page, clicking a window or door already built in lights up its own edges in the model (not the whole wall), so you can see which one it is; 2.16: a separate casement is only as thick as a casement, not right through the wall, so it lies flat on the print bed; 2.15: "Casements as separate pieces" - casements and top lights come out as pieces of their own, a small gap smaller than the frame, to print flat and glue in open; "Make one on its own" builds a window with no wall; 2.14: faces of the frame missed by the colouring (round arched tops) take the colour of the part they join on to - they showed white; 2.13: a Mortar joint depth setting (Z) for brick sills, heads and arches (it was always 3 mm); 2.12: a shop front (3D Shop Fronts) built into the same wall is kept, in its own colours, when the windows are built again; 2.11: a Building list - pick the building to work on (the selected one, or the biggest model, is picked for you), so other models in the scene are left alone; 2.10: the mortar behind a brick arch is kept inside the bricks' straight outer faces (on a tight arch its curve poked out through them); 2.9: the mortar behind a brick arch stops just short of its ends, so it no longer shows as a pale patch on the end brick; 2.8: finds the openings by itself when it opens (and when the Whole building page is opened), like Brick & Block shows its walls; 2.7: the curved strips round an arched head get their colour too (they were left white); 2.6: a face IngeTrazo won't take as it is (a curved arch reveal a hair out of flat) goes in as triangles, not left out as a hole; 2.5: a door built into the same wall keeps its own colours when the windows are built again
 
 
 def _ed3d_organise(scene, group):
@@ -2576,6 +2576,13 @@ def find_building_openings(scene, flip=False, door_tol=15.0, top=None):
             _face_openings_into(found, g, mesh, look, face, fi, None, gname, door_tol, [0])
         return found
     use, centre = _wall_meshes(scene, top)
+    _face_log = []
+    try:
+        all_faces = _world_faces(use)
+    except Exception:
+        import traceback
+        _face_log.append(traceback.format_exc())
+        all_faces = []
     wall_no = 0
     for g, mesh, m in use:
         wall_no += 1
@@ -2593,10 +2600,160 @@ def find_building_openings(scene, flip=False, door_tol=15.0, top=None):
                  sum(p[2] for p in pts) / len(pts))
             cw = _wmap(m, c)
             out = nw[0] * (cw[0] - centre[0]) + nw[1] * (cw[1] - centre[1])
+            # a wall facing in towards the middle can still be an outside face (a bay's side facing the
+            # other bay): it is if there's open air in front of it and the building behind it
+            try:
+                out = _out_by_rays(all_faces, face, pts, nw, cw, out, flip, gname, fi, _face_log)
+            except Exception:
+                import traceback
+                _face_log.append(traceback.format_exc())
             if (out <= 0) != bool(flip) and not (rec and _built_on(rec, fi)):
                 continue                               # the inside face of the wall
             _face_openings_into(found, g, mesh, look, face, fi, rec, gname, door_tol, count)
+    try:
+        found = _drop_covered(found, use)
+        _name_by_part(found, use, top)
+    except Exception:
+        import traceback
+        _face_log.append(traceback.format_exc())
+    for line in _face_log:
+        if line.startswith("Traceback"):
+            print("%s: %s" % (PLUGIN_NAME, line))
     return _drop_doubles(found)
+
+
+def _log_error():
+    """What went wrong, printed (shown in IngeTrazo's console)."""
+    try:
+        import traceback
+        print("%s: %s" % (PLUGIN_NAME, traceback.format_exc()))
+    except Exception:
+        pass
+
+
+def _out_by_rays(all_faces, face, pts, nw, cw, out, flip, gname, fi, log):
+    """A wall facing in towards the middle can still be an outside face (a bay's side facing the other
+    bay): it is if there's open air in front of it and the building behind it."""
+    if not (_items(getattr(face, 'holes', None)) or len(pts) > 4):     # only faces with openings matter
+        return out
+    nn = v_norm(nw)
+    ahead = _ray_hit(all_faces, cw, nn)
+    behind = _ray_hit(all_faces, cw, v_mul(nn, -1.0))
+    if ahead and not behind:
+        out = -1.0
+    elif behind and not ahead:
+        out = 1.0
+    return out
+
+
+def _world_faces(use):
+    """[(group, [world points])] of every face of the building."""
+    faces = []
+    for g, mesh, m in use:
+        for f in _items(getattr(mesh, 'faces', None)):
+            fp = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+            if len(fp) >= 3:
+                faces.append((g, [_wmap(m, p) for p in fp]))
+    return faces
+
+
+def _ray_hit(faces, c, n, reach=60000.0, past=450.0):
+    """Does a line from c (world) out along n hit a face between past (mm - beyond the wall's own other
+    face) and reach?"""
+    for g, fp in faces:
+        fn = _newell(fp)
+        d = v_dot(fn, n)
+        if abs(d) < 1e-12:
+            continue
+        t = v_dot(v_sub(fp[0], c), fn) / d
+        if not past * SCALE < t < reach * SCALE:
+            continue
+        q = v_add(c, v_mul(n, t))
+        fu = v_norm(v_sub(fp[1], fp[0]))
+        fv = v_cross(v_norm(fn), fu)
+        try:
+            if _pip3(q, fp, fu, fv):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _drop_covered(found, use, reach=3000.0):
+    """Openings with another wall of the building straight out in front of them (the gap in the main wall
+    behind a bay, where the bay joins on) aren't openings to fill: left out."""
+    mats = {id(g): m for g, _mesh, m in use}
+    faces = []
+    for g, mesh, m in use:
+        for f in _items(getattr(mesh, 'faces', None)):
+            fp = [p for p in (_pos(v) for v in _items(getattr(f, 'vertices', None))) if p is not None]
+            if len(fp) >= 3:
+                faces.append((g, [_wmap(m, p) for p in fp]))
+    out = []
+    for op in found:
+        try:
+            if op.get('built') or not op.get('door'):
+                out.append(op)                         # only a gap from the floor up (a bay joins on there)
+                continue
+            m = mats.get(id(op['group']))
+            O, U, V, N = op['frame']
+            x0, x1, y0, y1 = bbox(op['poly'])
+            c = _wmap(m, to_world(op['frame'])(((x0 + x1) / 2, (y0 + y1) / 2, 0.0)))
+            n = v_norm(_wvec(m, tuple(N)))
+            hit = False
+            for g, fp in faces:
+                if g is op['group']:
+                    continue
+                fn = _newell(fp)
+                d = v_dot(fn, n)
+                if abs(d) < 1e-9:
+                    continue
+                t = v_dot(v_sub(fp[0], c), fn) / d
+                if abs(d) < 0.5 * math.sqrt(max(v_dot(fn, fn), 1e-30)) or not 1e-9 < t < reach * SCALE:
+                    continue
+                q = v_add(c, v_mul(n, t))
+                fu = v_norm(v_sub(fp[1], fp[0]))
+                fv = v_cross(v_norm(fn), fu)
+                if _pip3(q, fp, fu, fv):
+                    hit = True
+                    break
+            if not hit:
+                out.append(op)
+        except Exception:
+            out.append(op)
+    return out
+
+
+def _name_by_part(found, use, top):
+    """Openings in walls with the same name (the main building's and each bay's 'Ground floor - Wall 1'):
+    named with the group they're in as well (Bay 1 - Ground floor - Wall 1 (front) - Window 1)."""
+    names = {}
+    for op in found:
+        names.setdefault(getattr(op['group'], 'name', '') or '', set()).add(id(op['group']))
+    if not any(len(v) > 1 for v in names.values()):
+        return
+    parent = {}
+
+    def walk(g, depth):
+        if depth > 30:
+            return
+        for c in _kids_of(g):
+            parent[id(c)] = g
+            walk(c, depth + 1)
+    if top is None:
+        return
+    walk(top, 0)
+    for op in found:
+        g = op['group']
+        nm = getattr(g, 'name', '') or ''
+        if len(names.get(nm, ())) < 2:
+            continue
+        p = parent.get(id(g))
+        while p is not None and p is not top and (getattr(p, 'name', '') or '') in ('', nm):
+            p = parent.get(id(p))
+        pn = getattr(p, 'name', '') if p is not None and p is not top else ''
+        if pn:
+            op['name'] = "%s - %s" % (pn, op['name'])
 
 
 def _drop_doubles(found, tol=0.03):
@@ -3146,10 +3303,207 @@ def _merge_flat_faces(faces, ptol=1e-5, ktol=1e-6):
             continue
         try:
             got = _merge_plane([faces[i] for i in idx], n, key, raw_area)
+            if got and not _same_cover([faces[i] for i in idx], got, n):
+                got = None                       # it came out covering more (or less): keep them as they were
+            if got and any(not hls and not _convex(pts, n) and not _convex_parts(pts, n) for pts, hls in got):
+                got = None                       # an outline that crosses itself: keep them as they were
         except Exception:
             got = None
         out += got if got else [faces[i] for i in idx]
+    return _convex_faces(out)
+
+
+def _convex_faces(faces):
+    """Faces IngeTrazo can draw. Where a horizontal glazing bar runs a hair (half a millimetre) into
+    a vertical one, the joining hands back an outline that doubles back on itself there - a spike
+    of no width. IngeTrazo fills such an outline wrongly: the triangle across a pane. Those spikes
+    (and doubled points) are taken out, and faces with no area are left out."""
+    out = []
+    for pts, hls in faces:
+        n = _newell(pts) if len(pts) >= 3 else (0.0, 0.0, 0.0)
+        if v_len(n) < 0.5:
+            continue                                    # no area: nothing to draw or print
+        o = _no_spikes(pts)
+        if len(o) < 3:
+            continue
+        hs = [h2 for h2 in (_no_spikes(h) for h in hls) if len(h2) >= 3]
+        out.append((o, hs))
     return out
+
+
+def _no_spikes(pts, tol=1e-9):
+    """An outline with its doubled points and its spikes (going out and straight back the same way)
+    taken out."""
+    q = list(pts)
+    changed = True
+    while changed and len(q) >= 3:
+        changed = False
+        m = len(q)
+        for i in range(m):
+            a, b, c = q[i - 1], q[i], q[(i + 1) % m]
+            ab, bc = v_sub(b, a), v_sub(c, b)
+            la, lb = v_len(ab), v_len(bc)
+            if la < tol:
+                del q[i]
+                changed = True
+                break
+            if lb < tol:
+                continue
+            if v_dot(ab, bc) < 0 and 0.5 * v_len(v_cross(ab, bc)) < 5e-7:   # back the same way (under half a square mm)
+                del q[i]                                # out and straight back: a spike
+                changed = True
+                break
+    return q
+
+
+def _convex_parts(pts, n):
+    """A simple outline cut into convex pieces: cut into triangles (ear by ear), then neighbouring
+    triangles joined back while the join stays convex."""
+    U, V = _face_axes(pts, n)
+    if U is None:
+        return None
+    clean = []
+    for p in pts:                                       # doubled points out
+        if not clean or v_len(v_sub(p, clean[-1])) > 1e-9:
+            clean.append(p)
+    if len(clean) > 1 and v_len(v_sub(clean[0], clean[-1])) <= 1e-9:
+        clean.pop()
+    m = len(clean)
+    if m < 4:
+        return None
+    xy = [(v_dot(p, U), v_dot(p, V)) for p in clean]
+    area = sum(xy[i][0] * xy[(i + 1) % m][1] - xy[(i + 1) % m][0] * xy[i][1] for i in range(m))
+    sgn = 1.0 if area > 0 else -1.0
+
+    def cross(a, b, c):
+        return ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * sgn
+
+    def in_tri(q, a, b, c):
+        return cross(a, b, q) >= 0 and cross(b, c, q) >= 0 and cross(c, a, q) >= 0
+    idx = list(range(m))
+    tris = []
+    guard = 0
+    while len(idx) > 3 and guard < 10000:
+        guard += 1
+        k = len(idx)
+        done = False
+        for i in range(k):
+            a, b, c = idx[i - 1], idx[i], idx[(i + 1) % k]
+            if cross(xy[a], xy[b], xy[c]) <= 1e-18:
+                continue                                # a reflex (or straight) corner: not an ear
+            if any(in_tri(xy[j], xy[a], xy[b], xy[c]) for j in idx if j not in (a, b, c)
+                   and xy[j] not in (xy[a], xy[b], xy[c])):
+                continue
+            tris.append([a, b, c])
+            del idx[i]
+            done = True
+            break
+        if not done:
+            # only straight corners left: drop one (it adds nothing)
+            for i in range(len(idx)):
+                a, b, c = idx[i - 1], idx[i], idx[(i + 1) % len(idx)]
+                if abs(cross(xy[a], xy[b], xy[c])) <= 1e-18:
+                    del idx[i]
+                    done = True
+                    break
+            if not done:
+                return None
+    if len(idx) == 3 and cross(xy[idx[0]], xy[idx[1]], xy[idx[2]]) > 1e-18:
+        tris.append(list(idx))
+    if not tris:
+        return None
+
+    def is_convex(poly):
+        k = len(poly)
+        return all(cross(xy[poly[i - 1]], xy[poly[i]], xy[poly[(i + 1) % k]]) >= -1e-18 for i in range(k))
+    polys = [t[:] for t in tris]
+    joined = True
+    while joined:
+        joined = False
+        for i in range(len(polys)):
+            for j in range(i + 1, len(polys)):
+                A, B = polys[i], polys[j]
+                for ia in range(len(A)):
+                    a0, a1 = A[ia], A[(ia + 1) % len(A)]
+                    if a1 in B and B[(B.index(a1) + 1) % len(B)] == a0:
+                        ib = B.index(a1)
+                        # A ... a0 a1 ... ; B ... a1 a0 ... -> walk A from a1 round to a0, then B from a0 to a1
+                        ra = A[ia + 1:] + A[:ia + 1]            # starts at a1, ends at a0
+                        rb = B[ib + 1:] + B[:ib + 1]            # starts at a0, ends at a1
+                        cand = ra + rb[1:-1]
+                        if is_convex(cand):
+                            polys[i] = cand
+                            del polys[j]
+                            joined = True
+                        break
+                if joined:
+                    break
+            if joined:
+                break
+    pieces = [[clean[k] for k in poly] for poly in polys]
+
+    def area_of(poly):
+        return abs(sum(xy[poly[i]][0] * xy[poly[(i + 1) % len(poly)]][1] -
+                       xy[poly[(i + 1) % len(poly)]][0] * xy[poly[i]][1] for i in range(len(poly)))) / 2.0
+    whole = abs(area) / 2.0
+    if whole <= 0.0 or abs(sum(area_of(q) for q in polys) - whole) > 1e-6 * whole:
+        return None                                     # an outline that crosses itself: left as it was
+    if not all(is_convex(q) for q in polys) or not _same_cover([(clean, [])], [(q, []) for q in pieces], n):
+        return None
+    return pieces
+
+
+def _convex(pts, n):
+    """Is a face's outline convex (every corner turning the same way, or straight)?"""
+    sign = 0
+    m = len(pts)
+    for i in range(m):
+        a, b, c = pts[i - 1], pts[i], pts[(i + 1) % m]
+        t = v_dot(v_cross(v_sub(b, a), v_sub(c, b)), n)
+        if abs(t) < 1e-14:
+            continue
+        if sign == 0:
+            sign = 1 if t > 0 else -1
+        elif (t > 0) != (sign > 0):
+            return False
+    return True
+
+
+def _same_cover(before, after, n, steps=48):
+    """Do two sets of faces in one plane cover the same parts of it? Checked at a grid of points
+    across them (a pane filled in by the joining would show)."""
+    U, V = _face_axes(before[0][0], n)
+    if U is None:
+        return True
+
+    def flat(pts):
+        return [(v_dot(p, U), v_dot(p, V)) for p in pts]
+
+    def prep(faces):
+        return [(flat(pts), [flat(h) for h in hls]) for pts, hls in faces]
+
+    def inside(q, poly):
+        c = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            (xi, yi), (xj, yj) = poly[i], poly[j]
+            if (yi > q[1]) != (yj > q[1]) and q[0] < (xj - xi) * (q[1] - yi) / (yj - yi) + xi:
+                c = not c
+            j = i
+        return c
+
+    def covered(q, faces):
+        return any(inside(q, o) and not any(inside(q, h) for h in hs) for o, hs in faces)
+    a, b = prep(before), prep(after)
+    xs = [p[0] for o, _h in a for p in o]
+    ys = [p[1] for o, _h in a for p in o]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    for i in range(steps):
+        for j in range(steps):
+            q = (x0 + (x1 - x0) * (i + 0.37) / steps, y0 + (y1 - y0) * (j + 0.61) / steps)
+            if covered(q, a) != covered(q, b):
+                return False
+    return True
 
 
 def _merge_plane(group, n, key, raw_area):
@@ -3157,6 +3511,7 @@ def _merge_plane(group, n, key, raw_area):
     pos = {}
     edges = {}
     want = 0.0
+    all_loops = []
     for pts, hls in group:
         loops = [list(pts) if raw_area(pts, n) > 0 else list(reversed(pts))]
         want += abs(raw_area(pts, n))
@@ -3168,6 +3523,36 @@ def _merge_plane(group, n, key, raw_area):
             ks = [key(p) for p in lp]
             for p, k in zip(lp, ks):
                 pos.setdefault(k, p)
+            all_loops.append(ks)
+    # a corner of one face lying part way along another's edge (a T): that edge split there, so the
+    # two faces' shared edges match up and go
+    U0, V0 = _face_axes(group[0][0], n)
+    fx = {k: (v_dot(p, U0), v_dot(p, V0)) for k, p in pos.items()} if U0 is not None else {}
+    pts2 = list(fx.items())
+    tol2 = 1e-7
+    for ks in all_loops:
+        split = []
+        for i in range(len(ks)):
+            a, b = ks[i], ks[(i + 1) % len(ks)]
+            split.append(a)
+            if a == b or a not in fx or b not in fx:
+                continue
+            (ax, ay), (bx, by) = fx[a], fx[b]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            if L2 <= 0:
+                continue
+            on = []
+            for k, (qx, qy) in pts2:
+                if k == a or k == b:
+                    continue
+                t = ((qx - ax) * dx + (qy - ay) * dy) / L2
+                if 1e-9 < t < 1 - 1e-9 and abs((qx - ax) * dy - (qy - ay) * dx) / math.sqrt(L2) < tol2:
+                    on.append((t, k))
+            split += [k for _t, k in sorted(on)]
+        ks[:] = split
+    for ks in all_loops:
+        if True:
             for i in range(len(ks)):
                 a, b = ks[i], ks[(i + 1) % len(ks)]
                 if a == b:
@@ -3194,6 +3579,21 @@ def _merge_plane(group, n, key, raw_area):
             outs = nxt.get(cur)
             if not outs:
                 return None                          # doesn't close up: leave this plane alone
+            if len(outs) > 1 and len(lp) >= 2 and fx:
+                # two ways on (two outlines touching at a corner): the one turning most to the left
+                # keeps each outline from crossing itself
+                (px, py), (cx, cy) = fx[lp[-2]], fx[cur]
+                din = math.atan2(cy - py, cx - px)
+
+                def turn(k):
+                    ox, oy = fx[k]
+                    t_ = math.atan2(oy - cy, ox - cx) - din
+                    while t_ <= -math.pi:
+                        t_ += 2 * math.pi
+                    while t_ > math.pi:
+                        t_ -= 2 * math.pi
+                    return t_
+                outs.sort(key=turn)
             b = outs.pop()
             if not outs:
                 del nxt[cur]
@@ -4161,6 +4561,7 @@ class WindowsDialog(QDialog):
             self.find_openings(quiet=True)
         except Exception as e:
             print("%s: couldn't find the openings by itself: %s" % (PLUGIN_NAME, e))
+            _log_error()
 
     # ---- whole building ----
     def _add_building_page(self):
@@ -4330,6 +4731,7 @@ class WindowsDialog(QDialog):
         try:
             self.found = find_building_openings(scene, self.w['flip'].isChecked(), top=top)
         except Exception as e:
+            _log_error()
             self.found = []
             if not quiet:
                 QMessageBox.warning(self, PLUGIN_NAME, "Could not look for openings:\n%s" % e)
@@ -5155,6 +5557,10 @@ class PeriodWindowsTool(Tool):
                      "piece flat'.")
         dlg.lst_open.clear()
         dlg.found = []
+        try:                                        # listed again, the ones just built in bold
+            dlg.find_openings(quiet=True)
+        except Exception:
+            _log_error()
         dlg.lbl_found.setText("\n".join(lines))
         dlg.show_report(lines)
         if problems:

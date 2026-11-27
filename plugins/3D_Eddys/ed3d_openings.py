@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Openings"
-VERSION = "1.13"   # 1.13: "Put it in the middle of the wall" button in the Placing openings window (M was IngeTrazo's Move key); 1.12: easier to centre - the middle of the wall pulls from further away; 1.11: placing with the grid - the opening (or the row) snaps to the middle of the wall when it comes near it, with the centre line shown and how far from the middle in the status; 1.10: the page tabs on two rows, so they all show at once
+VERSION = "1.14"   # 1.14: "overlaps another opening" says which one, and by how much; 1.13: "Put it in the middle of the wall" button in the Placing openings window (M was IngeTrazo's Move key); 1.12: easier to centre - the middle of the wall pulls from further away; 1.11: placing with the grid - the opening (or the row) snaps to the middle of the wall when it comes near it, with the centre line shown and how far from the middle in the status; 1.10: the page tabs on two rows, so they all show at once
 
 
 def _ed3d_organise(scene, group):
@@ -748,6 +748,7 @@ def check_openings(w, ops, p):
     bo = [q[:2] for q in w.back['outer']]
     old = [bbox([q[:2] for q in h]) for side in (w.front, w.back) for h in side['holes']]
     holes, notches, problems, taken = [], [], [], []
+    taken_names = []
     tol = 0.5
     for name, poly in ops:
         poly = clean(poly)
@@ -756,8 +757,12 @@ def check_openings(w, ops, p):
         if area2(poly) < 0:
             poly = list(reversed(poly))
         bx = bbox(poly)
-        if any(boxes_touch(bx, b, 1.0) for b in taken):
-            problems.append("%s overlaps another opening - left out" % name)
+        hit = next(((tn, b) for tn, b in zip(taken_names, taken) if boxes_touch(bx, b, 1.0)), None)
+        if hit is not None:
+            tb = hit[1]
+            problems.append("%s overlaps %s - left out (it: %.3f-%.3f across, %.3f-%.3f up; %s: %.3f-%.3f "
+                            "across, %.3f-%.3f up)" % (name, hit[0], bx[0], bx[1], bx[2], bx[3], hit[0],
+                                                       tb[0], tb[1], tb[2], tb[3]))
             continue
         same = [b for b in old if abs(b[0] - bx[0]) < tol and abs(b[1] - bx[1]) < tol and
                 abs(b[2] - bx[2]) < tol and abs(b[3] - bx[3]) < tol]
@@ -788,6 +793,7 @@ def check_openings(w, ops, p):
                 continue
             holes.append((name, poly, bool(same)))
         taken.append(bx)
+        taken_names.append(name)
     return holes, notches, problems
 
 

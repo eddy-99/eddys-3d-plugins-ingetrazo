@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPu
                                QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "5.11"   # 5.11: colours for the new shop front styles - black glass (Vitrolite), chrome & aluminium, bronze, gilt, bow window glass; 5.10: the layers are kept in A to Z order (IngeTrazo\'s own first layer stays at the top); 5.9: shop fronts fawn, their sign lettering dark maroon; 5.8: colours and a layer for 3D Shop Fronts (shop front paint, gilt sign lettering, stallriser tiles, polished granite); 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
+VERSION = "5.12"   # 5.12: glass is solid dark blue-grey (like real windows from outside) - see-through glass showed patchy shading where you look through one window and another behind it; 5.11: colours for the new shop front styles - black glass (Vitrolite), chrome & aluminium, bronze, gilt, bow window glass; 5.10: the layers are kept in A to Z order (IngeTrazo\'s own first layer stays at the top); 5.9: shop fronts fawn, their sign lettering dark maroon; 5.8: colours and a layer for 3D Shop Fronts (shop front paint, gilt sign lettering, stallriser tiles, polished granite); 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -65,7 +65,7 @@ DEFAULT_LAYERS = {
 # The first one whose word is in the part's name wins, so the narrow ones come first.
 DEFAULT_PALETTE = [
     ("Fascia & barge boards", (240, 230, 200), 1.0, "fascia, barge, soffit", ""),
-    ("Glass", (176, 196, 206), 0.35, "glass, pane, light", ""),
+    ("Glass", (82, 100, 112), 1.0, "glass, pane, light", ""),   # solid: see-through glass shows patches
     ("Ironmongery", (40, 40, 42), 1.0, "handle, hinge, knob, latch, letter, knocker, vane, finial", ""),
     ("Black glass (Vitrolite)", (32, 32, 36), 1.0, "vitrolite, black", ""),
     ("Chrome & aluminium", (198, 202, 206), 1.0, "chrome, aluminium", ""),
@@ -155,6 +155,8 @@ def load_settings():
                                 str(r[4]) if len(r) > 4 else ""]
                     if len(r) > 5:
                         row.append(str(r[5]))
+                    if row[0] == "Glass" and row[1] == (176, 196, 206) and abs(row[2] - 0.35) < 1e-6:
+                        row[1], row[2] = (82, 100, 112), 1.0     # the old see-through glass: the new solid one
                     pal.append(row)
                 except Exception:
                     pass
