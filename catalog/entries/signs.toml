@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "signs"
+source = "plugins/3D_Eddys/ed3d_signs.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Carteles y letreros 3D"
+en = "3D Signs & Boards"
+pt = "Placas e letreiros 3D"
+
+[summary]
+es = "Letreros de nombre de estación, tótems y rótulos ferroviarios, placas esmaltadas y carteles con letras en relieve, en la pared o sobre postes, con farolas e imágenes en blanco y negro, listos para imprimir."
+en = "Station name boards, railway totems, roundels, enamel signs and posters with raised lettering, on a wall or on posts, with lamps and black and white pictures, ready to print."
+pt = "Placas de nome de estação, totens e rodelas ferroviárias, placas esmaltadas e cartazes com letras em relevo, na parede ou em postes, com candeeiros e imagens a preto e branco, prontos a imprimir."
