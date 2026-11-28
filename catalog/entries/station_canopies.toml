@@ -13,11 +13,11 @@ ingetrazo = "0.5.11"
 tags = ["architecture"]
 
 [name]
-es = "Marquesinas de estación 3D"
-en = "3D Station Canopies"
-pt = "Coberturas de estação 3D"
+es = "Marquesinas 3D"
+en = "3D Canopies"
+pt = "Coberturas 3D"
 
 [summary]
-es = "Marquesinas de andén ferroviario (adosadas, de isla y en diente de sierra) sobre columnas de fundición o postes de madera, con lambrequines decorados."
-en = "Railway platform canopies (lean-to, island and ridge and furrow) on cast-iron columns or timber posts, with dagger, rounded or fleur valancing."
-pt = "Coberturas de plataforma ferroviária (encostadas, de ilha e em dente de serra) sobre colunas de ferro fundido ou postes de madeira, com sanefas decoradas."
+es = "Marquesinas, porches, refugios y quioscos para cualquier edificio (adosadas, de isla, en diente de sierra y de tejado campana) sobre columnas de fundición, dóricas, postes de madera o pilares de ladrillo, con lambrequines decorados."
+en = "Canopies, verandas, shelters and kiosks for any building (lean-to, umbrella, ridge and furrow and bell-cast) on cast-iron, Doric, timber or brick columns, with decorative valancing."
+pt = "Coberturas, alpendres, abrigos e quiosques para qualquer edifício (encostadas, de ilha, em dente de serra e com telhado em sino) sobre colunas de ferro fundido, dóricas, postes de madeira ou pilares de tijolo, com sanefas decoradas."

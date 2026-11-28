@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "low_relief"
+source = "plugins/3D_Eddys/ed3d_low_relief.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Bajorrelieve 3D"
+en = "3D Low Relief"
+pt = "Baixo-relevo 3D"
+
+[summary]
+es = "Corta cualquier edificio en un modelo en bajorrelieve para colocar contra el fondo: conserva la fachada, la trasera o ambas, cada pieza cortada y rellena, lista para imprimir."
+en = "Cut any building into a low relief model to stand against a backscene: keep the front, the back or both, with every part cut and filled solid, ready to print."
+pt = "Corta qualquer edifício num modelo em baixo-relevo para encostar ao cenário de fundo: mantém a frente, as traseiras ou ambas, cada peça cortada e preenchida, pronta a imprimir."

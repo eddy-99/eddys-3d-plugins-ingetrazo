@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "card_kit"
+source = "plugins/3D_Eddys/ed3d_card_kit.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Kit de cartulina 3D"
+en = "3D Card Kit"
+pt = "Kit de cartão 3D"
+
+[summary]
+es = "Convierte un edificio 3D en un kit de cartulina para imprimir en papel: cada pared, faldón y chimenea desplegados con pestañas de pegado, a cualquier escala."
+en = "Turn a 3D building into a card kit you print on paper: every wall, roof slope and chimney laid out flat with glue tabs, at any scale."
+pt = "Transforma um edifício 3D num kit de cartão para imprimir em papel: cada parede, água do telhado e chaminé planificadas com abas de colagem, em qualquer escala."

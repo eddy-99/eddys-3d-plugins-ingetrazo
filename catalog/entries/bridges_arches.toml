@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "bridges_arches"
+source = "plugins/3D_Eddys/ed3d_bridges_arches.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Puentes y arcos 3D"
+en = "3D Bridges & Arches"
+pt = "Pontes e arcos 3D"
+
+[summary]
+es = "Puentes de arco de fábrica y viaductos ferroviarios en pocos clics: siete formas de arco, esviaje, arcos cegados, aletas y pretiles, cada pieza plana para imprimir."
+en = "Masonry arch bridges and railway viaducts in a few clicks: seven arch shapes, skew, infilled arches, wing walls and parapets, every piece laid flat to print."
+pt = "Pontes em arco de alvenaria e viadutos ferroviários em poucos cliques: sete formas de arco, enviesamento, arcos tapados, muros de ala e parapeitos, cada peça plana para imprimir."

@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "realistic_wall"
+source = "plugins/3D_Eddys/ed3d_realistic_wall.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "Muro realista 3D"
+en = "3D Realistic Wall"
+pt = "Parede realista 3D"
+
+[summary]
+es = "Talla una cara real de piedra o ladrillo en los muros de tu edificio a partir de una foto de muro, lista para imprimir con todo detalle."
+en = "Carve a real stone or brick face into your building's walls from a wall picture, ready to print at full detail."
+pt = "Esculpe uma face real de pedra ou tijolo nas paredes do teu edifício a partir de uma imagem de parede, pronta a imprimir com todo o detalhe."

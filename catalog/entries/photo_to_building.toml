@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "photo_to_building"
+source = "plugins/3D_Eddys/ed3d_photo_to_building.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["architecture"]
+
+[name]
+es = "De foto a edificio 3D"
+en = "3D Photo to Building"
+pt = "De foto a edifício 3D"
+
+[summary]
+es = "Convierte la foto de un edificio real en un modelo listo para imprimir: haz clic alrededor, escribe una medida conocida y crea muros, ventanas, puertas, miradores y tejado."
+en = "Turn a photo of a real building into a print-ready model: click round it, type one size you know, and it builds the walls, windows, doors, bays and roof."
+pt = "Transforma a foto de um edifício real num modelo pronto a imprimir: clica à volta dele, escreve uma medida conhecida e cria paredes, janelas, portas, marquises e telhado."
