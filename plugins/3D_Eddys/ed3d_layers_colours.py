@@ -38,10 +38,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton, QLabel,
                                QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
-                               QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView)
+                               QWidget, QColorDialog, QComboBox, QFormLayout, QAbstractItemView,
+                               QLineEdit, QListWidget, QListWidgetItem)
+from PySide6.QtGui import QPixmap, QIcon
 
 PLUGIN_NAME = "3D Layers & Colours"
-VERSION = "5.12"   # 5.12: glass is solid dark blue-grey (like real windows from outside) - see-through glass showed patchy shading where you look through one window and another behind it; 5.11: colours for the new shop front styles - black glass (Vitrolite), chrome & aluminium, bronze, gilt, bow window glass; 5.10: the layers are kept in A to Z order (IngeTrazo\'s own first layer stays at the top); 5.9: shop fronts fawn, their sign lettering dark maroon; 5.8: colours and a layer for 3D Shop Fronts (shop front paint, gilt sign lettering, stallriser tiles, polished granite); 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
+VERSION = "5.26"   # 5.26: colours and a layer for 3D Signs & Boards (maroon board, cream letters and border, brass lamps); 5.25: a part painted all in one colour by its name before (gables that came out slate) takes its new colour on Apply to selected - it kept the old one; 5.24: a Gables colour of its own (walls with a gable on - gable ends and the fronts of the roof gables), before Walls; 5.23: a Floors colour (floor panels); 5.22: a colour marked Only for one plugin is only used on that plugin work (floor panels came out door green), and Apply to selected puts a part wrongly wearing one back to plain; 5.21: a Walls colour (plain walls and gables - they had no colour of their own, so they could not be changed); Apply to selected leaves windows, doors and sills in a wall their own colours while it colours the wall; 5.20: Save no longer closes the window (only Close does) - it says Saved instead; 5.19: Pick from screen - an eyedropper in the colour list: click anywhere on the screen (the model, a photo of the real building) to take that colour; 5.18: a Find box at the top - type window, door, brick, glass... and only those colours show (on whichever tab they are); 5.17: clicking a colour opens a list of the 213 RAL Classic colours with a search box (type cream, green, slate or a RAL number), and My own colour... for the usual chooser; 5.16: the view really redraws the new colours (each recoloured part is put back the way Undo does it, which the view always redraws); 5.15: recoloured parts deep inside a building (boards in a Boards group) show their new colour straight away - they changed but the view kept the old one; 5.14: Save recolours what is already built even when the model own material list doesn\'t show the colour, and says so if it can\'t; 5.13: Save recolours everything already in the model that wears one of these colours in an older shade (barge boards stayed their old colour - each face keeps its own copy); Ctrl+Z puts it back; 5.12: glass is solid dark blue-grey (like real windows from outside) - see-through glass showed patchy shading where you look through one window and another behind it; 5.11: colours for the new shop front styles - black glass (Vitrolite), chrome & aluminium, bronze, gilt, bow window glass; 5.10: the layers are kept in A to Z order (IngeTrazo\'s own first layer stays at the top); 5.9: shop fronts fawn, their sign lettering dark maroon; 5.8: colours and a layer for 3D Shop Fronts (shop front paint, gilt sign lettering, stallriser tiles, polished granite); 5.7: new builds always take the colour set here; 5.6: Save also changes the colour of that material in the open model, so the next build comes out in the new colour (it stayed the old one, e.g. black pipework); 5.5: the view re-reads the colours, as the Paint tool makes it; 5.4: the new colours show straight away, and Ctrl+Z takes them off again; 5.3: Repaint also recolours parts already wearing one of these colours (windows built into a wall); 5.2: Repaint really repaints; 5.1: parts in a whole house go by their own group   # 5.2: Repaint really repaints (the old colour was left on and still showed); 5.1: Apply to selected colours each part by the plugin its own group came from (windows, doors... inside a whole house)
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_layers_colours.json")
 MAT_PREFIX = "Eddy - "
 
@@ -59,11 +61,15 @@ DEFAULT_LAYERS = {
     "3D Station Canopies": "Station canopies",
     "3D Fences & Gates": "Fences & gates",
     "3D Shop Fronts": "Shop fronts",
+    "3D Signs & Boards": "Signs",
 }
 
 # (material, colour 0-255, opacity, words in a part's name that pick it, only for these plugins)
 # The first one whose word is in the part's name wins, so the narrow ones come first.
 DEFAULT_PALETTE = [
+    ("Sign board lettering", (240, 236, 224), 1.0, "lettering", "3D Signs & Boards"),
+    ("Sign boards", (110, 36, 52), 1.0, "sign", "3D Signs & Boards"),
+    ("Brass lamps", (196, 156, 64), 1.0, "lamp", "3D Signs & Boards"),
     ("Fascia & barge boards", (240, 230, 200), 1.0, "fascia, barge, soffit", ""),
     ("Glass", (82, 100, 112), 1.0, "glass, pane, light", ""),   # solid: see-through glass shows patches
     ("Ironmongery", (40, 40, 42), 1.0, "handle, hinge, knob, latch, letter, knocker, vane, finial", ""),
@@ -90,11 +96,15 @@ DEFAULT_PALETTE = [
     ("Brick", (168, 80, 56), 1.0, "brick, brickwork, chimney, pier, oversailing, arch", ""),
     ("Stone", (204, 196, 178), 1.0, "block, stone, coping, cill, sill, lintel, plinth, cap, quoin, kerb, string, band, base", ""),
     ("Timber", (140, 102, 66), 1.0, "plank, board, timber, fence, gate, picket, post, rail, weather, cladding, batten", ""),
+    ("Gables", (200, 198, 190), 1.0, "gable", ""),
+    ("Walls", (200, 198, 190), 1.0, "wall", ""),
+    ("Floors", (176, 168, 150), 1.0, "floor, ceiling", ""),
 ]
 
 # rows added since version 1: put into a palette you saved before they were there
 NEW_ROWS = ("Fascia & barge boards", "Roof tiles", "Sign lettering", "Stallriser tiles", "Polished granite", "Shop front paint",
-            "Black glass (Vitrolite)", "Chrome & aluminium", "Bronze", "Gilt", "Bow window glass")
+            "Black glass (Vitrolite)", "Chrome & aluminium", "Bronze", "Gilt", "Bow window glass", "Gables", "Walls", "Floors",
+            "Sign board lettering", "Sign boards", "Brass lamps")
 
 # The colours shown on the Roofs tab (the rest are on the Colours tab). A colour you add on
 # the Roofs tab is kept there.
@@ -155,6 +165,8 @@ def load_settings():
                                 str(r[4]) if len(r) > 4 else ""]
                     if len(r) > 5:
                         row.append(str(r[5]))
+                    if row[0] == "Walls" and row[3].replace(" ", "") == "wall,gable":
+                        row[3] = "wall"                          # gables have a colour of their own now
                     if row[0] == "Glass" and row[1] == (176, 196, 206) and abs(row[2] - 0.35) < 1e-6:
                         row[1], row[2] = (82, 100, 112), 1.0     # the old see-through glass: the new solid one
                     pal.append(row)
@@ -266,8 +278,9 @@ def _pick_row(palette, names, plugin):
         low = (nm or "").lower()
         for row in palette:
             only = _words(row[4])
-            if only and plugin and plugin.lower() not in only:
-                continue                # (when it isn't known which plugin made it, any row will do)
+            if only and (not plugin or plugin.lower() not in only):
+                continue                # a row only for one plugin: only for that plugin's work (a
+                                        # building's floor panels were taking the door colour)
             if any(re.search(r"\b%s(s|es)?\b" % re.escape(w), low) for w in _words(row[3])):
                 return row
     fb = PLUGIN_FALLBACK.get(plugin or "")
@@ -297,12 +310,25 @@ def colour_group(scene, group, plugin, palette, repaint=False):
         if not plugin:                     # (a plugin building its own work says which it is)
             pl = pl or _plugin_of(g)
         faces = _faces(g)
+        mats_here = {(getattr(f, 'attrs', None) or {}).get('mat') for f in faces}
+        all_one = len(mats_here) == 1 and None not in mats_here    # the whole part in one colour (painted
+        #                                       by its name), not a door built into a wall among others
         if faces and repaint and by_mat:
             # faces already wearing one of our colours (a window built into a wall, say) take
             # the new colour of that material, whatever their group is called
             for f in faces:
                 a = getattr(f, 'attrs', None) or {}
                 r = by_mat.get(a.get('mat'))
+                only = _words(r[4]) if r is not None and len(r) > 4 else []
+                if r is not None and only and (pl.lower() not in only if pl else all_one):
+                    # wearing a colour that's only for another plugin's work (a floor panel that
+                    # took the door colour): back to plain
+                    a = dict(a)
+                    for k in ('texture', 'color', 'mat', 'opacity'):
+                        a.pop(k, None)
+                    f.attrs = a
+                    count += 1
+                    continue
                 if r is not None:
                     a = dict(a)
                     a['color'] = tuple(c / 255.0 for c in r[1])
@@ -324,6 +350,8 @@ def colour_group(scene, group, plugin, palette, repaint=False):
                     a = dict(getattr(f, 'attrs', None) or {})
                     if not repaint and ('color' in a or 'mat' in a or 'texture' in a):
                         continue
+                    if repaint and a.get('mat') in by_mat and not all_one:
+                        continue     # a window, door or sill set into a wall: its own colour, done above
                     if repaint:
                         # the old colour has to go, or it still shows over the new material
                         for k in ('texture', 'color', 'mat', 'opacity'):
@@ -389,6 +417,10 @@ def _paint_command(mutate, meshes):
             # colours changed outside IngeTrazo's own mesh edits: tell the view to re-read them
             # (what IngeTrazo's Paint tool does too), or the old colours stay on screen
             try:
+                scene._dirty_group_chunks = True
+            except Exception:
+                pass
+            try:
                 from core.history import _dirty_group_chunks
                 _dirty_group_chunks(scene)
             except Exception:
@@ -399,6 +431,25 @@ def _paint_command(mutate, meshes):
                             setattr(m, flag, True)
                         except Exception:
                             pass
+            # and every mesh recoloured, however deep its group (boards inside a building's
+            # "Boards - wall 1" group kept their old colour on screen)
+            for m in meshes:
+                for flag in ('_chunk_dirty', '_attrs_dirty', '_dirty', 'dirty'):
+                    try:
+                        setattr(m, flag, True)
+                    except Exception:
+                        pass
+                for meth in ('mark_dirty', 'invalidate', 'touch', 'changed'):
+                    fn = getattr(m, meth, None)
+                    if callable(fn):
+                        try:
+                            fn()
+                        except Exception:
+                            pass
+                try:
+                    m.version += 1
+                except Exception:
+                    pass
             try:
                 scene.version += 1
             except Exception:
@@ -414,6 +465,11 @@ def _paint_command(mutate, meshes):
                         m.restore_state(s)
                     raise
                 self.after = [(m, m.capture_state()) for m in meshes]
+                for m, s_ in self.after:
+                    try:
+                        m.restore_state(s_)          # the way Undo / Redo put colours back - and the
+                    except Exception:                # view redraws after those, so it does now too
+                        pass
             else:
                 for m, s in self.after:
                     m.restore_state(s)
@@ -425,6 +481,360 @@ def _paint_command(mutate, meshes):
             self._bump(scene)
 
     return PaintCommand()
+
+
+RAL_COLOURS = (   # RAL Classic: number, on-screen colour (approximate), name
+    ("1000", "#CCC58F", "Green beige"),
+    ("1001", "#D1BC8A", "Beige"),
+    ("1002", "#D2B773", "Sand yellow"),
+    ("1003", "#F7BA0B", "Signal yellow"),
+    ("1004", "#E2B007", "Golden yellow"),
+    ("1005", "#C89F04", "Honey yellow"),
+    ("1006", "#E1A100", "Maize yellow"),
+    ("1007", "#E79C00", "Daffodil yellow"),
+    ("1011", "#AF8A54", "Brown beige"),
+    ("1012", "#D9C022", "Lemon yellow"),
+    ("1013", "#E9E5CE", "Oyster white"),
+    ("1014", "#DFCEA1", "Ivory"),
+    ("1015", "#EADEBD", "Light ivory"),
+    ("1016", "#EAF044", "Sulfur yellow"),
+    ("1017", "#F4B752", "Saffron yellow"),
+    ("1018", "#F3E03B", "Zinc yellow"),
+    ("1019", "#A4957D", "Grey beige"),
+    ("1020", "#9A9464", "Olive yellow"),
+    ("1021", "#EEC900", "Rape yellow"),
+    ("1023", "#F0CA00", "Traffic yellow"),
+    ("1024", "#B89C50", "Ochre yellow"),
+    ("1026", "#F5FF00", "Luminous yellow"),
+    ("1027", "#A38C15", "Curry"),
+    ("1028", "#FFAB00", "Melon yellow"),
+    ("1032", "#DDB20F", "Broom yellow"),
+    ("1033", "#FAAB21", "Dahlia yellow"),
+    ("1034", "#EDAB56", "Pastel yellow"),
+    ("1035", "#A29985", "Pearl beige"),
+    ("1036", "#927549", "Pearl gold"),
+    ("1037", "#EEA205", "Sun yellow"),
+    ("2000", "#DD7907", "Yellow orange"),
+    ("2001", "#BE4E20", "Red orange"),
+    ("2002", "#C63927", "Vermillion"),
+    ("2003", "#FA842B", "Pastel orange"),
+    ("2004", "#E75B12", "Pure orange"),
+    ("2005", "#FF2300", "Luminous orange"),
+    ("2007", "#FFA421", "Luminous bright orange"),
+    ("2008", "#F3752C", "Bright red orange"),
+    ("2009", "#E15501", "Traffic orange"),
+    ("2010", "#D4652F", "Signal orange"),
+    ("2011", "#EC7C25", "Deep orange"),
+    ("2012", "#DB6A50", "Salmon orange"),
+    ("2013", "#954527", "Pearl orange"),
+    ("3000", "#AB2524", "Flame red"),
+    ("3001", "#A02128", "Signal red"),
+    ("3002", "#A1232B", "Carmine red"),
+    ("3003", "#8D1D2C", "Ruby red"),
+    ("3004", "#701F29", "Purple red"),
+    ("3005", "#5E2028", "Wine red"),
+    ("3007", "#402225", "Black red"),
+    ("3009", "#703731", "Oxide red"),
+    ("3011", "#7E292C", "Brown red"),
+    ("3012", "#CB8D73", "Beige red"),
+    ("3013", "#9C322E", "Tomato red"),
+    ("3014", "#D47479", "Antique pink"),
+    ("3015", "#E1A6AD", "Light pink"),
+    ("3016", "#AC4034", "Coral red"),
+    ("3017", "#D3545F", "Rose"),
+    ("3018", "#D14152", "Strawberry red"),
+    ("3020", "#C1121C", "Traffic red"),
+    ("3022", "#D56D56", "Salmon pink"),
+    ("3024", "#F70000", "Luminous red"),
+    ("3026", "#FF0000", "Luminous bright red"),
+    ("3027", "#B42041", "Raspberry red"),
+    ("3028", "#E72512", "Pure red"),
+    ("3031", "#AC323B", "Orient red"),
+    ("3032", "#711521", "Pearl ruby red"),
+    ("3033", "#B24C43", "Pearl pink"),
+    ("4001", "#8A5A83", "Red lilac"),
+    ("4002", "#933D50", "Red violet"),
+    ("4003", "#D15B8F", "Heather violet"),
+    ("4004", "#691639", "Claret violet"),
+    ("4005", "#83639D", "Blue lilac"),
+    ("4006", "#992572", "Traffic purple"),
+    ("4007", "#4A203B", "Purple violet"),
+    ("4008", "#904684", "Signal violet"),
+    ("4009", "#A38995", "Pastel violet"),
+    ("4010", "#C63678", "Telemagenta"),
+    ("4011", "#8773A1", "Pearl violet"),
+    ("4012", "#6B6880", "Pearl blackberry"),
+    ("5000", "#384C70", "Violet blue"),
+    ("5001", "#1F4764", "Green blue"),
+    ("5002", "#2B2C7C", "Ultramarine blue"),
+    ("5003", "#2A3756", "Sapphire blue"),
+    ("5004", "#1D1F2A", "Black blue"),
+    ("5005", "#154889", "Signal blue"),
+    ("5007", "#41678D", "Brilliant blue"),
+    ("5008", "#313C48", "Grey blue"),
+    ("5009", "#2E5978", "Azure blue"),
+    ("5010", "#13447C", "Gentian blue"),
+    ("5011", "#232C3F", "Steel blue"),
+    ("5012", "#3481B8", "Light blue"),
+    ("5013", "#232D53", "Cobalt blue"),
+    ("5014", "#6C7C98", "Pigeon blue"),
+    ("5015", "#2874B2", "Sky blue"),
+    ("5017", "#0E518D", "Traffic blue"),
+    ("5018", "#21888F", "Turquoise blue"),
+    ("5019", "#1A5784", "Capri blue"),
+    ("5020", "#0B4151", "Ocean blue"),
+    ("5021", "#07737A", "Water blue"),
+    ("5022", "#2F2A5A", "Night blue"),
+    ("5023", "#4D668E", "Distant blue"),
+    ("5024", "#6A93B0", "Pastel blue"),
+    ("5025", "#296478", "Pearl gentian blue"),
+    ("5026", "#102C54", "Pearl night blue"),
+    ("6000", "#327662", "Patina green"),
+    ("6001", "#28713E", "Emerald green"),
+    ("6002", "#276235", "Leaf green"),
+    ("6003", "#4B573E", "Olive green"),
+    ("6004", "#0E4243", "Blue green"),
+    ("6005", "#0F4336", "Moss green"),
+    ("6006", "#40433B", "Grey olive"),
+    ("6007", "#283424", "Bottle green"),
+    ("6008", "#35382E", "Brown green"),
+    ("6009", "#26392F", "Fir green"),
+    ("6010", "#3E753B", "Grass green"),
+    ("6011", "#68825B", "Reseda green"),
+    ("6012", "#31403D", "Black green"),
+    ("6013", "#797C5A", "Reed green"),
+    ("6014", "#444337", "Yellow olive"),
+    ("6015", "#3D403A", "Black olive"),
+    ("6016", "#026A52", "Turquoise green"),
+    ("6017", "#468641", "May green"),
+    ("6018", "#48A43F", "Yellow green"),
+    ("6019", "#B7D9B1", "Pastel green"),
+    ("6020", "#354733", "Chrome green"),
+    ("6021", "#86A47C", "Pale green"),
+    ("6022", "#3E3C32", "Brown olive"),
+    ("6024", "#008754", "Traffic green"),
+    ("6025", "#53753C", "Fern green"),
+    ("6026", "#005D52", "Opal green"),
+    ("6027", "#81C0BB", "Light green"),
+    ("6028", "#2D5546", "Pine green"),
+    ("6029", "#007243", "Mint green"),
+    ("6032", "#0F8558", "Signal green"),
+    ("6033", "#478A84", "Mint turquoise"),
+    ("6034", "#7FB0B2", "Pastel turquoise"),
+    ("6035", "#1B542C", "Pearl green"),
+    ("6036", "#005D4C", "Pearl opal green"),
+    ("6037", "#25E712", "Pure green"),
+    ("6038", "#00F700", "Luminous green"),
+    ("7000", "#7E8B92", "Squirrel grey"),
+    ("7001", "#8F999F", "Silver grey"),
+    ("7002", "#817F68", "Olive grey"),
+    ("7003", "#7A7B6D", "Moss grey"),
+    ("7004", "#9EA0A1", "Signal grey"),
+    ("7005", "#6B716F", "Mouse grey"),
+    ("7006", "#756F61", "Beige grey"),
+    ("7008", "#746643", "Khaki grey"),
+    ("7009", "#5B6259", "Green grey"),
+    ("7010", "#575D57", "Tarpaulin grey"),
+    ("7011", "#555D61", "Iron grey"),
+    ("7012", "#596163", "Basalt grey"),
+    ("7013", "#555548", "Brown grey"),
+    ("7015", "#51565C", "Slate grey"),
+    ("7016", "#373F43", "Anthracite grey"),
+    ("7021", "#2E3234", "Black grey"),
+    ("7022", "#4B4D46", "Umbra grey"),
+    ("7023", "#818479", "Concrete grey"),
+    ("7024", "#474A50", "Graphite grey"),
+    ("7026", "#374447", "Granite grey"),
+    ("7030", "#939388", "Stone grey"),
+    ("7031", "#5D6970", "Blue grey"),
+    ("7032", "#B9B9A8", "Pebble grey"),
+    ("7033", "#818979", "Cement grey"),
+    ("7034", "#939176", "Yellow grey"),
+    ("7035", "#CBD0CC", "Light grey"),
+    ("7036", "#9A9697", "Platinum grey"),
+    ("7037", "#7C7F7E", "Dusty grey"),
+    ("7038", "#B4B8B0", "Agate grey"),
+    ("7039", "#6B695F", "Quartz grey"),
+    ("7040", "#9DA3A6", "Window grey"),
+    ("7042", "#8F9695", "Traffic grey A"),
+    ("7043", "#4E5451", "Traffic grey B"),
+    ("7044", "#BDBDB2", "Silk grey"),
+    ("7045", "#91969A", "Telegrey 1"),
+    ("7046", "#82898E", "Telegrey 2"),
+    ("7047", "#CFD0CF", "Telegrey 4"),
+    ("7048", "#888175", "Pearl mouse grey"),
+    ("8000", "#887142", "Green brown"),
+    ("8001", "#9C6B30", "Ochre brown"),
+    ("8002", "#7B5141", "Signal brown"),
+    ("8003", "#80542F", "Clay brown"),
+    ("8004", "#8F4E35", "Copper brown"),
+    ("8007", "#6F4A2F", "Fawn brown"),
+    ("8008", "#6F4F28", "Olive brown"),
+    ("8011", "#5A3A29", "Nut brown"),
+    ("8012", "#673831", "Red brown"),
+    ("8014", "#49392D", "Sepia brown"),
+    ("8015", "#633A34", "Chestnut brown"),
+    ("8016", "#4C2F26", "Mahogany brown"),
+    ("8017", "#44322D", "Chocolate brown"),
+    ("8019", "#3F3A3A", "Grey brown"),
+    ("8022", "#211F20", "Black brown"),
+    ("8023", "#A65E2F", "Orange brown"),
+    ("8024", "#79553C", "Beige brown"),
+    ("8025", "#755C49", "Pale brown"),
+    ("8028", "#4E3B31", "Terra brown"),
+    ("8029", "#763C28", "Pearl copper"),
+    ("9001", "#FDF4E3", "Cream"),
+    ("9002", "#E7EBDA", "Grey white"),
+    ("9003", "#F4F4F4", "Signal white"),
+    ("9004", "#282828", "Signal black"),
+    ("9005", "#0A0A0A", "Jet black"),
+    ("9006", "#A5A5A5", "White aluminium"),
+    ("9007", "#8F8F8F", "Grey aluminium"),
+    ("9010", "#FFFFFF", "Pure white"),
+    ("9011", "#1C1C1C", "Graphite black"),
+    ("9016", "#F6F6F6", "Traffic white"),
+    ("9017", "#1E1E1E", "Traffic black"),
+    ("9018", "#D7D7D7", "Papyrus white"),
+    ("9022", "#9C9C9C", "Pearl light grey"),
+    ("9023", "#828282", "Pearl dark grey"),
+)
+
+
+class ColourPicker(QDialog):
+    """Pick a colour: the RAL Classic colours with a search box (type a name like 'cream' or 'green',
+    or a number like 6005), or 'My own colour...' for the usual colour chooser."""
+
+    def __init__(self, parent, rgb, title):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(380, 520)
+        self.rgb = tuple(rgb)
+        v = QVBoxLayout(self)
+        self.ed = QLineEdit()
+        self.ed.setPlaceholderText("Search - a name (cream, green, slate...) or a RAL number")
+        self.ed.setClearButtonEnabled(True)
+        v.addWidget(self.ed)
+        self.lst = QListWidget()
+        v.addWidget(self.lst, 1)
+        for num, hx, name in RAL_COLOURS:
+            c = QColor(hx)
+            pm = QPixmap(28, 18)
+            pm.fill(c)
+            it = QListWidgetItem(QIcon(pm), "RAL %s  %s" % (num, name))
+            it.setData(Qt.UserRole, (c.red(), c.green(), c.blue()))
+            self.lst.addItem(it)
+        row = QHBoxLayout()
+        b_pick = QPushButton("Pick from screen")
+        b_pick.setToolTip("Then click anywhere on the screen - the model, a photo, anything - to take its colour "
+                          "(Esc to stop)")
+        row.addWidget(b_pick)
+        b_pick.clicked.connect(self._pick_screen)
+        b_own = QPushButton("My own colour...")
+        b_ok = QPushButton("OK")
+        b_ok.setDefault(True)
+        b_cancel = QPushButton("Cancel")
+        row.addWidget(b_own)
+        row.addStretch(1)
+        row.addWidget(b_ok)
+        row.addWidget(b_cancel)
+        v.addLayout(row)
+        self.ed.textChanged.connect(self._filter)
+        self.lst.itemDoubleClicked.connect(lambda *_: self._ok())
+        b_ok.clicked.connect(self._ok)
+        b_cancel.clicked.connect(self.reject)
+        b_own.clicked.connect(self._own)
+        self.ed.setFocus()
+
+    def _filter(self, text):
+        words = text.lower().split()
+        first = None
+        for i in range(self.lst.count()):
+            it = self.lst.item(i)
+            show = all(w in it.text().lower() for w in words)
+            it.setHidden(not show)
+            if show and first is None:
+                first = it
+        if first is not None:
+            self.lst.setCurrentItem(first)
+
+    def _ok(self):
+        it = self.lst.currentItem()
+        if it is None or it.isHidden():
+            return
+        self.rgb = tuple(it.data(Qt.UserRole))
+        self.accept()
+
+    def _pick_screen(self):
+        """An eyedropper: the screen as it is now, shown full size; the colour under the click is taken."""
+        from PySide6.QtGui import QGuiApplication, QCursor
+        from PySide6.QtWidgets import QApplication
+        main = self.parent()
+        self.hide()
+        if main is not None:
+            main.hide()                                  # the Layers & Colours window out of the way too
+        QApplication.processEvents()
+        import time
+        time.sleep(0.25)                                 # this window gone from the picture
+        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        shot = screen.grabWindow(0)
+        img = shot.toImage()
+        picker = self
+
+        class Dropper(QDialog):
+            def __init__(self):
+                super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+                self.got = None
+                self.setCursor(Qt.CrossCursor)
+                self.setGeometry(screen.geometry())
+                self.setMouseTracking(True)
+                self.lbl = QLabel(self)
+                self.lbl.setStyleSheet("background: #ffffffee; border: 1px solid #555; padding: 4px;")
+                self.lbl.setText("Click a colour  (Esc to stop)")
+                self.lbl.adjustSize()
+                self.lbl.move(20, 20)
+
+            def _at(self, pos):
+                dpr = shot.devicePixelRatio() or 1.0
+                x = max(0, min(img.width() - 1, int(pos.x() * dpr)))
+                y = max(0, min(img.height() - 1, int(pos.y() * dpr)))
+                return img.pixelColor(x, y)
+
+            def paintEvent(self, _e):
+                from PySide6.QtGui import QPainter
+                QPainter(self).drawPixmap(self.rect(), shot)
+
+            def mouseMoveEvent(self, e):
+                c = self._at(e.position().toPoint())
+                self.lbl.setText("Click a colour  (Esc to stop)   R%d G%d B%d" % (c.red(), c.green(), c.blue()))
+                self.lbl.setStyleSheet("background: %s; color: %s; border: 1px solid #555; padding: 4px;"
+                                       % (c.name(), "#000" if c.lightness() > 128 else "#fff"))
+                self.lbl.adjustSize()
+                p = e.position().toPoint()
+                self.lbl.move(p.x() + 18, p.y() + 18)
+
+            def mousePressEvent(self, e):
+                c = self._at(e.position().toPoint())
+                self.got = (c.red(), c.green(), c.blue())
+                self.accept()
+
+            def keyPressEvent(self, e):
+                if e.key() == Qt.Key_Escape:
+                    self.reject()
+        d = Dropper()
+        d.showFullScreen()
+        d.exec()
+        if main is not None:
+            main.show()
+        self.show()
+        if d.got:
+            picker.rgb = d.got
+            picker.accept()
+
+    def _own(self):
+        col = QColorDialog.getColor(QColor(*self.rgb), self, self.windowTitle())
+        if col.isValid():
+            self.rgb = (col.red(), col.green(), col.blue())
+            self.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +863,10 @@ class LayersColoursDialog(QDialog):
         lay.addWidget(self.cb_layers)
         lay.addWidget(self.cb_colours)
 
+        self.ed_find = QLineEdit()
+        self.ed_find.setPlaceholderText("Find a colour - type window, door, brick, glass, slate...")
+        self.ed_find.setClearButtonEnabled(True)
+        lay.addWidget(self.ed_find)
         tabs = QTabWidget()
         lay.addWidget(tabs, 1)
 
@@ -466,6 +880,7 @@ class LayersColoursDialog(QDialog):
                                          "tin sheets, lead and the fascia and barge boards. " + note_text)
         self._tabs = tabs
         self._fill_palette(self.s['palette'])
+        self.ed_find.textChanged.connect(self._find)
 
         # layers
         w = QWidget()
@@ -516,6 +931,9 @@ class LayersColoursDialog(QDialog):
         tabs.addTab(w, "Apply to selected")
 
         btns = QHBoxLayout()
+        self.lbl_saved = QLabel("")
+        self.lbl_saved.setStyleSheet("color: #2e7d32;")
+        btns.addWidget(self.lbl_saved)
         btns.addStretch(1)
         b_save = QPushButton("Save")
         b_save.setDefault(True)
@@ -585,10 +1003,31 @@ class LayersColoursDialog(QDialog):
             return
         it = tbl.item(r, 1)
         rgb, op = it.data(Qt.UserRole)
-        col = QColorDialog.getColor(QColor(*rgb), self, "Colour for %s" % tbl.item(r, 0).text())
+        dlg = ColourPicker(self, rgb, "Colour for %s" % tbl.item(r, 0).text())
+        col = QColor(*dlg.rgb) if dlg.exec() == QDialog.Accepted else QColor()
         if col.isValid():
             it.setBackground(col)
             it.setData(Qt.UserRole, [[col.red(), col.green(), col.blue()], op])
+
+    def _find(self, text):
+        """Only the colours whose name (or words) has what's typed; the tab with them comes up."""
+        words = text.lower().split()
+        hits = {}
+        for tbl in (self.tbl, self.tbl_roof):
+            n = 0
+            for r in range(tbl.rowCount()):
+                txt = " ".join((tbl.item(r, c).text() if tbl.item(r, c) else "") for c in (0, 2)).lower()
+                show = all(w in txt for w in words)
+                tbl.setRowHidden(r, not show)
+                n += show
+            hits[id(tbl)] = n
+        if words:
+            if hits[id(self.tbl)] == 0 and hits[id(self.tbl_roof)] > 0:
+                self._tabs.setCurrentIndex(1)
+            elif hits[id(self.tbl)] > 0 and self._tabs.currentIndex() not in (0, 1):
+                self._tabs.setCurrentIndex(0)
+            elif hits[id(self.tbl)] > 0 and hits[id(self.tbl_roof)] == 0:
+                self._tabs.setCurrentIndex(0)
 
     def _add_row(self, tbl):
         self._insert(tbl, ["New colour", (180, 180, 180), 1.0, "", ""])
@@ -637,19 +1076,68 @@ class LayersColoursDialog(QDialog):
         try:
             scene = getattr(self.viewport, 'scene', None)
             mats = getattr(scene, 'materials', None) or {}
-            changed = 0
+            changed = {}
             for r in self.s['palette']:
                 if old.get(r[0]) != (tuple(r[1]), float(r[2])) and (MAT_PREFIX + r[0]) in mats:
                     _paint_attrs(scene, r, True)
-                    changed += 1
+                    changed[MAT_PREFIX + r[0]] = r
             if changed:
                 try:
                     scene.version += 1
                 except Exception:
                     pass
+            # every face wearing one of these colours, but still in an older shade of it, takes the
+            # colour set here (each face keeps its own copy, so changing the material alone left
+            # them as they were - barge boards stayed their old colour)
+            changed = {MAT_PREFIX + r[0]: r for r in self.s['palette']}
+
+            def stale(f):
+                a = getattr(f, 'attrs', None) or {}
+                r = changed.get(a.get('mat'))
+                if r is None:
+                    return None
+                want = tuple(c / 255.0 for c in r[1])
+                got = tuple(a.get('color') or ())
+                if len(got) >= 3 and all(abs(x - y) < 1e-3 for x, y in zip(got, want)) \
+                        and abs(float(a.get('opacity', 1.0)) - float(r[2])) < 1e-3:
+                    return None
+                return r
+            if changed:
+                meshes, seen = [], set()
+
+                def gather(g):
+                    m = getattr(g, 'mesh', None)
+                    if m is not None and id(m) not in seen:
+                        seen.add(id(m))
+                        if any(stale(f) is not None for f in (getattr(m, 'faces', None) or ())):
+                            meshes.append(m)
+                    for c in _children(g):
+                        gather(c)
+                for g in getattr(scene, 'groups', None) or []:
+                    gather(g)
+
+                def mutate(_sc):
+                    for m in meshes:
+                        for f in getattr(m, 'faces', None) or ():
+                            r = stale(f)
+                            if r is not None:
+                                a = dict(getattr(f, 'attrs', None) or {})
+                                a['color'] = tuple(c / 255.0 for c in r[1])
+                                a['opacity'] = float(r[2])
+                                f.attrs = a
+                if meshes:
+                    try:
+                        self.viewport.history.execute(_paint_command(mutate, meshes))
+                        self.viewport.notify_scene_changed()
+                    except Exception as e:
+                        print("%s: recolouring the model: %s" % (PLUGIN_NAME, e))
         except Exception as e:
-            print("%s: updating the model's colours: %s" % (PLUGIN_NAME, e))
-        self.accept()
+            import traceback
+            print("%s: updating the model's colours: %s" % (PLUGIN_NAME, traceback.format_exc()))
+            QMessageBox.warning(self, PLUGIN_NAME, "Saved, but couldn't recolour what's already built:\n%s" % e)
+        import time as _t
+        self.lbl_saved.setText("Saved %s - the model shows the new colours." % _t.strftime("%H:%M"))
+        # the window stays open: only Close shuts it
 
     # apply to selected ---------------------------------------------------
     def _apply_selected(self):

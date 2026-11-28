@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Scale Studio"
-VERSION = "1.16"           # 1.16: with 'Lay each piece flat' ticked, the Pieces list gives each piece's size as it lies on the bed (a roof slope no longer shows its tilted size); 1.15: clicking a piece on the bed picks the right row in the Pieces list (and shows its own size); 1.14: the bed list shows that size too; 1.13: an object kept whole for a resin printer is laid flat as one (its chimney pots no longer float off)
+VERSION = "1.24"           # 1.24: when a printer has too much for one bed, the preview shows its pieces a bed at a time (Next bed), as they are sent; 1.23: right-click a piece in Plan pieces - It prints fine - no warning: the open warning goes (kept with the plan); 1.22: the print pieces list no longer jumps back to the top when you give a piece a printer; 1.21: in Plan pieces, a piece you have given a printer shows in bold; 1.20: in Plan pieces, a hidden piece or part you click in the list shows in the picture (picked, in yellow); 1.19: the pieces and parts you hid in Plan pieces stay hidden - kept with the plan and in Save project; 1.18: Turn picture moved up beside the Look from buttons; 1.17: Plan pieces has Look from: Top, Bottom, Front, Back, Left, Right and 3D buttons over the picture; 1.16: with 'Lay each piece flat' ticked, the Pieces list gives each piece's size as it lies on the bed (a roof slope no longer shows its tilted size); 1.15: clicking a piece on the bed picks the right row in the Pieces list (and shows its own size); 1.14: the bed list shows that size too; 1.13: an object kept whole for a resin printer is laid flat as one (its chimney pots no longer float off)
 ONE_PIECE = "one piece"       # a group with this in its name prints as one piece, whatever is inside it
 
 
@@ -2864,8 +2864,8 @@ class PieceCanvas(QWidget):
         for n_, (_d, i, pts, sh, ed) in enumerate(self.items):
             if quick > 1 and n_ % quick:
                 continue
-            if not self.dlg.shown(i):
-                continue
+            if not self.dlg.shown(i) and i not in picked:
+                continue                           # 1.20: hidden, unless you've picked it (to see it)
             base = self.dlg.colour_of(i)
             if i in picked:
                 base = (255, 225, 40)              # the parts you've picked show up bright yellow
@@ -3023,6 +3023,8 @@ class PiecesDialog(QDialog):
         self.keys = {k: p for k, p in keys.items() if k in known and p in self.pieces}
         # pieces to close the holes in, and which slicer each piece goes to ("" = parts on their own)
         self.close = set((plan or {}).get('close', []))
+        # 1.23: pieces you've said print fine as they are - no 'open' warning on them
+        self.fine = set((plan or {}).get('fine', []))
         # which printer each piece prints on: {piece: printer key} - not there: the first printer
         self.slicer_of = dict((plan or {}).get('printer', {}))
         # [(printer key, "Printer - Slicer")] - the printer on the 3D print page first (key "")
@@ -3083,7 +3085,9 @@ class PiecesDialog(QDialog):
         except Exception:
             pass
         from PySide6.QtWidgets import QListWidget
-        self.hidden_parts, self.hidden_pieces = set(), set()
+        # 1.19: what you'd hidden comes back too (kept in the plan, and in Save project)
+        self.hidden_parts = set(k for k in (plan or {}).get('hidden_parts', []) if k in known)
+        self.hidden_pieces = set(n for n in (plan or {}).get('hidden_pieces', []) if n in self.pieces or n == "")
         vsplit = QSplitter(_Qt.Vertical)
         vsplit.setChildrenCollapsible(False)
         vsplit.setHandleWidth(7)
@@ -3113,7 +3117,34 @@ class PiecesDialog(QDialog):
         self.canvas = PieceCanvas(self)
         self.canvas.setToolTip("The parts, coloured by the piece they're in (grey: on their own). Click a part to "
                                "pick it - Ctrl+click to pick more, Shift+click to un-pick. Picked parts show yellow.")
-        row.addWidget(self.canvas)
+        # buttons to look at it from each side, so there's no turning it round with the mouse
+        cv_box = QWidget()
+        cv_lay = QVBoxLayout(cv_box)
+        cv_lay.setContentsMargins(0, 0, 0, 0)
+        cv_lay.setSpacing(2)
+        vrow = QHBoxLayout()
+        vrow.setSpacing(2)
+        vrow.addWidget(QLabel("Look from:"))
+        for txt, az, el, tip in (("Top", 90.0, 85.0, "Looks straight down on it."),
+                                 ("Bottom", 90.0, -85.0, "Looks straight up at its underside."),
+                                 ("Front", 90.0, 0.0, "Looks at its front."),
+                                 ("Back", 270.0, 0.0, "Looks at its back."),
+                                 ("Left", 0.0, 0.0, "Looks at its left end."),
+                                 ("Right", 180.0, 0.0, "Looks at its right end."),
+                                 ("3D", 52.0, 32.0, "The usual view, from the front left and a little above.")):
+            b_ = QPushButton(txt)
+            b_.setToolTip(tip)
+            b_.setMinimumWidth(44)
+            b_.clicked.connect(lambda _c=False, a_=az, e_=el: self.look_from(a_, e_))
+            vrow.addWidget(b_)
+        b_turn = QPushButton("Turn picture")          # 1.18: up here with the Look from buttons
+        b_turn.setToolTip("Turns the picture a quarter of the way round, to see the other side.")
+        b_turn.clicked.connect(self.turn)
+        vrow.addWidget(b_turn)
+        vrow.addStretch(1)
+        cv_lay.addLayout(vrow)
+        cv_lay.addWidget(self.canvas, 1)
+        row.addWidget(cv_box)
         self.hsplit, self.vsplit = row, vsplit
         try:
             sz = load_settings().get('plan_splits') or {}
@@ -3157,9 +3188,6 @@ class PiecesDialog(QDialog):
         b_grp.clicked.connect(self.pick_whole_group)
         b_clear = QPushButton("Clear all")
         b_clear.setToolTip("Every part on its own again.")
-        b_turn = QPushButton("Turn picture")
-        b_turn.setToolTip("Turns the picture a quarter of the way round, to see the other side.")
-        b_turn.clicked.connect(self.turn)
         self.b_below = QPushButton("Look from below")
         self.b_below.setToolTip("Looks up at the model from underneath (press again to look from above).")
         self.b_below.clicked.connect(self.flip_view)
@@ -3267,7 +3295,7 @@ class PiecesDialog(QDialog):
                 sc.activated.connect(fn)
         except Exception:
             pass
-        for w in (b_kind, b_grp, b_clear, b_ren, b_turn, self.b_below, b_hide, b_showall, b_only, b_all):
+        for w in (b_kind, b_grp, b_clear, b_ren, self.b_below, b_hide, b_showall, b_only, b_all):
             brow2.addWidget(w)
         more_lay.addLayout(brow2)
         self.lbl.setWordWrap(True)
@@ -3884,6 +3912,12 @@ class PiecesDialog(QDialog):
             from PySide6.QtWidgets import QListWidgetItem
             from PySide6.QtGui import QPixmap, QIcon
             self.piece_list.blockSignals(True)
+            # 1.22: the list stays where you'd scrolled to, with the same pieces picked
+            try:
+                keep_scroll = self.piece_list.verticalScrollBar().value()
+                keep_sel = set(self.selected_pieces())
+            except Exception:
+                keep_scroll, keep_sel = None, set()
             self.piece_list.clear()
             for k_, p_ in enumerate(self.pieces + [""]):
                 n_ = sum(1 for kk, _n, _kd, _t in self.leaves if (self.keys.get(kk) or "") == p_)
@@ -3892,6 +3926,10 @@ class PiecesDialog(QDialog):
                 li = QListWidgetItem("%s  (%d part%s)%s" % (p_ or "On their own", n_, "" if n_ == 1 else "s",
                                                             self.piece_note(p_)))
                 li.setToolTip(self.piece_tip(p_))
+                if p_ in self.slicer_of:          # 1.21: a printer's been given to it - bold
+                    f_ = li.font()
+                    f_.setBold(True)
+                    li.setFont(f_)
                 pm = QPixmap(16, 16)
                 pm.fill(QColor(*(piece_colour(k_) if p_ else LOOSE_COLOUR)))
                 li.setIcon(QIcon(pm))
@@ -3900,6 +3938,15 @@ class PiecesDialog(QDialog):
                 li.setCheckState(_qt('CheckState', 'Unchecked') if p_ in self.hidden_pieces
                                  else _qt('CheckState', 'Checked'))
                 self.piece_list.addItem(li)
+                if p_ in keep_sel:
+                    li.setSelected(True)
+            if keep_scroll is not None:
+                self.piece_list.verticalScrollBar().setValue(keep_scroll)
+                try:
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda v_=keep_scroll: self.piece_list.verticalScrollBar().setValue(v_))
+                except Exception:
+                    pass
             self.piece_list.blockSignals(False)
         except Exception:
             pass
@@ -4026,6 +4073,19 @@ class PiecesDialog(QDialog):
         a_close.setToolTip("Closes every hole (any size) in the print file so it prints as a solid. Your model "
                            "isn't changed.")
         a_close.triggered.connect(lambda on=False: [self.set_close(n_, bool(on)) for n_ in names])
+        a_fine = m.addAction("It prints fine - no warning")
+        a_fine.setCheckable(True)
+        a_fine.setChecked(all(n_ in self.fine for n_ in names))
+        a_fine.setEnabled(any(n_ in self.fine or self.state_of(n_) == 'open' for n_ in names))
+
+        def set_fine(on, names_=names):
+            for n_ in names_:
+                if on:
+                    self.fine.add(n_)
+                else:
+                    self.fine.discard(n_)
+            self.refresh()
+        a_fine.triggered.connect(lambda on=False: set_fine(bool(on)))
         sub_s = m.addMenu("Print %s on" % ("these" if len(names) > 1 else "it"))
         self.fill_slicer_menu(sub_s, lambda p_: self.set_slicers_for(names, p_),
                               self.slicer_of.get(name, "") if len(names) == 1 else None)
@@ -4140,6 +4200,16 @@ class PiecesDialog(QDialog):
         self.hidden_parts, self.hidden_pieces = set(), set()
         self.refresh()
 
+    def look_from(self, az, el):
+        self.canvas.az, self.canvas.el = float(az), float(el)
+        self.canvas.zoom, self.canvas.pan = 1.0, (0.0, 0.0)
+        try:
+            self.b_below.setText("Look from above" if self.canvas.el < 0 else "Look from below")
+        except Exception:
+            pass
+        self.canvas.view()
+        self.canvas.update()
+
     def flip_view(self, *_):
         self.canvas.el = -self.canvas.el
         self.b_below.setText("Look from above" if self.canvas.el < 0 else "Look from below")
@@ -4154,7 +4224,9 @@ class PiecesDialog(QDialog):
     def plan(self):
         return {'pieces': list(self.pieces), 'keys': dict(self.keys), 'close': sorted(self.close),
                 'printer': dict(self.slicer_of), 'skip': sorted(self.skip),
-                'printed': sorted(getattr(self, 'printed', set()))}
+                'printed': sorted(getattr(self, 'printed', set())),
+                'hidden_pieces': sorted(self.hidden_pieces), 'hidden_parts': sorted(self.hidden_parts),
+                'fine': sorted(n for n in self.fine if n in self.pieces)}
 
     # ---- undo and redo (Ctrl+Z, Ctrl+Y)
     def snapshot(self):
@@ -4289,7 +4361,7 @@ class PiecesDialog(QDialog):
         st = self.state_of(name)
         if name in self.close:
             bits.append("holes closed")
-        elif st == 'open':
+        elif st == 'open' and name not in self.fine:
             bits.append("\u26a0 open - won't print solid")
         elif st == 'flat':
             bits.append("\u26a0 flat - no thickness")
@@ -7918,6 +7990,7 @@ class StudioDialog(QDialog):
             elif self.cb_preview.currentData() == 'bed':
                 self.b_nextbed.setVisible(False)
                 self._bed_note = []
+                self._plan_nbeds, self._plan_bed = 1, 0
                 parts, _notes, _w = self.make_parts({'use_scale': True, 'layout': 'bed', 'apply_fixes': False,
                                                     'per_piece': True})
                 beds = self._bed_split
@@ -8847,7 +8920,10 @@ class StudioDialog(QDialog):
         """The preview's 'Next bed' button: the next printer's bed."""
         if getattr(self, '_gathered_on', False):
             self._bed_view = getattr(self, '_bed_view', 0) + 1
+        elif getattr(self, '_plan_bed', 0) + 1 < getattr(self, '_plan_nbeds', 1):
+            self._plan_bed = getattr(self, '_plan_bed', 0) + 1      # the next bed of the same printer
         else:
+            self._plan_bed = 0
             self._plan_view = getattr(self, '_plan_view', 0) + 1
         self.refresh_preview()
 
@@ -8914,6 +8990,27 @@ class StudioDialog(QDialog):
         if self.cb_flat.isChecked():
             parts = [(n, c, lay_flat(tr)) for n, c, tr in parts]
         parts, bed = self.lay_for_printer(parts, pr)
+        # 1.24: too much for this printer's bed - shown a bed at a time, as it will be sent
+        nb, kb = 1, 0
+        try:
+            if self.cb_bed.isChecked() and len(parts) > 1:
+                ub = self.usable(bed[0], bed[1])
+                s_ = tris_size([t for _n, _c, tr in parts for t in tr])
+                if s_[0] > ub[0] + 1e-6 or s_[1] > ub[1] + 1e-6:
+                    beds = split_beds([(n, tr) for n, _c, tr in parts], ub[0], ub[1], max(0.2, _gap),
+                                      0.0 if self.edge_gap() > 0 else None)
+                    if len(beds) > 1:
+                        nb = len(beds)
+                        kb = getattr(self, '_plan_bed', 0) % nb
+                        rows_ = getattr(self, '_shown_rows', None)
+                        if rows_ is not None and len(rows_) == len(parts):
+                            self._shown_rows = [rows_[j] for j, _tr in beds[kb]]
+                        else:
+                            self._shown_rows = None
+                        parts = [(parts[j][0], parts[j][1], tr) for j, tr in beds[kb]]
+        except Exception as e:
+            print("%s: beds not shared out in the preview: %s" % (PLUGIN_NAME, e))
+        self._plan_nbeds = nb
         shown_bed = (bed[0], bed[1])
         if not self.cb_bed.isChecked() and parts:
             s = tris_size([t for _n, _c, tr in parts for t in tr])
@@ -8921,8 +9018,10 @@ class StudioDialog(QDialog):
         self.canvas.empty_text = "Nothing to show"
         self.canvas.set_parts(parts, shown_bed, None)
         self._shown = None
-        self.b_nextbed.setVisible(len(groups) > 1)
+        self.b_nextbed.setVisible(len(groups) > 1 or nb > 1)
         self._bed_note = self.bed_note(parts, bed, path, pr, i, len(groups))
+        if nb > 1:
+            self._bed_note[0] += "  -  bed %d of %d on this printer (too much for one, so %d files)" % (kb + 1, nb, nb)
 
     def preview_gathered(self):
         """Shows the gathered objects laid out on the bed, as they'll be sent. With pieces going to

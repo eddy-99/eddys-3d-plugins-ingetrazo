@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QTabWidget, QWidget)
 
 PLUGIN_NAME = "3D Chimneys"
-VERSION = "6.1"  # 6.1: version number in the standard x.y style (was 6)
+VERSION = "6.2"  # 6.2: Pots run - along the ridge or across it (front to back); the stack is made long the way the pots run; 6.1: version number in the standard x.y style (was 6)
 
 
 def _ed3d_organise(scene, group):
@@ -860,6 +860,7 @@ def lathe(profile, cx, cy, z0, nseg=24, rot=0.0):
     return fixed(faces)
 
 
+POT_DIRS = [("along", "Along the ridge"), ("across", "Across the ridge (front to back)")]
 POT_STYLES = [("plain", "Plain"), ("tapered", "Tapered"), ("cannon", "Cannon (roll top)"),
               ("crown", "Crown (castellated)"), ("square", "Square"), ("octagon", "Octagonal")]
 
@@ -1044,8 +1045,13 @@ def house_stack(v, roof, frame):
     """All the parts of a house chimney stack: {group name: [solids]}, and a report."""
     S = SCALE
     # the stack's size, made big enough for the pots, and the pots' rows
-    Wmm, Dmm, rows, per_row, widened = stack_size(v)
+    across_pots = v.get('pot_dir') == 'across'
+    vv = dict(v)
+    if across_pots:                                     # the pots' row runs front to back: the stack is
+        vv['width'], vv['depth'] = v['depth'], v['width']   # laid out turned a quarter round
+    Wmm, Dmm, rows, per_row, widened = stack_size(vv)
     W, Dp = Wmm * S, Dmm * S
+    Wpos, Dpos = (Dp, W) if across_pots else (W, Dp)   # its size along / across the ridge
     npots = int(v['pots'])
     pot_d = v['pot_dia'] * S
     foot = pot_d * 1.12
@@ -1065,10 +1071,13 @@ def house_stack(v, roof, frame):
         up = frame['up']
         us = [p[0] * along[0] + p[1] * along[1] for p in pts]
         ss = [p[0] * up[0] + p[1] * up[1] for p in pts]
-        u = min(us) + W / 2 + (max(us) - min(us) - W) * v['along'] / 100.0
-        s_lo, s_hi = min(ss) + Dp / 2, max(ss) - Dp / 2
+        u = min(us) + Wpos / 2 + (max(us) - min(us) - Wpos) * v['along'] / 100.0
+        s_lo, s_hi = min(ss) + Dpos / 2, max(ss) - Dpos / 2
         s = s_lo + (s_hi - s_lo) * v['up'] / 100.0 if s_hi > s_lo else (min(ss) + max(ss)) / 2
         cx, cy = along[0] * u + up[0] * s, along[1] * u + up[1] * s
+    if across_pots:
+        along = (-along[1], along[0])                   # everything below laid out across the ridge
+        ang = math.atan2(along[1], along[0])
     # the core inside the brick skin
     hx, hy = W / 2 - bd, Dp / 2 - bd
     if hx <= 0.01 or hy <= 0.01:
@@ -1144,7 +1153,7 @@ def house_stack(v, roof, frame):
         parts.update(place_parts({'Weather vane': vs}, vx, vy, z_top, along))
     rep = {'bricks': len(bricks), 'courses': n_courses, 'above': (z_top - z_high) / S,
            'vane': bool(v.get('stack_vane')),
-           'oversail': n_over, 'width': W / S, 'depth': Dp / S, 'widened': widened, 'rows': rows}
+           'oversail': n_over, 'width': Wpos / S, 'depth': Dpos / S, 'widened': widened, 'rows': rows}
     return parts, rep
 
 
@@ -1572,7 +1581,7 @@ KINDS = [("house", "House stack on a roof"), ("industrial", "Industrial chimney"
 
 DEFAULTS = dict(kind='house', width=900.0, depth=450.0, height=900.0, along=50.0, up=100.0,
                 oversail=2, oversail_out=28.0, flaunch=60.0,
-                pots=2, pot_rows=1, fit_pots=True, pot_style='plain', pot_h=600.0, pot_dia=240.0, pot_wall=32.0,
+                pots=2, pot_rows=1, pot_dir='along', fit_pots=True, pot_style='plain', pot_h=600.0, pot_dia=240.0, pot_wall=32.0,
                 brick_l=215.0, brick_h=65.0, brick_d=102.5, joint=10.0, level=True,
                 ind_shape='square', ind_bottom=2400.0, ind_top=1400.0, ind_height=18000.0,
                 plinth_h=2000.0, plinth_out=56.0, band_every=6000.0, band_courses=2, band_out=56.0,
@@ -2678,6 +2687,14 @@ class ChimneyDialog(QDialog):
         lab = QLabel("Pot style")
         lab.setToolTip(self.cb_style.toolTip())
         pages["Pots"].insertRow(1, lab, self.cb_style)
+        self.cb_pdir = QComboBox()
+        for k, t in POT_DIRS:
+            self.cb_pdir.addItem(t, k)
+        self.cb_pdir.setToolTip("Which way the row of pots runs: along the ridge, or across it from front to "
+                                "back (the stack is made long that way to fit them).")
+        lab = QLabel("Pots run")
+        lab.setToolTip(self.cb_pdir.toolTip())
+        pages["Pots"].insertRow(2, lab, self.cb_pdir)
         self.cb_shape = QComboBox()
         for k, t in IND_SHAPES:
             self.cb_shape.addItem(t, k)
@@ -2786,7 +2803,7 @@ class ChimneyDialog(QDialog):
         self.cb_kind.currentIndexChanged.connect(self.changed)
         for s_ in self.w.values():
             s_.valueChanged.connect(self.redraw)
-        for cb in (self.cb_style, self.cb_shape, self.cb_vstyle, self.cb_vanest):
+        for cb in (self.cb_style, self.cb_pdir, self.cb_shape, self.cb_vstyle, self.cb_vanest):
             cb.currentIndexChanged.connect(self.changed)
         for ck in (self.cb_fit, self.cb_level, self.cb_kiln, self.cb_kfit, self.cb_vane, self.cb_letters,
                    self.cb_svane):
@@ -2929,7 +2946,8 @@ class ChimneyDialog(QDialog):
         for k, s in self.w.items():
             if k in cur:
                 s.setValue(int(cur[k]) if isinstance(s, QSpinBox) else float(cur[k]))
-        for cb, key in ((self.cb_kind, 'kind'), (self.cb_style, 'pot_style'), (self.cb_shape, 'ind_shape'),
+        for cb, key in ((self.cb_kind, 'kind'), (self.cb_style, 'pot_style'), (self.cb_pdir, 'pot_dir'),
+                        (self.cb_shape, 'ind_shape'),
                         (self.cb_vstyle, 'vent_style'), (self.cb_vanest, 'vane_style')):
             for i in range(cb.count()):
                 if cb.itemData(i) == cur.get(key):
@@ -2976,6 +2994,7 @@ class ChimneyDialog(QDialog):
     def values(self):
         v = {k: (int(s.value()) if isinstance(s, QSpinBox) else float(s.value())) for k, s in self.w.items()}
         v.update(kind=self.cb_kind.currentData(), pot_style=self.cb_style.currentData(),
+                 pot_dir=self.cb_pdir.currentData() or 'along',
                  ind_shape=self.cb_shape.currentData(), level=self.cb_level.isChecked(),
                  fit_pots=self.cb_fit.isChecked(), vent_style=self.cb_vstyle.currentData(),
                  vane_style=self.cb_vanest.currentData(), kiln=self.cb_kiln.isChecked(),

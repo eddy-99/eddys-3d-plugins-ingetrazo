@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Gutters & Downpipes"
-VERSION = "1.8"            # 1.8: soft edges really work (from the edges themselves - 1.7 softened none); 1.7: the edges are softened once the pipes are in the model (as 3D Blend does); 1.6: pipes and gutters look smooth - the lines round and along them are softened, so they show their real colour from a distance; 1.5: version number in the standard x.y style (was 14); shown in the window title, so you can tell which file is loaded
+VERSION = "1.9"            # 1.9: Smoothness on the Downpipe page - how many sides round the pipes (and the gutter curve): 12 to start, where it was always 32 - the pipes and gutters had a third of a whole building of faces; 1.8: soft edges really work (from the edges themselves - 1.7 softened none); 1.7: the edges are softened once the pipes are in the model (as 3D Blend does); 1.6: pipes and gutters look smooth - the lines round and along them are softened, so they show their real colour from a distance; 1.5: version number in the standard x.y style (was 14); shown in the window title, so you can tell which file is loaded
 
 
 def _ed3d_organise(scene, group):
@@ -113,7 +113,7 @@ DEFAULTS = {
     'solid': False, 'wall_side': 0.0,
     'drop': 25.0, 'wall_gap': 0.0, 'over_left': 0.0, 'over_right': 0.0, 'fit_wall': True,
     'wall_flip': False, 'auto_fix': True, 'g_spacing': 1000.0, 'p_spacing': 1800.0,
-    'chunky': False, 'chunk_mult': 3.0, 'g_detail': True,
+    'chunky': False, 'chunk_mult': 3.0, 'g_detail': True, 'sides': 12,
     'g_maxlen': 4000.0, 'p_maxlen': 2500.0, 'r_side': 'right', 'r_flip': False,
     'r_stops': True, 'r_shoe': True, 'r_swan': True, 'r_avoid': True,
 }
@@ -123,7 +123,7 @@ PRESET_KEYS = ('g_profile', 'g_width', 'g_depth', 'g_wall', 'p_type', 'p_size', 
                'length', 'outlet_len', 'leg', 'bend_turn', 'branch_len', 'solid',
                'drop', 'wall_gap', 'over_left', 'over_right', 'g_spacing', 'p_spacing',
                'chunky', 'chunk_mult', 'g_detail', 'g_maxlen', 'p_maxlen', 'r_stops', 'r_shoe',
-               'r_swan', 'r_avoid')
+               'r_swan', 'r_avoid', 'sides')
 GUTTER_KEYS = ('g_profile', 'g_width', 'g_depth', 'g_wall', 'solid', 'g_detail')
 PIPE_KEYS = ('p_type', 'p_size', 'p_wall', 'solid', 'g_detail')
 OVERLAY_PARTS = ('union', 'bracket', 'socket', 'clip')
@@ -191,8 +191,13 @@ def rot_between(a, b):
 # ---------------------------------------------------------------------------
 # Cross-sections, in (a, b): a = towards the wall (left of the run), b = up.
 # ---------------------------------------------------------------------------
-def gutter_outer(profile, W, D, n_arc=16):
+SIDES = [12]      # sides round a pipe (Smoothness); a half-round gutter has half as many round its curve
+
+
+def gutter_outer(profile, W, D, n_arc=None):
     """Outer edge of the gutter, from the back top (wall side) round to the front top."""
+    if n_arc is None:
+        n_arc = max(4, (SIDES[0] // 2 + 1) // 2 * 2)
     if profile == 'square':
         return [(W / 2, D), (W / 2, 0.0), (-W / 2, 0.0), (-W / 2, D)]
     if profile == 'ogee':
@@ -264,7 +269,7 @@ def gutter_low_point(s):
     return (min(low) + max(low)) / 2.0, zmin
 
 
-def pipe_rings(s, grow=None, thick=None, n=32):
+def pipe_rings(s, grow=None, thick=None, n=None):
     """(outer, inner) loops of the pipe section, matched point for point.
     With grow (a gap, may be 0) it is a sleeve that fits over the pipe."""
     t = s['p_wall'] if thick is None else thick
@@ -279,6 +284,7 @@ def pipe_rings(s, grow=None, thick=None, n=32):
                 None if solid else [(x * h_in, y * h_in) for x, y in sq])
     r_out = s['p_size'] / 2 + grow + (t if sleeve else 0.0)
     r_in = s['p_size'] / 2 + grow if sleeve else s['p_size'] / 2 - t
+    n = int(n or s.get('sides') or SIDES[0])
     circ = [(math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n)) for i in range(n)]
     return ([(c * r_out, d * r_out) for c, d in circ],
             None if solid else [(c * r_in, d * r_in) for c, d in circ])
@@ -3064,6 +3070,17 @@ class DrainDialog(QDialog):
         self.sp_pt = mm_spin(cur['p_wall'], 0.5, 50.0)
         self.lbl_ps = add_row(pf, 'p_size', "D   Diameter", self.sp_ps, "How big the downpipe is across.")
         add_row(pf, 'p_wall', "E   Wall thickness", self.sp_pt, "How thick the pipe's wall is.")
+        from PySide6.QtWidgets import QSpinBox as _QSB
+        self.sp_sides = _QSB()
+        self.sp_sides.setRange(6, 48)
+        self.sp_sides.setValue(int(cur.get('sides', 12) or 12))
+        lab_ = QLabel("Smoothness (sides round)")
+        tip_ = ("How many sides round the pipes (and round a half-round gutter's curve, half as many). 12 looks "
+                "and prints round at model scales and keeps the model light; more is smoother but much "
+                "heavier (32 was used before - a third of a whole building's faces).")
+        lab_.setToolTip(tip_)
+        self.sp_sides.setToolTip(tip_)
+        pf.addRow(lab_, self.sp_sides)
 
         # On a wall page
         page = QWidget()
@@ -4054,9 +4071,10 @@ class DrainDialog(QDialog):
              'p_maxlen': self.sp_pmax.value(), 'r_stops': self.cb_rstops.isChecked(),
              'r_shoe': self.cb_rshoe.isChecked(), 'r_side': self.cb_rside.currentData(),
              'r_flip': self.cb_rflip.isChecked(), 'r_swan': self.cb_rswan.isChecked(),
-             'r_avoid': self.cb_ravoid.isChecked()}
+             'r_avoid': self.cb_ravoid.isChecked(), 'sides': int(self.sp_sides.value())}
         for k, w in self.sp.items():
             v[k] = w.value()
+        SIDES[0] = v['sides']
         return v
 
     def set_values(self, d):
@@ -4074,6 +4092,8 @@ class DrainDialog(QDialog):
         for k, w in self.sp.items():
             if d.get(k) is not None:
                 w.setValue(float(d[k]))
+        if d.get('sides'):
+            self.sp_sides.setValue(int(d['sides']))
         if 'chunky' in d:
             self.cb_chunky.setChecked(bool(d['chunky']))
         for c, key in ((self.cb_fit, 'fit_wall'), (self.cb_fix, 'auto_fix'), (self.cb_detail, 'g_detail'),

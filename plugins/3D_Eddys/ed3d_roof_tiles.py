@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Roof Tiles"
-VERSION = "1.7"  # 1.7: on L, T and U roofs the hip tiles stop the tiles only along the hip (no bare strips), tiles no longer cut into bits on odd-shaped slopes (no stray lines), and a wing's ridge gets tiles on both sides; 1.6: hip roofs get hip tiles (the ridge tiles carried down each hip, each slope with its half) and the tiles stop short of them; 1.5: the finials stay on the ridge tiles - one piece to print, not loose bits; 1.4: on a roof that is already there (Floor Plan's roof slopes, Subframe's roof panels) the tiles go straight onto it - no second roof (backing sheet) under them - and into the same group as that slope, so it prints as one piece; 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
+VERSION = "1.9"  # 1.9: the ridge and hips kept apart last time come off too when the roof is tiled again (they stayed); 1.8: tiling a roof that has tiles already swaps them - the old tiles, ridge and finials come off and the new ones go on (Ctrl+Z puts the old ones back); 1.7: on L, T and U roofs the hip tiles stop the tiles only along the hip (no bare strips), tiles no longer cut into bits on odd-shaped slopes (no stray lines), and a wing's ridge gets tiles on both sides; 1.6: hip roofs get hip tiles (the ridge tiles carried down each hip, each slope with its half) and the tiles stop short of them; 1.5: the finials stay on the ridge tiles - one piece to print, not loose bits; 1.4: on a roof that is already there (Floor Plan's roof slopes, Subframe's roof panels) the tiles go straight onto it - no second roof (backing sheet) under them - and into the same group as that slope, so it prints as one piece; 1.3: version number in the standard x.y style (was 12); 12: clicking the whole building no longer tiles the arched heads of built-in windows and doors (walls are left out)
 
 
 def _ed3d_organise(scene, group):
@@ -2976,7 +2976,13 @@ class RoofTilesTool(Tool):
         parent = holder(Group, top_name, new_tops) if len(new_tops) > 1 else None
         add_tops = [parent] if parent is not None else new_tops
         organise = add_tops + organise
-        cmd = tiles_command(add_tops, into, organise, parent is None)
+        stale = []
+        try:
+            if any(e[0] is None for e in into):
+                stale = old_ridges(getattr(viewport, 'scene', None), [e[1] for e in into if e[0] is None])
+        except Exception as e:
+            print("%s: old ridge not looked for: %s" % (PLUGIN_NAME, e))
+        cmd = tiles_command(add_tops, into, organise, parent is None, stale)
         try:
             viewport.history.execute(cmd)
         except Exception as e:
@@ -2992,7 +2998,48 @@ class RoofTilesTool(Tool):
 _PARENT_ATTRS = ('parent', '_parent')
 
 
-def tiles_command(add_tops, into, organise, loose):
+def old_ridges(scene, hosts):
+    """The ridge and hips made the last time these roof slopes were tiled (kept apart, they're
+    groups of their own in the scene): groups of only ridge, hip or finial pieces, over these slopes."""
+    def pts_of(g, out, depth=0):
+        m = getattr(g, 'mesh', None)
+        for v in _items(getattr(m, 'vertices', None)) if m is not None else []:
+            p = _pos(v)
+            if p is not None:
+                out.append(p)
+        if depth < 8:
+            for c in _kids(g):
+                pts_of(c, out, depth + 1)
+        return out
+
+    def names(g, depth=0):
+        out = [str(getattr(g, 'name', '') or '')]
+        if depth < 8:
+            for c in _kids(g):
+                out += names(c, depth + 1)
+        return out
+    hp = []
+    for h in hosts:
+        pts_of(h, hp)
+    if not hp or scene is None:
+        return []
+    lo = [min(p[k] for p in hp) - 0.5 for k in range(3)]
+    hi = [max(p[k] for p in hp) + 0.5 for k in range(3)]
+    out = []
+    for g in list(getattr(scene, 'groups', None) or []):
+        nm = names(g)
+        if not nm[0].startswith(("Roof - ", "Ridge", "Hips")):
+            continue
+        parts = [n for n in nm[1:] if n] or nm
+        if not all(n.startswith(("Ridge", "Hips", "Roof - ")) for n in parts):
+            continue
+        gp = pts_of(g, [])
+        if gp and all(lo[k] <= p[k] <= hi[k] for p in gp[::max(1, len(gp) // 200)] for k in range(3)):
+            out.append(g)
+    return out
+
+
+def tiles_command(add_tops, into, organise, loose, stale=()):
     """One undo step: new groups added to the scene, and roof slopes put in a group with their
     tiles. into: [(the list the slope sits in, slope, its new group, tile groups)] - with no list,
     the group is one tiled before and the tiles join it."""
@@ -3034,8 +3081,10 @@ def tiles_command(add_tops, into, organise, loose):
                 olds = {a: getattr(host, a, _none) for a in _PARENT_ATTRS}
                 old_kids = list(h.children)
                 if lst is None:
-                    h.children.extend(kids)
-                    for k in kids:
+                    # tiled before: the old tiles (ridge, finials...) come off, the new ones go on -
+                    # the roof slope itself stays (Undo puts the old tiles back)
+                    h.children[:] = [host] + list(kids) if any(x is host for x in old_kids) else old_kids + list(kids)
+                    for k in h.children:
                         self._set_parent(k, h)
                     self.saved.append((None, None, h, old_kids, olds))
                     continue
@@ -3048,6 +3097,15 @@ def tiles_command(add_tops, into, organise, loose):
                     self._set_parent(k, h)
                 lst[i] = h
                 self.saved.append((lst, i, h, old_kids, olds))
+            self.removed = []
+            lst_ = getattr(scene, 'groups', None)
+            for g in stale:                              # the old ridge and hips, kept apart last time
+                if isinstance(lst_, list):
+                    for k, x in enumerate(lst_):
+                        if x is g:
+                            self.removed.append((k, g))
+                            del lst_[k]
+                            break
             for g in add_tops:
                 if hasattr(scene, 'add_group') and loose:
                     scene.add_group(g)
@@ -3074,6 +3132,10 @@ def tiles_command(add_tops, into, organise, loose):
                                 break
                             except Exception:
                                 pass
+            lst_ = getattr(scene, 'groups', None)
+            for k, g in reversed(getattr(self, 'removed', [])):
+                if isinstance(lst_, list):
+                    lst_.insert(min(k, len(lst_)), g)
             for (lst_, host, h, kids), sv in reversed(list(zip(into, self.saved))):
                 if sv is None:
                     continue

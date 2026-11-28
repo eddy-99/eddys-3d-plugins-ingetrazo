@@ -38,6 +38,7 @@ model scale. The presets give the sizes for a 4 mm printed frame in OO and so on
 import os
 import json
 import math
+import re
 from tools.base import Tool
 from core.history import SnapshotImport
 from PySide6.QtGui import QVector3D
@@ -47,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 PLUGIN_NAME = "3D Subframe"
-VERSION = "1.61"  # 1.61: the roof line of Show / hide also hides roof slopes and panels tiled by 3D Roof Tiles, tiles and all; 1.60: an end piece where the verge soffit meets the eaves soffit, closing the step between them (the roof showed through there); 1.59: a verge soffit under each barge board, from the boxed end at the eaves up to the peak, back to the wall (the underside of the roof showed between the wall and the barge board); 1.58: the debug file is only written when something goes wrong;
+VERSION = "1.68"  # 1.68: each wall frame is a group marked (one piece), so Scale Studio prints it as one section, not every bar on its own; 1.67: a dormer roof no longer cuts the wall below it off on a slant (its slope was carried on along the whole wall); 1.66: the angled sides of bays get their frame on the inside (it stuck out through the corners), and the upright edges of roof slopes (dormer verges) get no frame (it went off skew); 1.65: chimneys, gutters, pipes and other extras picked with the building are left out (they made far too many faces); 1.64: when there are too many faces, says which groups hold them; 1.63: tiles, ridge and hips from 3D Roof Tiles are left out (framing every tile froze the computer), and Subframe stops with a message if a frame would be far too big; 1.62: roof slopes and walls inside another group that has been moved (re-tiled roofs, a moved building) are framed where they are, not back at the start; 1.61: the roof line of Show / hide also hides roof slopes and panels tiled by 3D Roof Tiles, tiles and all; 1.60: an end piece where the verge soffit meets the eaves soffit, closing the step between them (the roof showed through there); 1.59: a verge soffit under each barge board, from the boxed end at the eaves up to the peak, back to the wall (the underside of the roof showed between the wall and the barge board); 1.58: the debug file is only written when something goes wrong;
 #                 1.57: roof trusses on gable ends that are pieces of their own (not joined to the walls);
 #                 never takes the narrow end of a wall for a gable;
 #                 1.55: a roof truss with nothing left above the wall tops no longer stops the whole frame;
@@ -1412,6 +1413,97 @@ def _has_twin(fi, others, thick):
     return False
 
 
+def _roof_edge_strip(fi, w_m):
+    """1.66: the upright edge of a roof slab (along a verge or a dormer's rake): a thin strip whose
+    long edge slopes. It isn't a wall, so it gets no frame (its gable rail went off skew)."""
+    pts = fi.pts
+    best, blen = None, 0.0
+    for i in range(len(pts)):
+        e = v_sub(pts[(i + 1) % len(pts)], pts[i])
+        ln = v_len(e)
+        if ln > blen:
+            best, blen = e, ln
+    if best is None or blen <= 0:
+        return False
+    slope = abs(best[2]) / blen
+    if slope < 0.1 or slope > 0.995:
+        return False                    # level or upright: an ordinary (if narrow) wall
+    nx = ny = nz = 0.0
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    area = 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
+    return area / blen < 1.5 * w_m
+
+
+def _in_poly2(pt, poly):
+    x, y = pt
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            xc = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if xc > x:
+                inside = not inside
+    return inside
+
+
+def _outward_by_rays(fi, walls, thick):
+    """1.66: does this wall face look out of the building? Rays go out from it along its normal:
+    crossing an odd number of walls (both faces of a thick wall count as one) means it faces in.
+    Used when the middle of the building is off to one side of the face (the sides of a bay)."""
+    nh = (fi.n[0], fi.n[1], 0.0)
+    ln = math.hypot(nh[0], nh[1])
+    if ln < 1e-6:
+        return None
+    d = (nh[0] / ln, nh[1] / ln, 0.0)
+    samples = [fi.c] + [tuple(fi.c[k] + 0.5 * (q[k] - fi.c[k]) for k in range(3)) for q in fi.pts[:6]]
+    prepared = []
+    for o in walls:
+        if o is fi or not o.ok or o.kind != 'wall':
+            continue
+        U = v_norm(v_cross(Z, o.n)) if abs(o.n[2]) < 0.999 else (1.0, 0.0, 0.0)
+        V = v_cross(o.n, U)
+        poly = [(v_dot(q, U), v_dot(q, V)) for q in o.pts]
+        holes = []
+        for h in _items(getattr(o.face, 'holes', None)):
+            hp = [q for q in (_pos(x) for x in _items(getattr(h, 'vertices', None) or h)) if q is not None]
+            if len(hp) >= 3:
+                holes.append([(v_dot(q, U), v_dot(q, V)) for q in hp])
+        prepared.append((o, U, V, poly, holes))
+    votes_out = votes_in = 0
+    for sp in samples:
+        ts = []
+        for o, U, V, poly, holes in prepared:
+            den = v_dot(d, o.n)
+            if abs(den) < 1e-6:
+                continue
+            t = v_dot(v_sub(o.c, sp), o.n) / den
+            if t <= 1e-4:
+                continue
+            h = v_add(sp, v_mul(d, t))
+            q = (v_dot(h, U), v_dot(h, V))
+            if _in_poly2(q, poly) and not any(_in_poly2(q, hl) for hl in holes):
+                ts.append(t)
+        ts.sort()
+        walls_hit, last = 0, None
+        for t in ts:
+            if last is None or t - last > thick:
+                walls_hit += 1
+            last = t
+        if walls_hit % 2:
+            votes_in += 1
+        else:
+            votes_out += 1
+    if votes_in == votes_out:
+        return None
+    return votes_out > votes_in
+
+
 def choose_faces(infos, v, p, auto_skip):
     """Decides which faces get a frame and which side it goes. auto_skip: when a whole group
     is picked, leave out the outsides of thick walls/roofs and little faces like reveals."""
@@ -1430,6 +1522,8 @@ def choose_faces(infos, v, p, auto_skip):
             continue
         if auto_skip and fi.size < 3.0 * w_m:
             continue
+        if auto_skip and fi.kind == 'wall' and _roof_edge_strip(fi, w_m):
+            continue
         if side == 'front':
             fi.flip = False
         elif side == 'back':
@@ -1438,6 +1532,15 @@ def choose_faces(infos, v, p, auto_skip):
             if fi.kind == 'wall':
                 c = fi.centre or fi.c
                 outward = v_dot(fi.n, v_sub(c, fi.c)) < 0
+                dc = v_sub(c, fi.c)
+                dl = math.hypot(dc[0], dc[1])
+                nl = math.hypot(fi.n[0], fi.n[1])
+                if dl > 1e-9 and nl > 1e-9 and abs((fi.n[0] * dc[0] + fi.n[1] * dc[1]) / (dl * nl)) < 0.5:
+                    # 1.66: the middle of the building is off to the side (a bay's side walls):
+                    # it can't say which way is in, so the walls round about are asked instead
+                    r = _outward_by_rays(fi, infos, thick)
+                    if r is not None:
+                        outward = r
             else:
                 outward = fi.n[2] > 0          # roofs and floors: the frame goes underneath
             if side == 'outside':
@@ -1492,7 +1595,7 @@ def _nearby(scene, pts, picked):
     ids = set(id(g) for g in picked)
     out = []
     for g in _items(getattr(scene, 'groups', None)):
-        if id(g) in ids or str(getattr(g, 'name', '') or '').startswith(_OURS):
+        if id(g) in ids or str(getattr(g, 'name', '') or '').startswith(_OURS) or _add_on(g):
             continue
         try:
             fs = [FaceInfo(f) for f in _world_faces(g)]
@@ -1541,16 +1644,48 @@ def _plain_wall(g):
     return None
 
 
+# 1.63: 3D Roof Tiles' tiles, ridge, hips, finials and flashing are left out - the frame goes under
+# the roof slope, not under every tile (framing thousands of tiles froze the computer).
+_TILE_NAME = re.compile(r"^(Slope \d+ (- |\()|Ridge( - | \(\d+ pieces\))|Hips\b)")
+
+
+def _is_tiles(e):
+    ext = getattr(e, 'ext', None)
+    try:
+        if ext and "ed3d_roof_tiles" in ext:
+            return True
+    except Exception:
+        pass
+    return bool(_TILE_NAME.match(str(getattr(e, 'name', '') or '')))
+
+
+def _tile_ids(places):
+    """ids of every Roof Tiles group under these placements, and all inside them."""
+    out = set()
+
+    def mark(e, depth=0):
+        out.add(id(e))
+        if depth < 50:
+            for c in _items(getattr(e, 'children', None)) + _items(getattr(e, 'groups', None)):
+                mark(c, depth + 1)
+    for e, _m in places:
+        if id(e) not in out and _is_tiles(e):
+            mark(e)
+    return out
+
+
 def _world_faces_plain(g):
-    """Like _world_faces, but a wall with windows or doors built into it gives its plain faces."""
+    """Like _world_faces, but a wall with windows or doors built into it gives its plain faces,
+    and roof tiles are left out."""
     places = _placements(g)
-    if not any(_plain_wall(e) for e, _m in places):
+    tiles = _tile_ids(places)
+    if not tiles and not any(_plain_wall(e) for e, _m in places):
         return None
     out = []
     seen = set()
     for e, m in places:
         mesh = getattr(e, 'mesh', None)
-        if mesh is None or id(mesh) in seen:
+        if mesh is None or id(mesh) in seen or id(e) in tiles:
             continue
         seen.add(id(mesh))
         to_w = _mapper(m)[0]
@@ -1565,7 +1700,51 @@ def _world_faces_plain(g):
     return out
 
 
+# 1.62: a group inside another (a roof slope inside 3D Roof Tiles' "Tiled - ..." group) is moved by
+# the groups round it too. Each group's parents' matrix to the world, found from the top groups.
+_PARENT_W = {}
+
+
+def _learn_parents(scene):
+    _PARENT_W.clear()
+    for top in _items(getattr(scene, 'groups', None)):
+        try:
+            for e, m in _placements(top):
+                if m is None:
+                    continue
+                for c in _items(getattr(e, 'children', None)) + _items(getattr(e, 'groups', None)):
+                    _PARENT_W[id(c)] = m
+        except Exception as ex:
+            print("%s: parents not read: %s" % (PLUGIN_NAME, ex))
+
+
 def _world_faces(g):
+    faces = _world_faces_own(g)
+    base = _PARENT_W.get(id(g))
+    if base is None or not faces:
+        return faces
+    try:
+        if base.isIdentity():
+            return faces
+    except Exception:
+        pass
+    to_w = _mapper(base)[0]
+    out = []
+    for f in faces:
+        pts = [q for q in (_pos(x) for x in _items(getattr(f, 'vertices', None))) if q is not None]
+        hls = []
+        for h in _items(getattr(f, 'holes', None)):
+            hp = [q for q in (_pos(x) for x in _items(getattr(h, 'vertices', None) or h)) if q is not None]
+            if len(hp) >= 3:
+                hls.append([to_w(q) for q in hp])
+        if len(pts) >= 3:
+            pf = _PlainFace([to_w(q) for q in pts], hls)
+            pf.attrs = dict(getattr(f, 'attrs', None) or {})
+            out.append(pf)
+    return out
+
+
+def _world_faces_own(g):
     try:
         plain = _world_faces_plain(g)
         if plain is not None:
@@ -1822,6 +2001,8 @@ def swap_meshes_command(swaps):
 
 # parts of a building that never get a frame: the base plate (plinth), the top plate, the floors
 # and the inside (dividing) walls - from Floor Plan, or any group you name the same way
+MAX_FACES = 20000    # 1.63: more than this and Subframe stops, rather than freeze the computer
+MAX_BARS = 8000
 _NO_FRAME = ("base plate", "top plate", "inside wall", "divider", "dividing wall", "floor slab", "floor panel",
              "ledge", "ceiling", " tab ")
 
@@ -1853,6 +2034,52 @@ def _has_floor_plan_roof(groups):
                     return True
         return False
     return any(walk(g, 0) for g in groups)
+
+
+# 1.65: other plugins' add-ons picked along with the building - they never get a frame
+_ADD_ONS = ("chimney", "gutters", "gutter", "downpipe", "soil", "waste", "fence", "sign -", "sign board", "signs", "station canopy",
+            "canopy", "subframe", "fascia", "barge", "soffit", "roof truss", "finial")
+
+
+def _add_on(g):
+    nm = str(getattr(g, 'name', '') or '').strip().lower()
+    return _is_tiles(g) or any(nm.startswith(w) for w in _ADD_ONS)
+
+
+def _heavy_groups(groups):
+    """1.64: which groups hold the most faces, as lines '1234 faces - Building > Wall > Bricks' - and
+    the full list written to the debug file."""
+    rows = []
+    try:
+        def walk(e, path, depth=0):
+            nm = str(getattr(e, 'name', '') or type(e).__name__)
+            path = path + [nm]
+            mesh = getattr(e, 'mesh', None)
+            n = len(_items(getattr(mesh, 'faces', None))) if mesh is not None else 0
+            ext = getattr(e, 'ext', None)
+            try:
+                keys = ",".join(sorted(str(k) for k in ext)) if ext else ""
+            except Exception:
+                keys = ""
+            if n and not _is_tiles(e):
+                rows.append((n, " > ".join(path), keys, False))
+            if depth < 30:
+                for c in _items(getattr(e, 'children', None)) + _items(getattr(e, 'groups', None)):
+                    if getattr(c, 'vertices', None) is None or getattr(c, 'mesh', None) is not None:
+                        walk(c, path, depth + 1)
+        for g in groups:
+            walk(g, [])
+    except Exception as ex:
+        rows.append((0, "couldn't list them: %s" % ex, "", False))
+    rows.sort(key=lambda r: -r[0])
+    try:
+        with open(DEBUG_FILE, "w", encoding="utf-8") as f:
+            f.write("3D Subframe %s - too many faces. Groups by faces (ext keys, left out as tiles?):\n" % VERSION)
+            for n, pth, keys, t in rows[:300]:
+                f.write("%7d  %s   [%s]%s\n" % (n, pth, keys, "  TILES" if t else ""))
+    except Exception:
+        pass
+    return ["%d faces - %s%s" % (n, pth[-90:], " (tiles)" if t else "") for n, pth, _k, t in rows]
 
 
 def _no_frame(g):
@@ -2256,6 +2483,18 @@ def _clip_walls_under_roof(ready, every, w_m_=None):
             vals = [f(x, y) for x, y in a.outline]
             if max(vals) <= 1e-6 or min(vals) >= 0:
                 continue                       # all under it already (or all above: not ours)
+            # 1.67: a small roof over part of the wall (a dormer's slope) only cuts the wall where it
+            # is - its slope carried on along the wall cut the wall off on a slant past it
+            O_ = a.tw((0.0, 0.0, 0.0))
+            U_ = v_sub(a.tw((1.0, 0.0, 0.0)), O_)
+            uu = v_dot(U_, U_)
+            if uu > 0:
+                rxs = [v_dot(v_sub(q, O_), U_) / uu for q in r.pts]
+                ox = [pt[0] for pt in a.outline]
+                mg = max(2.0 * w_m / SCALE, 0.02 * (max(ox) - min(ox)))
+                if any(vv > 1e-6 and not (min(rxs) - mg <= pt[0] <= max(rxs) + mg)
+                       for vv, pt in zip(vals, a.outline)):
+                    continue
             f0 = f(0.0, 0.0)
             fx, fy = f(1.0, 0.0) - f0, f(0.0, 1.0) - f0
             o = clip_half(list(a.outline), -fx, -fy, -f0)
@@ -6521,8 +6760,15 @@ class SubframeTool(Tool):
         if scene is None:
             QMessageBox.information(dlg, PLUGIN_NAME, "No model to frame - close this window and open it again.")
             return
+        _learn_parents(scene)
         sel = _items(getattr(scene, 'selection', None))
         groups = [e for e in sel if getattr(e, 'mesh', None) is not None and not hasattr(e, 'loop')]
+        extras = [e for e in groups if _add_on(e)]
+        groups = [e for e in groups if not _add_on(e)]      # chimneys, gutters... are left out
+        if extras and not groups and not selected_faces(scene):
+            QMessageBox.information(dlg, PLUGIN_NAME, "Those are chimneys, gutters or other extras - they "
+                                    "don't get a frame. Select the building.")
+            return
         if groups and all(_no_frame(e) for e in groups) and not selected_faces(scene):
             QMessageBox.information(dlg, PLUGIN_NAME, "That's a base plate, floor or dividing wall - those don't "
                                     "get a frame. Select the building or its outside walls.")
@@ -6541,6 +6787,13 @@ class SubframeTool(Tool):
         for g in groups:
             allfs += [FaceInfo(f) for f in _world_faces(g)]
             gfs += [FaceInfo(f) for f in _framable_faces(g)]
+        if len(gfs) + len(faces) > MAX_FACES:
+            heavy = _heavy_groups(groups)
+            QMessageBox.warning(dlg, PLUGIN_NAME, "That's %d faces - far too many to frame (it could freeze "
+                                "the computer), so nothing was built.\n\nThe most faces are in:\n%s\n\n"
+                                "(The full list is in ed3d_subframe_debug.txt in the plugins folder.)"
+                                % (len(gfs) + len(faces), "\n".join(heavy[:6])))
+            return
         near = []
         bc = None                       # the middle of the building, in plan
         if gfs:
@@ -6722,6 +6975,13 @@ class SubframeTool(Tool):
     def add_to_scene(self, viewport, panels, top_name, glaze_one=False):
         """A 'Subframe' group, holding a group for each wall or roof face, holding a group for
         each bar - so every bar is a piece of its own."""
+        n_bars = sum(len(bars) for _pn, bars in panels)
+        if n_bars > MAX_BARS:
+            QMessageBox.warning(viewport, PLUGIN_NAME, "That frame would have %d pieces - far too many (it could "
+                                "freeze the computer), so it wasn't added.\n\nSomething in the selection is "
+                                "being framed that shouldn't be. Select just the building's walls and roof."
+                                % n_bars)
+            return None
         stats = {'faces': 0, 'errors': 0, 'err': None}
         tol = 1e-4 * 0.001
         bmode, brgb = board_colour()
@@ -6898,7 +7158,8 @@ class SubframeTool(Tool):
                     # so one can be moved or taken out (for a window in the loft) without opening others
                     truss_kids += kids
                     continue
-                pg = holder(Group, "%s (%d pieces)" % (pname, len(kids)), kids) if len(panels) > 1 else None
+                # 1.68: each wall's (or roof slope's) frame prints as one piece in Scale Studio
+                pg = holder(Group, "%s - frame, %d bars (one piece)" % (pname, len(kids)), kids) if len(panels) > 1 else None
                 if pg is not None:
                     panel_groups.append(pg)
                 elif len(panels) > 1:

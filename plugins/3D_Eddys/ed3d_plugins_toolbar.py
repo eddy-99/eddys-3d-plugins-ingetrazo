@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.32"  # 3.32: Make... menu's "How to install" video is now the all-in-one-go install with 3D Check for Updates; 3.31: the Make... menu only lists the jobs whose plugins are all installed (Make a shop needs Shop Fronts, Make a low relief building needs Low Relief); 3.30: Low Relief button (Scale & print), and a "Make a low relief building" job with a Low relief step before Scale & print; 3.29: Shop Fronts button (Doors & windows), and a "Make a shop" job with a Shop front step after the windows; 3.28: video link for Bridges & Arches; 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.35"  # 3.35: Save layout and Put back saved layout buttons in Arrange toolbars, and the settings can't be spoilt by a forced restart; 3.34: Signs button (Railway & outside), for 3D Signs & Boards; 3.33: Photo to Building button (Walls), and a "Make a building from a photo" job - the photo fills in Floor plan and Openings, then on to Frame; 3.32: Make... menu's "How to install" video is now the all-in-one-go install with 3D Check for Updates; 3.31: the Make... menu only lists the jobs whose plugins are all installed (Make a shop needs Shop Fronts, Make a low relief building needs Low Relief); 3.30: Low Relief button (Scale & print), and a "Make a low relief building" job with a Low relief step before Scale & print; 3.29: Shop Fronts button (Doors & windows), and a "Make a shop" job with a Shop front step after the windows; 3.28: video link for Bridges & Arches; 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -75,6 +75,7 @@ from tools.base import Tool
 PLUGIN_NAME = "3D Plugins Toolbar"
 TOOLBAR_NAME = "ThreeDPluginsToolbar"
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_plugins_toolbar.json")
+SAVED_FILE = SETTINGS_FILE + ".good_copy"      # 3.35: your saved layout (the Save layout button)
 
 # (name the plugin registers with, its shortcut, short label, icon)
 PLUGINS = [
@@ -92,6 +93,7 @@ PLUGINS = [
     ("3D Wood Planking", "Ctrl+Alt+O", "Planks", "planks"),
     ("3D Period Doors", "Ctrl+Alt+D", "Doors", "door"),
     ("3D Shop Fronts", "Ctrl+Alt+Shift+S", "Shop front", "shopfront"),
+    ("3D Signs & Boards", "Ctrl+Alt+Shift+N", "Signs", "sign"),
     ("3D Fences & Gates", "Ctrl+Alt+F", "Fences", "fence"),
     ("3D Wrap", "Ctrl+Alt+U", "Wrap", "wrap"),
     ("3D Chimneys", "Ctrl+Alt+H", "Chimneys", "chimney"),
@@ -113,6 +115,7 @@ PLUGINS = [
     ("3D Card Kit", "Ctrl+Alt+Shift+K", "Card kit", "cardkit"),
     ("3D Realistic Wall", "Ctrl+Shift+W", "Stone face", "realwall"),
     ("3D Low Relief", "Ctrl+Alt+Shift+L", "Low relief", "lowrelief"),
+    ("3D Photo to Building", "Ctrl+Alt+Shift+P", "From photo", "photo"),
 ]
 
 
@@ -139,7 +142,12 @@ def load_settings():
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             s.update(json.load(f))
     except Exception:
-        pass
+        # 3.35: spoilt (a forced restart part-way through saving): your saved layout instead
+        try:
+            with open(SAVED_FILE, "r", encoding="utf-8") as f:
+                s.update(json.load(f))
+        except Exception:
+            pass
     for k in ('layout', 'hidden'):
         if isinstance(s.get(k), list):
             s[k] = [RENAMED.get(x, x) for x in s[k]]
@@ -147,9 +155,14 @@ def load_settings():
 
 
 def save_settings(s):
+    # 3.35: written to a spare file first, then swapped in - a forced restart can't leave it half written
     try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(s, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SETTINGS_FILE)
     except Exception:
         pass
 
@@ -410,6 +423,18 @@ def make_icon(kind):
             p.drawRect(QRectF(16.7, y, 3.8, 8))
         p.setPen(QPen(QColor(30, 30, 30), 2.0))
         p.drawPoint(QPointF(20.5, 16.5))
+    elif kind == "sign":
+        # a maroon name board with its lettering, and lamps along the top
+        p.setPen(QPen(QColor(60, 16, 24), 1.0))
+        p.setBrush(QColor(110, 34, 46))
+        p.drawRect(QRectF(2, 15, 28, 9))
+        p.setPen(QPen(QColor(240, 236, 224), 1.4))
+        p.drawLine(QPointF(6, 19.5), QPointF(26, 19.5))
+        p.setPen(QPen(QColor(120, 90, 30), 0.8))
+        p.setBrush(QColor(214, 178, 84))
+        for x in (7, 16, 25):
+            p.drawLine(QPointF(x, 15), QPointF(x, 12))
+            p.drawEllipse(QRectF(x - 3, 5, 6, 7))
     elif kind == "shopfront":
         # a little Victorian shop: cornice, fascia with its sign, two windows and a door
         maroon, gold = QColor(110, 34, 46), QColor(214, 178, 84)
@@ -728,6 +753,34 @@ def make_icon(kind):
         for i, (x, y, w, h) in enumerate(stones):
             p.setBrush(QColor(*shades[i % 4]))
             p.drawRoundedRect(QRectF(x, y, w, h), 1.6, 1.6)
+    elif kind == "photo":
+        # a photo (white border) of a house from its corner, with a red line lined up on its eaves
+        p.setPen(QPen(QColor(90, 90, 90), 1.0))
+        p.setBrush(QColor(250, 250, 248))
+        p.drawRect(QRectF(1.5, 4.5, 29, 23))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(170, 205, 235))
+        p.drawRect(QRectF(4, 7, 24, 18))                                             # sky
+        p.setBrush(QColor(120, 170, 90))
+        p.drawRect(QRectF(4, 21, 24, 4))                                             # grass
+        p.setPen(QPen(QColor(90, 40, 28), 0.8))
+        p.setBrush(QColor(196, 112, 80))
+        p.drawPolygon(QPolygonF([QPointF(7, 23), QPointF(7, 15), QPointF(16, 16), QPointF(16, 24)]))   # front
+        p.setBrush(QColor(160, 88, 62))
+        p.drawPolygon(QPolygonF([QPointF(16, 24), QPointF(16, 16), QPointF(20, 11.5), QPointF(25, 15),
+                                 QPointF(25, 22)]))                                  # gable side
+        p.setBrush(QColor(90, 90, 100))
+        p.drawPolygon(QPolygonF([QPointF(7, 15), QPointF(11, 10.5), QPointF(20, 11.5), QPointF(16, 16)]))  # roof
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(235, 240, 245))
+        p.drawRect(QRectF(9, 17.5, 2.5, 2.5))
+        p.drawRect(QRectF(19, 17, 2.5, 2.5))
+        p.setBrush(QColor(60, 40, 30))
+        p.drawRect(QRectF(12.5, 19.5, 2.2, 4))
+        p.setPen(QPen(QColor(220, 30, 30), 1.4))
+        p.drawLine(QPointF(3, 14.3), QPointF(18.5, 16.3))                            # lined up on the eaves
+        p.setPen(QPen(QColor(30, 170, 60), 1.4))
+        p.drawLine(QPointF(14.5, 16.8), QPointF(29, 13.6))
     p.end()
     return QIcon(pm)
 
@@ -892,11 +945,11 @@ DIVIDER = "|"          # in the saved layout: a divider between groups of button
 # The plugins sorted by what they're for: the Extensions menu's sub-menus, and the
 # ready-made 'one small toolbar for each kind' layout.
 GROUPS = [
-    ("Walls", ["3D Brick & Block Studio", "3D Realistic Wall", "3D Wrap", "3D Wood Planking", "3D Subframe", "3D Floor Plan"]),
+    ("Walls", ["3D Photo to Building", "3D Brick & Block Studio", "3D Realistic Wall", "3D Wrap", "3D Wood Planking", "3D Subframe", "3D Floor Plan"]),
     ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
     ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows", "3D Shop Fronts"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
-    ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches"]),
+    ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches", "3D Signs & Boards"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Low Relief", "3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In", "3D Card Kit"]),
     ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar", "3D Check for Updates"]),
@@ -1561,6 +1614,12 @@ PROJECTS = [
         (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
         ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
+    ("Make a building from a photo", [
+        ("3D Photo to Building", "From photo"), ("3D Subframe", "Frame"),
+        ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
+        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"),
+        ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
+        ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Make a low relief building", [
         ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
         ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
@@ -1622,7 +1681,7 @@ PROJECTS = [
 ]
 # the Make... menu, sorted into groups (any job not listed here goes under 'More')
 PROJECT_GROUPS = [
-    ("Buildings", ["Make a building", "Make a low relief building", "Make a shop", "Make a station building", "Make a goods shed or engine shed",
+    ("Buildings", ["Make a building", "Make a building from a photo", "Make a low relief building", "Make a shop", "Make a station building", "Make a goods shed or engine shed",
                    "Make a timber building", "Make a tin shed", "Make a factory chimney"]),
     ("Railway & outside", ["Make a bridge or arches", "Make a station canopy", "Make fences and gates"]),
     ("Locos, wagons & parts", ["Make a riveted part (loco or wagon)", "Make a boiler with a dome"]),
@@ -2525,8 +2584,11 @@ def arrange_buttons(tb=None):
     b_wf = QPushButton("New workflow toolbar...")
     b_rem.setText("Remove divider / step")
     b_ready = [QPushButton("Workflow: " + nm) for nm in WORKFLOWS]
+    b_save, b_load = QPushButton("Save layout"), QPushButton("Put back saved layout")
+    b_load.setEnabled(os.path.exists(SAVED_FILE))
     for w in [b_up, b_down, QLabel(""), cb_to, b_to, b_copy, QLabel(""), b_div, b_rem, b_note, QLabel(""), b_new,
-              b_wf, b_ren, b_del, b_bar_up, b_bar_down, QLabel("Ready-made:"), b_one, b_grp] + b_ready:
+              b_wf, b_ren, b_del, b_bar_up, b_bar_down, QLabel("Ready-made:"), b_one, b_grp] + b_ready + [
+              QLabel(""), QLabel("Your own:"), b_save, b_load]:
         col.addWidget(w)
     col.addStretch(1)
     row.addLayout(col)
@@ -2839,6 +2901,44 @@ def arrange_buttons(tb=None):
                                          'items': [SIMPLE_ITEM, MAKE_ITEM, DIVIDER] + [p[0] for p in PLUGINS]}],
                                        set(), keep_workflows=True))
     b_grp.clicked.connect(lambda: fill(grouped_bars(), set(), keep_workflows=True))
+    put_back = {'places': None}
+
+    def save_layout():
+        bars_, hidden_ = read_tree()
+        d = {'version': 2, 'visible': True, 'labels': load_settings().get('labels', True),
+             'bars': bars_, 'layout': bars_[0]['items'] if bars_ else [], 'hidden': hidden_}
+        try:
+            d['places'] = bytes(win.saveState(7).toHex()).decode('ascii')   # where the toolbars sit
+        except Exception:
+            pass
+        try:
+            tmp = SAVED_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+            os.replace(tmp, SAVED_FILE)
+        except Exception as e:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "Couldn't save the layout:\n%s" % e)
+            return
+        b_load.setEnabled(True)
+        QMessageBox.information(dlg, PLUGIN_NAME, "Layout saved - the toolbars, their buttons and where "
+                                "they sit.\n\nIf it ever gets lost, open Arrange toolbars and click "
+                                "Put back saved layout.")
+
+    def load_layout():
+        try:
+            with open(SAVED_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            bars_ = d.get('bars')
+            if not isinstance(bars_, list) or not bars_:
+                raise ValueError("no toolbars in it")
+        except Exception as e:
+            QMessageBox.warning(dlg, PLUGIN_NAME, "Couldn't read the saved layout:\n%s" % e)
+            return
+        fill(bars_, set(d.get('hidden') or []))
+        put_back['places'] = d.get('places')
+        QMessageBox.information(dlg, PLUGIN_NAME, "Your saved layout is back in the list. Click OK to use it.")
+    b_save.clicked.connect(save_layout)
+    b_load.clicked.connect(load_layout)
     bb.accepted.connect(dlg.accept)
     bb.rejected.connect(dlg.reject)
     eddy_window(dlg, PLUGIN_NAME + ' - arrange', EDDY_TIPS, place=True)  # eddy-window
@@ -2855,8 +2955,13 @@ def arrange_buttons(tb=None):
     save_bars(bars)
     s = load_settings()
     s['hidden'] = hidden
+    if put_back['places']:
+        s['places'] = put_back['places']
     save_settings(s)
     sync_toolbars(win)
+    if put_back['places']:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: restore_places(win))
 
 
 def install_toolbar(win=None):
@@ -3056,7 +3161,7 @@ EDDY_STEMS = ("period_windows", "brick_block_studio", "gutters_downpipes", "soil
               "period_doors", "fences_gates", "wrap", "chimneys", "corrugated_iron",
               "station_canopies", "centre_finder", "timeline", "find_replace", "place_along",
               "pieces_in", "blend", "subframe", "floor_plan", "openings", "plugins_toolbar",
-              "update_checker", "realistic_wall", "shop_fronts")
+              "update_checker", "realistic_wall", "shop_fronts", "photo_to_building")
 EDDY_EXTRA_NAMES = ()
 
 
@@ -3410,6 +3515,9 @@ EDDY_TIPS = {'OK': 'Keeps the new layout of the toolbars.',
  'Delete toolbar': 'Takes the picked toolbar away; its buttons go back onto the main toolbar.',
  'Toolbar up': 'Moves the picked toolbar up the list.',
  'Toolbar down': 'Moves the picked toolbar down the list.',
+ 'Save layout': 'Saves your toolbars as they are now - their buttons and where they sit - so you can '
+                'put them back if they ever get lost.',
+ 'Put back saved layout': 'Puts back the layout you last saved with Save layout. Click OK to use it.',
  'All on one toolbar': 'Every button on the main toolbar again, in the first order.',
  'A toolbar for each kind': 'Ready-made: a small toolbar each for walls, roofs, doors and windows, pipes, '
                             'railway and outside, shaping tools, scale and print, notes.',
