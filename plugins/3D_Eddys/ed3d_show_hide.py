@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGrid
                                QTreeWidgetItem, QHeaderView)
 
 PLUGIN_NAME = "3D Show / Hide"
-VERSION = "2.20"             # shown in the window title, so you can tell which file is loaded. 2.20: a Delete button by each line of the Elements tab (inside walls, the Subframe, the roof tiles...) - asks first, one undo step; 2.19: Elements - hiding built-in windows and doors hides their edges too (no wireframe left), and inside (dividing) walls have a tick of their own; 2.18: Delete... on the Groups tab - deletes the groups you click (a Subframe, inside walls...) so they can be built again, after asking, one undo step; 2.17: an Elements tab - a tick for each kind of thing in the model (walls, windows, doors, shop fronts, bricks, roof, tiles, chimneys, gutters...), windows and doors built into their walls too
+VERSION = "2.23"             # shown in the window title, so you can tell which file is loaded. 2.23: Elements - hiding windows also hides the inside face of the wall that carries the window panes' shape (more holes than openings), so every opening looks clean, downstairs as well as up; 2.22: Elements - walls with windows hidden in them are marked as changed, so the view really redraws them (it could keep showing the old picture); 2.21: Elements - windows, doors and bricks built into walls that are marked as components (like Photo to Building's walls) now really hide (the wall is made its own, as 3D Period Windows does); the "&" in the names shows properly; fascia boards and roof gables (dormers) no longer count as walls; 2.20: a Delete button by each line of the Elements tab (inside walls, the Subframe, the roof tiles...) - asks first, one undo step; 2.19: Elements - hiding built-in windows and doors hides their edges too (no wireframe left), and inside (dividing) walls have a tick of their own; 2.18: Delete... on the Groups tab - deletes the groups you click (a Subframe, inside walls...) so they can be built again, after asking, one undo step; 2.17: an Elements tab - a tick for each kind of thing in the model (walls, windows, doors, shop fronts, bricks, roof, tiles, chimneys, gutters...), windows and doors built into their walls too
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_show_hide.json")
 
 
@@ -1069,7 +1069,9 @@ def kind_of(g, layers):
             return 'windows'
     nm = str(getattr(g, 'name', '') or '')
     low = nm.lower()
-    if low.startswith(('tiled - ', 'floor plan', 'top plate with walls')):
+    if low.startswith(('boards - ', 'boards for ')):
+        return 'boards'
+    if low.startswith(('tiled - ', 'floor plan', 'top plate with walls', 'roof gable')):
         return None                                  # holders: what's inside them counts
     lay = getattr(g, 'layer', None)
     if isinstance(lay, str) and lay in layers:
@@ -1153,7 +1155,9 @@ def built_in_faces(g):
     cell = 0.05
     grid = {}
     shapes = []
-    for item in (rec.get('items') or []) if isinstance(rec, dict) else []:
+    rec_items = (rec.get('items') or []) if isinstance(rec, dict) else []
+    rec_kinds = [BUILT_KIND.get(it.get('kind', 'window'), 'windows') for it in rec_items]
+    for item in rec_items:
         kind = BUILT_KIND.get(item.get('kind', 'window'), 'windows')
         for so in item.get('solids') or []:
             fl = so.get('f') if isinstance(so, dict) else so
@@ -1196,6 +1200,15 @@ def built_in_faces(g):
                     if _pip(c, sp, ax):
                         hit = kind
                         break
+        if hit is None and rec_items:
+            # the inside face of the wall, cut to the shape of the panes (more holes than openings):
+            # it goes with the windows, or the opening shows their shape in reverse when they're hidden
+            try:
+                nh = len(_items(getattr(f, 'holes', None)) or _items(getattr(f, 'hole_loops', None)))
+            except Exception:
+                nh = 0
+            if nh > len(rec_items):
+                hit = 'windows' if 'windows' in rec_kinds else rec_kinds[0]
         if hit is None:
             a = getattr(f, 'attrs', None)
             mat = str(a.get('mat') or '').lower() if isinstance(a, dict) else ''
@@ -1296,6 +1309,57 @@ def set_hidden_ents(viewport, ents, hidden):
         pass
 
 
+BUILT_IN_KINDS = ('windows', 'doors', 'shop', 'bricks')
+
+
+def unshare_walls(found, viewport=None):
+    """Walls with windows, doors or bricks built in that are marked as components (Photo to Building's
+    are): IngeTrazo won't redraw faces hidden inside a component, so each such wall is made its own,
+    the way 3D Period Windows does when it builds a window in. Nothing else about the wall changes."""
+    n = 0
+    for w in found.get('walls', []) + found.get('inside', []):
+        try:
+            if getattr(w, 'component', False) and _has_faces(w) and any(
+                    k in BUILT_IN_KINDS for k in built_in_faces(w).keys() if isinstance(k, str)):
+                w.component = False
+                n += 1
+        except Exception as e:
+            print("%s: %s" % (PLUGIN_NAME, e))
+    if n:
+        try:
+            viewport.scene.version += 1
+        except Exception:
+            pass
+    return n
+
+
+def touch_walls(found, viewport=None):
+    """Marks the walls with things built into them as changed, so the 3D view draws their hidden
+    (or shown) faces again rather than the picture it kept of them."""
+    for w in found.get('walls', []) + found.get('inside', []):
+        m = getattr(w, 'mesh', None)
+        if m is None or not (isinstance(getattr(w, 'ext', None), dict) and w.ext.get(OPENINGS_KEY)):
+            continue
+        for attr, val in (('_attrs_dirty', True),):
+            try:
+                if hasattr(m, attr):
+                    setattr(m, attr, val)
+            except Exception:
+                pass
+        for attr in ('_flags_gen', '_mut_serial'):
+            try:
+                v = getattr(m, attr, None)
+                if isinstance(v, int):
+                    setattr(m, attr, v + 1)
+            except Exception:
+                pass
+    for call in ('notify_scene_changed', 'update'):
+        try:
+            getattr(viewport, call)()
+        except Exception:
+            pass
+
+
 class ElementsPage(QWidget):
     """A tick for each kind of thing in the model. Windows, doors and shop fronts built into their
     walls, and bricks built into a wall, are hidden face by face - the wall stays."""
@@ -1337,7 +1401,7 @@ class ElementsPage(QWidget):
                 roww = QWidget()
                 rl = QHBoxLayout(roww)
                 rl.setContentsMargins(0, 0, 0, 0)
-                cb = QCheckBox(labels[k])
+                cb = QCheckBox(labels[k].replace("&", "&&"))
                 cb.setToolTip("Untick to hide every %s in the model; tick to show them again. One Ctrl+Z "
                               "step each time." % labels[k].lower())
                 cb.toggled.connect(lambda on, k_=k: self.toggle(k_, on))
@@ -1368,12 +1432,19 @@ class ElementsPage(QWidget):
     def toggle(self, k, on):
         f = model_elements(self.win.scene())
         ents = f.get(k, []) + f.get(('edges', k), [])
+        if k in BUILT_IN_KINDS:
+            unshare_walls(f, self.win.viewport)
         set_hidden_ents(self.win.viewport, ents, not on)
+        if k in BUILT_IN_KINDS:
+            touch_walls(f, self.win.viewport)
         self.win.changed()
 
     def show_all(self):
-        ents = [e for es in model_elements(self.win.scene()).values() for e in es]
+        f = model_elements(self.win.scene())
+        unshare_walls(f, self.win.viewport)
+        ents = [e for es in f.values() for e in es]
         set_hidden_ents(self.win.viewport, ents, False)
+        touch_walls(f, self.win.viewport)
 
     def delete_kind(self, k):
         sc = self.win.scene()
