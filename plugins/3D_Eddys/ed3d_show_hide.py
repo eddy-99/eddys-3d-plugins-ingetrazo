@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGrid
                                QTreeWidgetItem, QHeaderView)
 
 PLUGIN_NAME = "3D Show / Hide"
-VERSION = "2.23"             # shown in the window title, so you can tell which file is loaded. 2.23: Elements - hiding windows also hides the inside face of the wall that carries the window panes' shape (more holes than openings), so every opening looks clean, downstairs as well as up; 2.22: Elements - walls with windows hidden in them are marked as changed, so the view really redraws them (it could keep showing the old picture); 2.21: Elements - windows, doors and bricks built into walls that are marked as components (like Photo to Building's walls) now really hide (the wall is made its own, as 3D Period Windows does); the "&" in the names shows properly; fascia boards and roof gables (dormers) no longer count as walls; 2.20: a Delete button by each line of the Elements tab (inside walls, the Subframe, the roof tiles...) - asks first, one undo step; 2.19: Elements - hiding built-in windows and doors hides their edges too (no wireframe left), and inside (dividing) walls have a tick of their own; 2.18: Delete... on the Groups tab - deletes the groups you click (a Subframe, inside walls...) so they can be built again, after asking, one undo step; 2.17: an Elements tab - a tick for each kind of thing in the model (walls, windows, doors, shop fronts, bricks, roof, tiles, chimneys, gutters...), windows and doors built into their walls too
+VERSION = "2.24"             # shown in the window title, so you can tell which file is loaded. 2.23: Elements - hiding windows also hides the inside face of the wall that carries the window panes' shape (more holes than openings), so every opening looks clean, downstairs as well as up; 2.22: Elements - walls with windows hidden in them are marked as changed, so the view really redraws them (it could keep showing the old picture); 2.21: Elements - windows, doors and bricks built into walls that are marked as components (like Photo to Building's walls) now really hide (the wall is made its own, as 3D Period Windows does); the "&" in the names shows properly; fascia boards and roof gables (dormers) no longer count as walls; 2.20: a Delete button by each line of the Elements tab (inside walls, the Subframe, the roof tiles...) - asks first, one undo step; 2.19: Elements - hiding built-in windows and doors hides their edges too (no wireframe left), and inside (dividing) walls have a tick of their own; 2.18: Delete... on the Groups tab - deletes the groups you click (a Subframe, inside walls...) so they can be built again, after asking, one undo step; 2.17: an Elements tab - a tick for each kind of thing in the model (walls, windows, doors, shop fronts, bricks, roof, tiles, chimneys, gutters...), windows and doors built into their walls too
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".ingetrazo_eddy_show_hide.json")
 
 
@@ -994,17 +994,17 @@ ELEMENTS = [('walls', "Walls"), ('inside', "Inside (dividing) walls"), ('floors'
             ('roof', "Roof (slopes & panels)"), ('tiles', "Roof tiles & slates"), ('tin', "Corrugated iron"),
             ('boards', "Fascia, barge & soffit boards"), ('frame', "Subframe (frame & trusses)"),
             ('chimneys', "Chimneys"), ('gutters', "Gutters & downpipes"), ('pipes', "Soil & waste pipes"),
-            ('canopies', "Station canopies"), ('fences', "Fences & gates"), ('bridges', "Bridges & arches")]
+            ('canopies', "Canopies"), ('fences', "Fences & gates"), ('bridges', "Bridges & arches")]
 PLUGIN_KIND = {"3D Brick & Block Studio": 'bricks', "3D Wood Planking": 'timber', "3D Roof Tiles": 'tiles',
                "3D Corrugated Iron": 'tin', "3D Chimneys": 'chimneys', "3D Period Doors": 'doors',
                "3D Period Windows": 'windows', "3D Gutters & Downpipes": 'gutters',
-               "3D Soil & Waste Pipes": 'pipes', "3D Station Canopies": 'canopies',
+               "3D Soil & Waste Pipes": 'pipes', "3D Canopies": 'canopies', "3D Station Canopies": 'canopies',
                "3D Fences & Gates": 'fences', "3D Shop Fronts": 'shop', "3D Bridges & Arches": 'bridges'}
 DEFAULT_LAYER_NAMES = {"3D Brick & Block Studio": "Walls - brick & block", "3D Wood Planking": "Walls - timber cladding",
                        "3D Roof Tiles": "Roofs - tiles & slates", "3D Corrugated Iron": "Roofs - corrugated iron",
                        "3D Chimneys": "Chimneys", "3D Period Doors": "Doors", "3D Period Windows": "Windows",
                        "3D Gutters & Downpipes": "Gutters & downpipes", "3D Soil & Waste Pipes": "Soil & waste pipes",
-                       "3D Station Canopies": "Station canopies", "3D Fences & Gates": "Fences & gates",
+                       "3D Canopies": "Canopies", "3D Fences & Gates": "Fences & gates",
                        "3D Shop Fronts": "Shop fronts"}
 # words in a group's name (lower case) -> kind; the first that fits wins
 NAME_KINDS = [(('roof slope', 'roof panel'), 'roof', 'start'),

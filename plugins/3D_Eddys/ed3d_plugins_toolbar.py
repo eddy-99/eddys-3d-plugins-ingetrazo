@@ -47,7 +47,7 @@ import os
 import json
 import math
 
-VERSION = "3.35"  # 3.35: Save layout and Put back saved layout buttons in Arrange toolbars, and the settings can't be spoilt by a forced restart; 3.34: Signs button (Railway & outside), for 3D Signs & Boards; 3.33: Photo to Building button (Walls), and a "Make a building from a photo" job - the photo fills in Floor plan and Openings, then on to Frame; 3.32: Make... menu's "How to install" video is now the all-in-one-go install with 3D Check for Updates; 3.31: the Make... menu only lists the jobs whose plugins are all installed (Make a shop needs Shop Fronts, Make a low relief building needs Low Relief); 3.30: Low Relief button (Scale & print), and a "Make a low relief building" job with a Low relief step before Scale & print; 3.29: Shop Fronts button (Doors & windows), and a "Make a shop" job with a Shop front step after the windows; 3.28: video link for Bridges & Arches; 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
+VERSION = "3.37"  # 3.37: Canopies video link; 3.36: Station Canopies renamed 3D Canopies (saved layouts follow it); Make a canopy or veranda; 3.35: Save layout and Put back saved layout buttons in Arrange toolbars, and the settings can't be spoilt by a forced restart; 3.34: Signs button (Railway & outside), for 3D Signs & Boards; 3.33: Photo to Building button (Walls), and a "Make a building from a photo" job - the photo fills in Floor plan and Openings, then on to Frame; 3.32: Make... menu's "How to install" video is now the all-in-one-go install with 3D Check for Updates; 3.31: the Make... menu only lists the jobs whose plugins are all installed (Make a shop needs Shop Fronts, Make a low relief building needs Low Relief); 3.30: Low Relief button (Scale & print), and a "Make a low relief building" job with a Low relief step before Scale & print; 3.29: Shop Fronts button (Doors & windows), and a "Make a shop" job with a Shop front step after the windows; 3.28: video link for Bridges & Arches; 3.27: Make... sorted into groups (Buildings, Railway & outside, Locos, wagons & parts, Printing), with new jobs - station building, goods/engine shed, timber building, tin shed, factory chimney, riveted part, boiler with a dome; 3.26: closing the empty Untitled tab no longer asks you to save it (answers Don't Save for you); 3.25: Realistic Wall video link; 3.24: the Start window closes the empty Untitled tab IngeTrazo starts with, once your model is open; 3.23: the Start window shows each model's own name (not its folder), and uses IngeTrazo's list of recent models (not a list of folders); 3.22: a Start window when IngeTrazo opens - open the last model, open another, or start a new one; 3.21: Make a building / bridge: walling is a choice - Bricks or Realistic wall; 3.20: Realistic Wall button; 3.19: Card Kit video link; 3.18: version number taken off the main toolbar; 3.17: Card Kit button (Scale & print), and Make a card kit in Make...; 3.16: How to install video in the Make... menu; 3.15: Scale Studio video link; 3.14: Layers & Colours video link; 3.13: Soil & Waste Pipes video link; 3.12: Gutters video link; 3.11: Bricks video link; 3.10: Check for Updates button; 3.9: Roof Tiles video link; 3.8: Chimneys video link; 3.7: Doors video link; 3.6: Windows video link; 2.1: 'Open last' button on the workflow toolbars; 2.2: Bridges & Arches button;
                   # 2.3: Simple view button - hides all the toolbars except yours;
                   # 2.4: Step toolbar - a numbered toolbar of a plugin's pages when you open it;
                   # 2.5: Simple view first on the toolbar; step toolbar also checks every half second
@@ -98,7 +98,7 @@ PLUGINS = [
     ("3D Wrap", "Ctrl+Alt+U", "Wrap", "wrap"),
     ("3D Chimneys", "Ctrl+Alt+H", "Chimneys", "chimney"),
     ("3D Corrugated Iron", "Ctrl+Alt+I", "Tin sheet", "corrugated"),
-    ("3D Station Canopies", "Ctrl+Alt+C", "Canopy", "canopy"),
+    ("3D Canopies", "Ctrl+Alt+C", "Canopy", "canopy"),
     ("3D Centre Finder", "Ctrl+Alt+M", "Centre", "centre"),
     ("3D Timeline", "Ctrl+Alt+T", "Timeline", "timeline"),
     ("3D Find & Replace", "Ctrl+Alt+X", "Swap parts", "swap"),
@@ -133,7 +133,7 @@ def item_icon(entry):
 
 
 # plugins that have been renamed: (old name, new name), so saved button layouts still fit
-RENAMED = {"3D Scale Converter": "3D Scale Studio"}
+RENAMED = {"3D Scale Converter": "3D Scale Studio", "3D Station Canopies": "3D Canopies"}
 
 
 def load_settings():
@@ -949,7 +949,7 @@ GROUPS = [
     ("Roofs", ["3D Roof Tiles", "3D Corrugated Iron", "3D Chimneys"]),
     ("Doors & windows", ["3D Openings", "3D Period Doors", "3D Period Windows", "3D Shop Fronts"]),
     ("Pipes & gutters", ["3D Gutters & Downpipes", "3D Soil & Waste Pipes"]),
-    ("Railway & outside", ["3D Station Canopies", "3D Fences & Gates", "3D Bridges & Arches", "3D Signs & Boards"]),
+    ("Railway & outside", ["3D Canopies", "3D Fences & Gates", "3D Bridges & Arches", "3D Signs & Boards"]),
     ("Shaping tools", ["3D Loft", "3D Blend", "3D Centre Finder", "3D Find & Replace", "3D Place Along Line"]),
     ("Scale & print", ["3D Low Relief", "3D Scale Studio", "3D Print Scaler", "3D Part Splitter", "3D Pieces In", "3D Card Kit"]),
     ("Notes & set-up", ["3D Show / Hide", "3D Layers & Colours", "3D Timeline", "3D Notepad", "3D Quick Links", "3D Better Icons", "3D Plugins Toolbar", "3D Check for Updates"]),
@@ -1590,6 +1590,7 @@ VIDEOS = {
     "3D Card Kit": "https://youtu.be/1Z8iHbJ2nJU",
     "3D Realistic Wall": "https://youtu.be/0Sd6ZMrLLf4",
     "3D Bridges & Arches": "https://youtu.be/Vz0gVbjloCY",
+    "3D Canopies": "https://youtu.be/b-qGTZW5i-I",
 }
 
 
@@ -1635,7 +1636,7 @@ PROJECTS = [
     ("Make a station building", [
         ("3D Floor Plan", "Floor plan"), ("3D Openings", "Openings"), ("3D Subframe", "Frame"),
         ("3D Period Windows", "Windows"), ("3D Period Doors", "Doors"), ("3D Chimneys", "Chimneys"),
-        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"), ("3D Station Canopies", "Canopy"),
+        (ROOF_CHOICE, "Roof"), (WALL_CHOICE, "Walling"), ("3D Canopies", "Canopy"),
         ("3D Gutters & Downpipes", "Gutters"), ("3D Soil & Waste Pipes", "Soil pipes"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
     ("Make a goods shed or engine shed", [
@@ -1659,8 +1660,8 @@ PROJECTS = [
     ("Make a bridge or arches", [
         ("3D Bridges & Arches", "Bridge"), (WALL_CHOICE, "Walling"),
         ("3D Layers & Colours", "Colours"), ("3D Scale Studio", "Scale & print")]),
-    ("Make a station canopy", [
-        ("3D Station Canopies", "Canopy"), (ROOF_CHOICE, "Roof"),
+    ("Make a canopy or veranda", [
+        ("3D Canopies", "Canopy"), (ROOF_CHOICE, "Roof"),
         ("3D Gutters & Downpipes", "Gutters"), ("3D Layers & Colours", "Colours"),
         ("3D Scale Studio", "Scale & print")]),
     ("Make fences and gates", [
@@ -1683,7 +1684,7 @@ PROJECTS = [
 PROJECT_GROUPS = [
     ("Buildings", ["Make a building", "Make a building from a photo", "Make a low relief building", "Make a shop", "Make a station building", "Make a goods shed or engine shed",
                    "Make a timber building", "Make a tin shed", "Make a factory chimney"]),
-    ("Railway & outside", ["Make a bridge or arches", "Make a station canopy", "Make fences and gates"]),
+    ("Railway & outside", ["Make a bridge or arches", "Make a canopy or veranda", "Make fences and gates"]),
     ("Locos, wagons & parts", ["Make a riveted part (loco or wagon)", "Make a boiler with a dome"]),
     ("Printing", ["Get a model ready to print", "Make a card kit (print on paper)"]),
 ]

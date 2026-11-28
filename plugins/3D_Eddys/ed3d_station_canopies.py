@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# 3D Station Canopies for IngeTrazo
+# 3D Canopies for IngeTrazo
 # Copyright (C) 2026 Phillip Edwards (Eddy)
 # Written with the help of AI (Claude).
 #
@@ -11,7 +11,8 @@
 # PURPOSE. See the LICENSE file or <https://www.gnu.org/licenses/> for details.
 
 """
-3D Station Canopies - railway platform canopies with fancy valancing for IngeTrazo
+3D Canopies - canopies, verandas, shelters and kiosk roofs with fancy valancing for IngeTrazo
+(railway platforms, shop fronts, porches, bus shelters, market stalls, arcades)
 Lean-to: select the station building's wall face and the canopy runs the length of it,
 sloping down to the front, on a row of columns, with valancing along the front and ends.
 Island / umbrella: select the platform's top face; one row of columns down the middle,
@@ -38,8 +39,8 @@ from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox, QCheckBox,
                                QDoubleSpinBox, QPushButton, QLabel, QMessageBox, QTabWidget, QWidget)
 
-PLUGIN_NAME = "3D Station Canopies"
-VERSION = "2.1"  # 2.1: version number in the standard x.y style (was 2)
+PLUGIN_NAME = "3D Canopies"
+VERSION = "2.2"  # 2.2: renamed 3D Canopies (it makes verandas, porches, shelters, kiosks and arcades as well as station canopies); built groups are called "Canopy - ..."; 2.1: version number in the standard x.y style (was 2)
 
 
 def _ed3d_organise(scene, group):
@@ -2730,7 +2731,7 @@ class StationCanopiesTool(Tool):
             QMessageBox.warning(dlg, PLUGIN_NAME, str(e))
             return
         parts = {k: [[map_solid(s, O, X, Y) for s in it] for it in its] for k, its in parts.items() if its}
-        name = "Station canopy - %s %.1f m" % (dict(KINDS)[kind].split(" (")[0].split(" /")[0].lower(),
+        name = "Canopy - %s %.1f m" % (dict(KINDS)[kind].split(" (")[0].split(" /")[0].lower(),
                                                 L / 1000.0)
         if kind == 'bell':
             name = "Bell-cast roof - %.1f x %.1f m" % (v['bell_w'] / 1000.0, v['bell_d'] / 1000.0)
