@@ -1,0 +1,23 @@
+# Catalog entry for the IngeTrazo extensions page. The robot in
+# .github/workflows/send-to-ingetrazo-catalog.yml fills in version, download and sha256
+# from the plugin file named in 'source', and sends it with the picture in
+# catalog/screenshots/ whenever the plugin or this entry changes.
+
+id = "show_hide"
+source = "plugins/3D_Eddys/ed3d_show_hide.py"
+author = "Phillip Edwards (Eddy)"
+author_url = "https://github.com/eddy-99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eddy-99/eddys-3d-plugins-ingetrazo"
+ingetrazo = "0.5.11"
+tags = ["productivity"]
+
+[name]
+es = "Mostrar / ocultar 3D"
+en = "3D Show / Hide"
+pt = "Mostrar / ocultar 3D"
+
+[summary]
+es = "Una ventana pequeña con pestañas para mostrar u ocultar de un clic las partes de tu edificio: muros, suelos, ventanas, puertas, escaparates, tejado, tejas, estructura, chimeneas y canalones, planta por planta."
+en = "One small window with tabs to show or hide the parts of your building in one click: walls, floors, windows, doors, shop fronts, roof, tiles, frame, chimneys and gutters, floor by floor."
+pt = "Uma pequena janela com separadores para mostrar ou ocultar com um clique as partes do teu edifício: paredes, pisos, janelas, portas, montras, telhado, telhas, estrutura, chaminés e caleiras, piso a piso."
